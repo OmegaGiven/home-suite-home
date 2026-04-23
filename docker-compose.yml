@@ -1,0 +1,64 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: sweet
+      POSTGRES_USER: sweet
+      POSTGRES_PASSWORD: sweet
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  coturn:
+    image: coturn/coturn:4.6.3
+    command:
+      - -n
+      - --log-file=stdout
+      - --min-port=49160
+      - --max-port=49200
+      - --realm=sweet.local
+      - --use-auth-secret
+      - --static-auth-secret=sweetturn
+      - --listening-port=3478
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+
+  drawio:
+    image: jgraph/drawio:latest
+    ports:
+      - "18083:8080"
+
+  server:
+    build:
+      context: ./server
+    env_file:
+      - .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      STORAGE_ROOT: /app/storage
+      DATABASE_URL: postgres://sweet:sweet@postgres:5432/sweet
+      TURN_URLS: turn:coturn:3478?transport=udp
+    depends_on:
+      - postgres
+      - coturn
+    volumes:
+      - server-storage:/app/storage
+    ports:
+      - "8080:8080"
+
+  web:
+    build:
+      context: ./web
+    depends_on:
+      - server
+      - drawio
+    ports:
+      - "4173:4173"
+
+volumes:
+  postgres-data:
+  server-storage:

@@ -1,0 +1,289 @@
+import type { CSSProperties } from 'react'
+import type { Diagram, FileNode, Note } from './types'
+
+export type FolderNode = {
+  name: string
+  path: string
+  children: FolderNode[]
+}
+
+export type NoteFolderNode = {
+  name: string
+  path: string
+  children: NoteFolderNode[]
+  notes: Note[]
+}
+
+export type DiagramFolderNode = {
+  name: string
+  path: string
+  children: DiagramFolderNode[]
+  diagrams: Diagram[]
+}
+
+export type NoteInsertKind =
+  | 'paragraph'
+  | 'heading-1'
+  | 'heading-2'
+  | 'heading-3'
+  | 'quote'
+  | 'bullet-list'
+  | 'numbered-list'
+  | 'task-list'
+  | 'code-block'
+  | 'divider'
+  | 'table'
+
+export function defaultNoteTitle() {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  const hours = String(now.getHours()).padStart(2, '0')
+  const minutes = String(now.getMinutes()).padStart(2, '0')
+  return `Note ${year}-${month}-${day} ${hours}:${minutes}`
+}
+
+export function isEditableTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null
+  if (!element) return false
+  if (element.isContentEditable) return true
+  if (element.closest('[contenteditable="true"]')) return true
+  const tag = element.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
+export function blurEditableTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null
+  if (!element) return
+  const editableRoot = element.isContentEditable
+    ? element
+    : (element.closest('[contenteditable="true"]') as HTMLElement | null)
+  const focusTarget = editableRoot ?? element
+  if (typeof focusTarget.blur === 'function') {
+    focusTarget.blur()
+  }
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+}
+
+export function insertTextAtSelection(text: string) {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0) return
+  const range = selection.getRangeAt(0)
+  range.deleteContents()
+  const node = document.createTextNode(text)
+  range.insertNode(node)
+  range.setStartAfter(node)
+  range.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+export function normalizeFolderPath(value: string) {
+  const normalized = value
+    .trim()
+    .replaceAll('\\', '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/')
+  return normalized || 'Inbox'
+}
+
+export function normalizeDiagramTitlePath(value: string) {
+  return value
+    .trim()
+    .replaceAll('\\', '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/') || 'Diagrams/Untitled'
+}
+
+export function normalizeDiagramFolderPath(title: string) {
+  const parts = normalizeDiagramTitlePath(title).split('/')
+  if (parts.length <= 1) return 'Diagrams'
+  return parts.slice(0, -1).join('/')
+}
+
+export function diagramDisplayName(title: string) {
+  const parts = normalizeDiagramTitlePath(title).split('/')
+  return parts[parts.length - 1] || 'Untitled'
+}
+
+export function fileTypeLabel(name: string) {
+  const extension = name.split('.').pop()?.toLowerCase()
+  if (!extension || extension === name.toLowerCase()) return 'File'
+  if (extension === 'md') return 'Markdown'
+  if (extension === 'drawio') return 'Diagram'
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(extension)) return 'Image'
+  if (['mp3', 'wav', 'm4a', 'webm'].includes(extension)) return 'Audio'
+  if (['zip', 'tar', 'gz'].includes(extension)) return 'Archive'
+  return extension.toUpperCase()
+}
+
+export function formatFileSize(value?: number | null) {
+  if (!value || value <= 0) return '0 B'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`
+}
+
+export function formatFileTimestamp(value?: string | null) {
+  if (!value) return '—'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return '—'
+  const year = parsed.getFullYear()
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  const hours = String(parsed.getHours()).padStart(2, '0')
+  const minutes = String(parsed.getMinutes()).padStart(2, '0')
+  return `${year}.${month}.${day}:${hours}:${minutes}`
+}
+
+export function deriveParentPath(path: string) {
+  if (!path) return null
+  const parts = path.split('/').filter(Boolean)
+  if (parts.length <= 1) return ''
+  return parts.slice(0, -1).join('/')
+}
+
+export function deriveDirectoryPath(path: string, isDirectory = false) {
+  if (!path) return ''
+  if (isDirectory) return path
+  return deriveParentPath(path) ?? path
+}
+
+export function mergeFolderPaths(existing: string[], incoming: string[]) {
+  return Array.from(
+    new Set([...existing, ...incoming].map(normalizeFolderPath).filter((value) => value !== 'Inbox')),
+  ).sort((a, b) => a.localeCompare(b))
+}
+
+function buildFolderTree(notes: Note[], customFolders: string[]): FolderNode[] {
+  const allPaths = mergeFolderPaths(
+    customFolders,
+    notes.map((note) => normalizeFolderPath(note.folder || 'Inbox')),
+  )
+  const rootNodes: FolderNode[] = []
+  const byPath = new Map<string, FolderNode>()
+
+  for (const folderPath of allPaths) {
+    const parts = folderPath.split('/').filter(Boolean)
+    let path = ''
+    let parent: FolderNode | null = null
+
+    for (const part of parts) {
+      path = path ? `${path}/${part}` : part
+      let node = byPath.get(path)
+      if (!node) {
+        node = { name: part, path, children: [] }
+        byPath.set(path, node)
+        if (parent) {
+          parent.children.push(node)
+        } else {
+          rootNodes.push(node)
+        }
+      }
+      parent = node
+    }
+  }
+
+  const sortNodes = (items: FolderNode[]) => {
+    items.sort((a, b) => a.name.localeCompare(b.name))
+    items.forEach((item) => sortNodes(item.children))
+  }
+  sortNodes(rootNodes)
+  return rootNodes
+}
+
+export function buildNoteTree(notes: Note[], customFolders: string[]): NoteFolderNode[] {
+  const folderNodes = buildFolderTree(notes, customFolders)
+  const noteMap = new Map<string, Note[]>()
+
+  for (const note of notes) {
+    const path = normalizeFolderPath(note.folder || 'Inbox')
+    if (path === 'Inbox') continue
+    const existing = noteMap.get(path) ?? []
+    existing.push(note)
+    noteMap.set(path, existing)
+  }
+
+  const mapNodes = (items: FolderNode[]): NoteFolderNode[] =>
+    items.map((item) => ({
+      ...item,
+      notes: [...(noteMap.get(item.path) ?? [])].sort((a, b) => a.title.localeCompare(b.title)),
+      children: mapNodes(item.children),
+    }))
+
+  return mapNodes(folderNodes)
+}
+
+export function buildDiagramTree(diagrams: Diagram[]): DiagramFolderNode[] {
+  const folderNodes: DiagramFolderNode[] = []
+  const byPath = new Map<string, DiagramFolderNode>()
+  const folderDiagrams = new Map<string, Diagram[]>()
+
+  for (const diagram of diagrams) {
+    const normalized = normalizeDiagramTitlePath(diagram.title)
+    const parts = normalized.split('/')
+    const folderPath = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Diagrams'
+    const existing = folderDiagrams.get(folderPath) ?? []
+    existing.push(diagram)
+    folderDiagrams.set(folderPath, existing)
+
+    let path = ''
+    let parent: DiagramFolderNode | null = null
+    for (const part of parts.slice(0, -1)) {
+      path = path ? `${path}/${part}` : part
+      let node = byPath.get(path)
+      if (!node) {
+        node = { name: part, path, children: [], diagrams: [] }
+        byPath.set(path, node)
+        if (parent) parent.children.push(node)
+        else folderNodes.push(node)
+      }
+      parent = node
+    }
+  }
+
+  const assignDiagrams = (items: DiagramFolderNode[]) => {
+    items.sort((a, b) => a.name.localeCompare(b.name))
+    for (const item of items) {
+      item.diagrams = [...(folderDiagrams.get(item.path) ?? [])].sort((a, b) =>
+        diagramDisplayName(a.title).localeCompare(diagramDisplayName(b.title)),
+      )
+      assignDiagrams(item.children)
+    }
+  }
+
+  assignDiagrams(folderNodes)
+  return folderNodes
+}
+
+export function findFileNode(nodes: FileNode[], path: string): FileNode | null {
+  if (path === '') return null
+  for (const node of nodes) {
+    if (node.path === path) return node
+    const child = findFileNode(node.children, path)
+    if (child) return child
+  }
+  return null
+}
+
+export function flattenFileNodes(nodes: FileNode[]): FileNode[] {
+  const flat: FileNode[] = []
+  for (const node of nodes) {
+    flat.push(node)
+    if (node.children.length > 0) {
+      flat.push(...flattenFileNodes(node.children))
+    }
+  }
+  return flat
+}
+
+export function inlinePaneStyle(variableName: string, pixels: number) {
+  return { [variableName]: `${pixels}px` } as CSSProperties
+}
