@@ -31,5 +31,5 @@ This repository implements the initial vertical slice and contract scaffolding f
 
 - OIDC/AuthentiK endpoints are configured and surfaced, but the full browser redirect flow is not yet completed.
 - Note collaboration uses websocket broadcast and client reconciliation rather than a full CRDT engine.
-- Transcription jobs are asynchronous and device-aware at the configuration level, but the worker currently emits deterministic placeholder transcripts instead of invoking Whisper.
+- Transcription jobs use `ffmpeg` plus `whisper.cpp` when the server is configured with `WHISPER_COMMAND`, `FFMPEG_COMMAND`, and a model file path.
 - Calls use WebRTC signaling endpoints and TURN configuration, but media quality and multi-party behavior still need hardening.

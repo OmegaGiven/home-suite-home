@@ -52,6 +52,16 @@ export function getDrawioBaseUrl() {
   return resolveRuntimeBaseUrl(import.meta.env.VITE_DRAWIO_URL, 18083)
 }
 
+export function getStandaloneDrawioUrl() {
+  const url = new URL(getDrawioBaseUrl())
+  url.searchParams.set('embed', '1')
+  url.searchParams.set('proto', 'json')
+  url.searchParams.set('spin', '1')
+  url.searchParams.set('libraries', '1')
+  url.searchParams.set('saveAndExit', '1')
+  return url.toString()
+}
+
 function getDrawioEmbedUrl() {
   const url = new URL(getDrawioBaseUrl())
   url.searchParams.set('offline', '1')

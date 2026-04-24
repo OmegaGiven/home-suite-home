@@ -51,6 +51,8 @@ impl PersistenceBackend {
                                 username text not null default '',
                                 email text not null,
                                 display_name text not null,
+                                avatar_path text not null default '',
+                                avatar_content_type text not null default '',
                                 role text not null,
                                 roles_json text not null default '[]',
                                 must_change_password boolean not null default false,
@@ -59,6 +61,8 @@ impl PersistenceBackend {
                                 password_hash text not null
                             );
                             alter table users add column if not exists username text not null default ''; 
+                            alter table users add column if not exists avatar_path text not null default '';
+                            alter table users add column if not exists avatar_content_type text not null default '';
                             alter table users add column if not exists roles_json text not null default '[]';
                             alter table users add column if not exists must_change_password boolean not null default false;
                             alter table users add column if not exists storage_limit_mb bigint not null default 0;
@@ -552,6 +556,23 @@ impl PersistenceBackend {
         }
     }
 
+    pub async fn delete_room(&self, room_id: Uuid) -> AppResult<bool> {
+        match self {
+            Self::File { .. } => Ok(false),
+            Self::Postgres { client, .. } => {
+                client
+                    .execute("delete from messages where room_id = $1", &[&room_id.to_string()])
+                    .await
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
+                client
+                    .execute("delete from rooms where id = $1", &[&room_id.to_string()])
+                    .await
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
+                Ok(true)
+            }
+        }
+    }
+
     pub async fn list_messages(
         &self,
         room_id: Uuid,
@@ -578,6 +599,8 @@ impl PersistenceBackend {
                             username: format!("user-{}", &author_id.to_string()[..8]),
                             email: String::new(),
                             display_name: format!("User {}", &author_id.to_string()[..8]),
+                            avatar_path: None,
+                            avatar_content_type: None,
                             role: "member".into(),
                             roles: vec!["member".into()],
                             must_change_password: false,
@@ -654,12 +677,18 @@ async fn sync_relational_state(
             .map_err(|err| AppError::Internal(err.to_string()))?;
         client
             .execute(
-                "insert into users (id, username, email, display_name, role, roles_json, must_change_password, storage_limit_mb, tool_scope_json, password_hash) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                "insert into users (id, username, email, display_name, avatar_path, avatar_content_type, role, roles_json, must_change_password, storage_limit_mb, tool_scope_json, password_hash) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                 &[
                     &stored_user.profile.id.to_string(),
                     &stored_user.profile.username,
                     &stored_user.profile.email,
                     &stored_user.profile.display_name,
+                    &stored_user.profile.avatar_path.clone().unwrap_or_default(),
+                    &stored_user
+                        .profile
+                        .avatar_content_type
+                        .clone()
+                        .unwrap_or_default(),
                     &stored_user.profile.role,
                     &serde_json::to_string(&stored_user.profile.roles)
                         .map_err(|err| AppError::Internal(err.to_string()))?,
@@ -833,7 +862,7 @@ async fn sync_relational_state(
 async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Option<StateData>> {
     let user_rows = client
         .query(
-            "select id, username, email, display_name, role, roles_json, must_change_password, storage_limit_mb, tool_scope_json, password_hash from users",
+            "select id, username, email, display_name, avatar_path, avatar_content_type, role, roles_json, must_change_password, storage_limit_mb, tool_scope_json, password_hash from users",
             &[],
         )
         .await
@@ -850,17 +879,19 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             username: user_row.get(1),
             email: user_row.get(2),
             display_name: user_row.get(3),
-            role: user_row.get(4),
+            avatar_path: string_column_to_option(user_row.get(4)),
+            avatar_content_type: string_column_to_option(user_row.get(5)),
+            role: user_row.get(6),
             roles: parse_user_roles(
-                user_row.get::<_, String>(5).as_str(),
-                user_row.get::<_, String>(4).as_str(),
+                user_row.get::<_, String>(7).as_str(),
+                user_row.get::<_, String>(6).as_str(),
             ),
-            must_change_password: user_row.get(6),
+            must_change_password: user_row.get(8),
         };
-        let storage_limit_mb = user_row.get::<_, i64>(7).max(0) as u64;
+        let storage_limit_mb = user_row.get::<_, i64>(9).max(0) as u64;
         let tool_scope: UserToolScope =
-            serde_json::from_str(user_row.get::<_, String>(8).as_str()).unwrap_or_default();
-        let password_hash: String = user_row.get(9);
+            serde_json::from_str(user_row.get::<_, String>(10).as_str()).unwrap_or_default();
+        let password_hash: String = user_row.get(11);
         users.insert(
             user.id,
             StoredUser {
@@ -880,14 +911,16 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         username: user_row.get(1),
         email: user_row.get(2),
         display_name: user_row.get(3),
-        role: user_row.get(4),
+        avatar_path: string_column_to_option(user_row.get(4)),
+        avatar_content_type: string_column_to_option(user_row.get(5)),
+        role: user_row.get(6),
         roles: parse_user_roles(
-            user_row.get::<_, String>(5).as_str(),
-            user_row.get::<_, String>(4).as_str(),
+            user_row.get::<_, String>(7).as_str(),
+            user_row.get::<_, String>(6).as_str(),
         ),
-        must_change_password: user_row.get(6),
+        must_change_password: user_row.get(8),
     };
-    let password_hash: String = user_row.get(9);
+    let password_hash: String = user_row.get(11);
 
     let mut notes = HashMap::new();
     for row in client
@@ -1025,6 +1058,8 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
                 username: user.username.clone(),
                 email: user.email.clone(),
                 display_name: user.display_name.clone(),
+                avatar_path: user.avatar_path.clone(),
+                avatar_content_type: user.avatar_content_type.clone(),
                 role: user.role.clone(),
                 roles: user.roles.clone(),
                 must_change_password: false,
@@ -1075,6 +1110,7 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         rooms,
         messages,
         resource_shares,
+        pending_credential_changes: HashMap::new(),
     }))
 }
 
@@ -1098,6 +1134,15 @@ fn parse_user_roles(value: &str, fallback_role: &str) -> Vec<String> {
         }]
     } else {
         parsed
+    }
+}
+
+fn string_column_to_option(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
     }
 }
 

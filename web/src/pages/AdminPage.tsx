@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { OverflowCategoryNav } from '../components/OverflowCategoryNav'
+import { UserAvatar } from '../components/UserAvatar'
 import type {
   AdminSettings,
   AdminStorageOverview,
@@ -26,6 +28,7 @@ type Props = {
   onCreateUser: (payload: CreateUserRequest) => Promise<void>
   onResetPassword: (userId: string, password: string) => void
   onUpdateUserAccess: (userId: string, payload: UpdateUserAccessRequest) => void
+  onResolveCredentialRequest: (userId: string, approve: boolean) => void
 }
 
 type AdminCategory = 'roles' | 'users' | 'storage'
@@ -91,6 +94,7 @@ export function AdminPage({
   onCreateUser,
   onResetPassword,
   onUpdateUserAccess,
+  onResolveCredentialRequest,
 }: Props) {
   const [newUser, setNewUser] = useState<CreateUserRequest>({
     username: '',
@@ -199,19 +203,12 @@ export function AdminPage({
   return (
     <section className="panel settings-panel">
       <div className="settings-layout">
-        <aside className="settings-sidebar">
-          <div className="settings-sidebar-list">
-            {ADMIN_CATEGORIES.map((category) => (
-              <button
-                key={category.key}
-                className={`settings-sidebar-link ${activeCategory === category.key ? 'active' : ''}`}
-                onClick={() => setActiveCategory(category.key)}
-              >
-                {category.label}
-              </button>
-            ))}
-          </div>
-        </aside>
+        <OverflowCategoryNav
+          items={ADMIN_CATEGORIES}
+          activeKey={activeCategory}
+          ariaLabel="Admin categories"
+          onChange={setActiveCategory}
+        />
         <div className="settings-content">
           {activeCategory === 'roles' ? (
             <div className="settings-card">
@@ -294,6 +291,24 @@ export function AdminPage({
               <div className="settings-toggle" style={{ marginTop: 12 }}>
                 <input
                   type="checkbox"
+                  checked={settings.require_account_email}
+                  disabled={!canManageOrgSettings}
+                  onChange={(event) => onSave({ ...settings, require_account_email: event.target.checked })}
+                />
+                <span>Require email for accounts</span>
+              </div>
+              <div className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.allow_user_credential_changes}
+                  disabled={!canManageOrgSettings}
+                  onChange={(event) => onSave({ ...settings, allow_user_credential_changes: event.target.checked })}
+                />
+                <span>Allow users to change username and email directly</span>
+              </div>
+              <div className="settings-toggle">
+                <input
+                  type="checkbox"
                   checked={settings.confirm_file_delete}
                   disabled={!canManageOrgSettings}
                   onChange={(event) => onSave({ ...settings, confirm_file_delete: event.target.checked })}
@@ -350,6 +365,7 @@ export function AdminPage({
                       <th>Password</th>
                       <th>Auth</th>
                       <th>Storage limit</th>
+                      <th>Pending credentials</th>
                       <th>Reset password</th>
                       <th>Scope</th>
                     </tr>
@@ -365,8 +381,13 @@ export function AdminPage({
                       return (
                         <tr key={user.id}>
                           <td className="admin-user-cell">
-                            <strong>{user.display_name}</strong>
-                            <div className="muted">@{user.username}</div>
+                            <div className="admin-user-summary">
+                              <UserAvatar user={user} className="user-avatar-admin" />
+                              <div>
+                                <strong>{user.display_name}</strong>
+                                <div className="muted">@{user.username}</div>
+                              </div>
+                            </div>
                           </td>
                           <td>
                             <span className="muted">{user.email}</span>
@@ -401,6 +422,27 @@ export function AdminPage({
                                 ✎
                               </button>
                             </div>
+                          </td>
+                          <td>
+                            {user.pending_credential_change ? (
+                              <div className="settings-list" style={{ gap: 8 }}>
+                                <div className="muted">
+                                  @{user.pending_credential_change.requested_username}
+                                  <br />
+                                  {user.pending_credential_change.requested_email}
+                                </div>
+                                <div className="button-row">
+                                  <button className="button-secondary" type="button" onClick={() => onResolveCredentialRequest(user.id, true)}>
+                                    Approve
+                                  </button>
+                                  <button className="button-secondary" type="button" onClick={() => onResolveCredentialRequest(user.id, false)}>
+                                    Deny
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="muted">None</span>
+                            )}
                           </td>
                           <td>
                             <button
@@ -603,6 +645,13 @@ export function AdminPage({
               }}
             >
               <input autoFocus className="input" placeholder="Username" value={newUser.username} onChange={(event) => setNewUser((current) => ({ ...current, username: event.target.value }))} />
+              <input
+                className="input"
+                type="email"
+                placeholder={settings.require_account_email ? 'Email' : 'Email (optional)'}
+                value={newUser.email}
+                onChange={(event) => setNewUser((current) => ({ ...current, email: event.target.value }))}
+              />
               <input className="input" type="password" placeholder="First-use password" value={newUser.password} onChange={(event) => setNewUser((current) => ({ ...current, password: event.target.value }))} />
               <div className="admin-table-inline">
                 <input

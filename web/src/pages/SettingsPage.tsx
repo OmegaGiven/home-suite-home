@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { DEFAULT_APPEARANCE, DEFAULT_NAV_ORDER, DEFAULT_SHORTCUTS, FONT_OPTIONS, type AppearanceSettings, type NavItemPath, type ShortcutSettings } from '../lib/app-config'
+import { UserAvatar } from '../components/UserAvatar'
+import { OverflowCategoryNav } from '../components/OverflowCategoryNav'
 import type { OidcConfig, RtcConfig, SessionResponse } from '../lib/types'
 import { normalizeShortcutBinding } from '../lib/shortcuts'
 
@@ -8,7 +10,7 @@ type NavItem = {
   label: string
 }
 
-type SettingsCategory = 'appearance' | 'shortcuts' | 'navigation' | 'account'
+type SettingsCategory = 'appearance' | 'shortcuts' | 'account'
 
 type Props = {
   appearance: AppearanceSettings
@@ -23,13 +25,15 @@ type Props = {
   onSetAppearance: React.Dispatch<React.SetStateAction<AppearanceSettings>>
   onSetShortcuts: React.Dispatch<React.SetStateAction<ShortcutSettings>>
   onSetNavOrder: React.Dispatch<React.SetStateAction<NavItemPath[]>>
+  onUploadAvatar: (file: File) => Promise<void>
+  onUpdateCredentials: (payload: { username: string; email: string }) => Promise<string | null>
+  onChangePassword: (payload: { current_password: string; new_password: string; new_password_confirm: string }) => Promise<void>
 }
 
 const CATEGORY_LABELS: Array<{ key: SettingsCategory; label: string }> = [
+  { key: 'account', label: 'Account' },
   { key: 'appearance', label: 'Appearance' },
   { key: 'shortcuts', label: 'Shortcuts' },
-  { key: 'navigation', label: 'Navigation' },
-  { key: 'account', label: 'Account' },
 ]
 
 export function SettingsPage({
@@ -45,8 +49,29 @@ export function SettingsPage({
   onSetAppearance,
   onSetShortcuts,
   onSetNavOrder,
+  onUploadAvatar,
+  onUpdateCredentials,
+  onChangePassword,
 }: Props) {
-  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('appearance')
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('account')
+  const [avatarUploading, setAvatarUploading] = useState(false)
+  const [avatarError, setAvatarError] = useState<string | null>(null)
+  const [usernameDraft, setUsernameDraft] = useState(session?.user.username ?? '')
+  const [emailDraft, setEmailDraft] = useState(session?.user.email ?? '')
+  const [credentialsSaving, setCredentialsSaving] = useState(false)
+  const [credentialsMessage, setCredentialsMessage] = useState<string | null>(null)
+  const [credentialsError, setCredentialsError] = useState<string | null>(null)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordSaving, setPasswordSaving] = useState(false)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
+  const avatarInputRef = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    setUsernameDraft(session?.user.username ?? '')
+    setEmailDraft(session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? '')
+  }, [session?.user.email, session?.user.username])
 
   const accountDebug = useMemo(
     () =>
@@ -67,19 +92,12 @@ export function SettingsPage({
   return (
     <section className="panel settings-panel">
       <div className="settings-layout">
-        <aside className="settings-sidebar">
-          <div className="settings-sidebar-list">
-            {CATEGORY_LABELS.map((category) => (
-              <button
-                key={category.key}
-                className={`settings-sidebar-link ${activeCategory === category.key ? 'active' : ''}`}
-                onClick={() => setActiveCategory(category.key)}
-              >
-                {category.label}
-              </button>
-            ))}
-          </div>
-        </aside>
+        <OverflowCategoryNav
+          items={CATEGORY_LABELS}
+          activeKey={activeCategory}
+          ariaLabel="Settings categories"
+          onChange={setActiveCategory}
+        />
         <div className="settings-content">
           {activeCategory === 'appearance' ? (
             <div className="settings-card">
@@ -269,6 +287,53 @@ export function SettingsPage({
                   </p>
                 </>
               ) : null}
+              <div className="settings-card" style={{ marginTop: 12 }}>
+                <h3>Navigation</h3>
+                <div className="settings-list">
+                  {orderedNavItems.map((item, index) => (
+                    <div className="settings-list-row" key={item.path}>
+                      <span>{item.label}</span>
+                      <div className="button-row">
+                        <button
+                          className="button-secondary nav-order-button"
+                          disabled={index === 0}
+                          onClick={() =>
+                            onSetNavOrder((current) => {
+                              const next = [...current]
+                              const currentIndex = next.indexOf(item.path)
+                              if (currentIndex <= 0) return current
+                              ;[next[currentIndex - 1], next[currentIndex]] = [next[currentIndex], next[currentIndex - 1]]
+                              return next
+                            })
+                          }
+                        >
+                          ↑
+                        </button>
+                        <button
+                          className="button-secondary nav-order-button"
+                          disabled={index === orderedNavItems.length - 1}
+                          onClick={() =>
+                            onSetNavOrder((current) => {
+                              const next = [...current]
+                              const currentIndex = next.indexOf(item.path)
+                              if (currentIndex === -1 || currentIndex >= next.length - 1) return current
+                              ;[next[currentIndex], next[currentIndex + 1]] = [next[currentIndex + 1], next[currentIndex]]
+                              return next
+                            })
+                          }
+                        >
+                          ↓
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="button-row" style={{ marginTop: 12 }}>
+                  <button className="button-secondary" onClick={() => onSetNavOrder(DEFAULT_NAV_ORDER)}>
+                    Reset order
+                  </button>
+                </div>
+              </div>
               {!canCustomizeAppearance ? <p className="muted">Your role cannot change personal appearance settings.</p> : null}
             </div>
           ) : null}
@@ -326,59 +391,113 @@ export function SettingsPage({
             </div>
           ) : null}
 
-          {activeCategory === 'navigation' ? (
-            <div className="settings-card">
-              <h3>Navigation</h3>
-              <div className="settings-list">
-                {orderedNavItems.map((item, index) => (
-                  <div className="settings-list-row" key={item.path}>
-                    <span>{item.label}</span>
-                    <div className="button-row">
-                      <button
-                        className="button-secondary nav-order-button"
-                        disabled={index === 0}
-                        onClick={() =>
-                          onSetNavOrder((current) => {
-                            const next = [...current]
-                            const currentIndex = next.indexOf(item.path)
-                            if (currentIndex <= 0) return current
-                            ;[next[currentIndex - 1], next[currentIndex]] = [next[currentIndex], next[currentIndex - 1]]
-                            return next
-                          })
-                        }
-                      >
-                        ↑
-                      </button>
-                      <button
-                        className="button-secondary nav-order-button"
-                        disabled={index === orderedNavItems.length - 1}
-                        onClick={() =>
-                          onSetNavOrder((current) => {
-                            const next = [...current]
-                            const currentIndex = next.indexOf(item.path)
-                            if (currentIndex === -1 || currentIndex >= next.length - 1) return current
-                            ;[next[currentIndex], next[currentIndex + 1]] = [next[currentIndex + 1], next[currentIndex]]
-                            return next
-                          })
-                        }
-                      >
-                        ↓
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="button-row" style={{ marginTop: 12 }}>
-                <button className="button-secondary" onClick={() => onSetNavOrder(DEFAULT_NAV_ORDER)}>
-                  Reset order
-                </button>
-              </div>
-            </div>
-          ) : null}
-
           {activeCategory === 'account' ? (
             <div className="settings-card">
               <h3>Account</h3>
+              {session?.user ? (
+                <div className="account-avatar-panel">
+                  <UserAvatar user={session.user} className="user-avatar-large" />
+                  <div className="account-avatar-copy">
+                    <strong>{session.user.display_name || session.user.username}</strong>
+                    <span className="muted">@{session.user.username}</span>
+                    <span className="muted">{session.user.email}</span>
+                  </div>
+                  <div className="button-row">
+                    <button
+                      className="button-secondary"
+                      type="button"
+                      disabled={avatarUploading}
+                      onClick={() => avatarInputRef.current?.click()}
+                    >
+                      {avatarUploading ? 'Uploading…' : 'Upload icon'}
+                    </button>
+                    <input
+                      ref={avatarInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      style={{ display: 'none' }}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0]
+                        event.currentTarget.value = ''
+                        if (!file) return
+                        setAvatarError(null)
+                        setAvatarUploading(true)
+                        void onUploadAvatar(file)
+                          .catch((error) => {
+                            setAvatarError(error instanceof Error ? error.message : 'Avatar upload failed')
+                          })
+                          .finally(() => setAvatarUploading(false))
+                      }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+              {avatarError ? <div className="muted" style={{ color: '#ff8b8b', marginBottom: 12 }}>{avatarError}</div> : null}
+              <form
+                className="auth-form"
+                style={{ marginBottom: 12 }}
+                onSubmit={async (event) => {
+                  event.preventDefault()
+                  setCredentialsError(null)
+                  setCredentialsMessage(null)
+                  setCredentialsSaving(true)
+                  try {
+                    const message = await onUpdateCredentials({ username: usernameDraft, email: emailDraft })
+                    setCredentialsMessage(message ?? 'Account updated')
+                  } catch (error) {
+                    setCredentialsError(error instanceof Error ? error.message : 'Failed to update account')
+                  } finally {
+                    setCredentialsSaving(false)
+                  }
+                }}
+              >
+                <input className="input" placeholder="Username" value={usernameDraft} onChange={(event) => setUsernameDraft(event.target.value)} />
+                <input className="input" type="email" placeholder="Email" value={emailDraft} onChange={(event) => setEmailDraft(event.target.value)} />
+                <div className="button-row">
+                  <button className="button" type="submit" disabled={credentialsSaving}>
+                    {credentialsSaving ? 'Saving…' : 'Save account'}
+                  </button>
+                </div>
+                {credentialsMessage ? <div className="muted">{credentialsMessage}</div> : null}
+                {credentialsError ? <div className="muted" style={{ color: '#ff8b8b' }}>{credentialsError}</div> : null}
+              </form>
+              <form
+                className="auth-form"
+                style={{ marginBottom: 12 }}
+                onSubmit={async (event) => {
+                  event.preventDefault()
+                  setPasswordError(null)
+                  setPasswordSaving(true)
+                  try {
+                    await onChangePassword({
+                      current_password: currentPassword,
+                      new_password: newPassword,
+                      new_password_confirm: confirmPassword,
+                    })
+                    setCurrentPassword('')
+                    setNewPassword('')
+                    setConfirmPassword('')
+                  } catch (error) {
+                    setPasswordError(error instanceof Error ? error.message : 'Failed to update password')
+                  } finally {
+                    setPasswordSaving(false)
+                  }
+                }}
+              >
+                <input className="input" type="password" placeholder="Current password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+                <input className="input" type="password" placeholder="New password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+                <input className="input" type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                <div className="button-row">
+                  <button
+                    className="button"
+                    type="submit"
+                    disabled={passwordSaving || !currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()}
+                  >
+                    {passwordSaving ? 'Updating…' : 'Change password'}
+                  </button>
+                </div>
+                {passwordError ? <div className="muted" style={{ color: '#ff8b8b' }}>{passwordError}</div> : null}
+              </form>
               <div className="code-block" style={{ marginBottom: 12 }}>
                 {accountDebug}
               </div>

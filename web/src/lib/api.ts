@@ -11,6 +11,7 @@ import type {
   Room,
   RtcConfig,
   ChangePasswordRequest,
+  ChangeCurrentUserPasswordRequest,
   CreateUserRequest,
   UpdateUserAccessRequest,
   SetupAdminRequest,
@@ -19,6 +20,8 @@ import type {
   TranscriptionJob,
   VoiceMemo,
   AdminSettings,
+  UpdateAccountCredentialsRequest,
+  UserProfile,
 } from './types'
 
 function resolveRuntimeBaseUrl(configuredUrl: string | undefined, fallbackPort: number) {
@@ -167,8 +170,34 @@ export const api = {
   voiceMemoAudioUrl(id: string) {
     return `${API_BASE}/api/v1/voice-memos/${id}/audio`
   },
+  userAvatarUrl(userId: string, avatarPath?: string | null) {
+    const version = avatarPath ? `?v=${encodeURIComponent(avatarPath)}` : ''
+    return `${API_BASE}/api/v1/users/${encodeURIComponent(userId)}/avatar${version}`
+  },
+  uploadCurrentUserAvatar(file: Blob, filename: string) {
+    const body = new FormData()
+    body.set('file', file, filename)
+    return request<import('./types').UserProfile>('/api/v1/users/me/avatar', { method: 'POST', body })
+  },
+  updateCurrentUserCredentials(payload: UpdateAccountCredentialsRequest) {
+    return request<UserProfile>('/api/v1/users/me/credentials', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  },
+  changeCurrentUserPassword(payload: ChangeCurrentUserPasswordRequest) {
+    return request<SessionResponse>('/api/v1/users/me/password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  },
   retryVoiceJob(id: string) {
     return request<TranscriptionJob>(`/api/v1/voice-memos/${id}/retry`, { method: 'POST' })
+  },
+  deleteVoiceMemo(id: string) {
+    return request<void>(`/api/v1/voice-memos/${id}`, { method: 'DELETE' })
   },
   listRooms() {
     return request<Room[]>('/api/v1/rooms')
@@ -198,6 +227,11 @@ export const api = {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, participant_ids: participantIds }),
+    })
+  },
+  deleteRoom(roomId: string) {
+    return request<void>(`/api/v1/rooms/${roomId}`, {
+      method: 'DELETE',
     })
   },
   getAdminSettings() {
@@ -235,6 +269,13 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ password }),
+    })
+  },
+  resolveUserCredentialRequest(userId: string, approve: boolean) {
+    return request<AdminUserSummary>(`/api/v1/admin/users/${userId}/credential-request`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ approve }),
     })
   },
   listMessages(roomId: string) {

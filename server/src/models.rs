@@ -23,6 +23,10 @@ pub struct UserProfile {
     pub username: String,
     pub email: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar_path: Option<String>,
+    #[serde(default)]
+    pub avatar_content_type: Option<String>,
     pub role: String,
     #[serde(default)]
     pub roles: Vec<String>,
@@ -117,6 +121,10 @@ pub struct AdminUserSummary {
     pub username: String,
     pub email: String,
     pub display_name: String,
+    #[serde(default)]
+    pub avatar_path: Option<String>,
+    #[serde(default)]
+    pub avatar_content_type: Option<String>,
     pub role: String,
     pub roles: Vec<String>,
     pub must_change_password: bool,
@@ -124,6 +132,8 @@ pub struct AdminUserSummary {
     pub storage_used_bytes: u64,
     pub storage_limit_mb: u64,
     pub tool_scope: UserToolScope,
+    #[serde(default)]
+    pub pending_credential_change: Option<PendingCredentialChangeRequest>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -171,6 +181,30 @@ pub struct ChangePasswordRequest {
     pub new_password_confirm: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct UpdateAccountCredentialsRequest {
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub email: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct ChangeCurrentUserPasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+    pub new_password_confirm: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingCredentialChangeRequest {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub requested_username: String,
+    pub requested_email: String,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AdminSettings {
@@ -179,6 +213,8 @@ pub struct AdminSettings {
     pub allow_member_diagrams: bool,
     pub allow_member_voice: bool,
     pub allow_member_coms: bool,
+    pub require_account_email: bool,
+    pub allow_user_credential_changes: bool,
     pub confirm_file_delete: bool,
     pub allow_user_custom_appearance: bool,
     pub enforce_org_appearance: bool,
@@ -212,6 +248,8 @@ impl Default for AdminSettings {
             allow_member_diagrams: true,
             allow_member_voice: true,
             allow_member_coms: true,
+            require_account_email: false,
+            allow_user_credential_changes: true,
             confirm_file_delete: true,
             allow_user_custom_appearance: true,
             enforce_org_appearance: false,

@@ -44,6 +44,36 @@ export function defaultNoteTitle() {
   return `Note ${year}-${month}-${day} ${hours}:${minutes}`
 }
 
+export function defaultVoiceMemoTitle(date = new Date()) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `Memo ${year}-${month}-${day} ${hours}:${minutes}`
+}
+
+export function voiceMemoDisplayTitle(createdAt?: string | null, fallback = 'Memo') {
+  if (!createdAt) return fallback
+  const parsed = new Date(createdAt)
+  if (Number.isNaN(parsed.getTime())) return fallback
+  return defaultVoiceMemoTitle(parsed)
+}
+
+export function formatDurationSeconds(totalSeconds?: number | null) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds === null || totalSeconds === undefined || totalSeconds < 0) {
+    return '—'
+  }
+  const rounded = Math.round(totalSeconds)
+  const hours = Math.floor(rounded / 3600)
+  const minutes = Math.floor((rounded % 3600) / 60)
+  const seconds = rounded % 60
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+  }
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
 export function isEditableTarget(target: EventTarget | null) {
   const element = target as HTMLElement | null
   if (!element) return false
@@ -105,6 +135,44 @@ export function normalizeDiagramFolderPath(title: string) {
   const parts = normalizeDiagramTitlePath(title).split('/')
   if (parts.length <= 1) return 'Diagrams'
   return parts.slice(0, -1).join('/')
+}
+
+export function normalizeDiagramDirectoryPath(value: string) {
+  const normalized = value
+    .trim()
+    .replaceAll('\\', '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/')
+  return normalized || 'Diagrams'
+}
+
+export function managedPathForNoteFolder(folderPath: string) {
+  return `notes/${normalizeFolderPath(folderPath)}`
+}
+
+export function managedPathForDiagramFolder(folderPath: string) {
+  const normalized = normalizeDiagramDirectoryPath(folderPath)
+  const withoutRoot = normalized.replace(/^Diagrams(?:\/|$)/, '')
+  return withoutRoot ? `diagrams/${withoutRoot}` : 'diagrams'
+}
+
+export function normalizeVoiceDirectoryPath(value: string) {
+  const normalized = value
+    .trim()
+    .replaceAll('\\', '/')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join('/')
+  return normalized || 'voice'
+}
+
+export function managedPathForVoiceFolder(folderPath: string) {
+  const normalized = normalizeVoiceDirectoryPath(folderPath)
+  const withoutRoot = normalized.replace(/^voice(?:\/|$)/, '')
+  return withoutRoot ? `voice/${withoutRoot}` : 'voice'
 }
 
 export function diagramDisplayName(title: string) {
@@ -221,22 +289,24 @@ export function buildNoteTree(notes: Note[], customFolders: string[]): NoteFolde
   return mapNodes(folderNodes)
 }
 
-export function buildDiagramTree(diagrams: Diagram[]): DiagramFolderNode[] {
+export function buildDiagramTree(diagrams: Diagram[], customFolders: string[] = []): DiagramFolderNode[] {
   const folderNodes: DiagramFolderNode[] = []
   const byPath = new Map<string, DiagramFolderNode>()
   const folderDiagrams = new Map<string, Diagram[]>()
 
-  for (const diagram of diagrams) {
-    const normalized = normalizeDiagramTitlePath(diagram.title)
-    const parts = normalized.split('/')
-    const folderPath = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Diagrams'
-    const existing = folderDiagrams.get(folderPath) ?? []
-    existing.push(diagram)
-    folderDiagrams.set(folderPath, existing)
+  const allFolders = Array.from(
+    new Set(
+      [
+        ...customFolders,
+        ...diagrams.map((diagram) => normalizeDiagramFolderPath(diagram.title)),
+      ].map((path) => normalizeDiagramFolderPath(path)),
+    ),
+  )
 
+  for (const folderPath of allFolders) {
     let path = ''
     let parent: DiagramFolderNode | null = null
-    for (const part of parts.slice(0, -1)) {
+    for (const part of folderPath.split('/').filter(Boolean)) {
       path = path ? `${path}/${part}` : part
       let node = byPath.get(path)
       if (!node) {
@@ -247,6 +317,15 @@ export function buildDiagramTree(diagrams: Diagram[]): DiagramFolderNode[] {
       }
       parent = node
     }
+  }
+
+  for (const diagram of diagrams) {
+    const normalized = normalizeDiagramTitlePath(diagram.title)
+    const parts = normalized.split('/')
+    const folderPath = parts.length > 1 ? parts.slice(0, -1).join('/') : 'Diagrams'
+    const existing = folderDiagrams.get(folderPath) ?? []
+    existing.push(diagram)
+    folderDiagrams.set(folderPath, existing)
   }
 
   const assignDiagrams = (items: DiagramFolderNode[]) => {

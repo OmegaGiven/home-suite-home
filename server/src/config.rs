@@ -19,8 +19,10 @@ pub struct Config {
     pub turn_username: String,
     pub turn_credential: String,
     pub transcription_model: String,
+    pub transcription_model_path: Option<PathBuf>,
     pub transcription_device: String,
     pub whisper_command: Option<String>,
+    pub ffmpeg_command: Option<String>,
 }
 
 impl Config {
@@ -55,9 +57,16 @@ impl Config {
             turn_credential: env::var("TURN_CREDENTIAL").unwrap_or_else(|_| "sweetturn".into()),
             transcription_model: env::var("TRANSCRIPTION_MODEL")
                 .unwrap_or_else(|_| "tiny.en".into()),
+            transcription_model_path: env::var("TRANSCRIPTION_MODEL_PATH")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
             transcription_device: env::var("TRANSCRIPTION_DEVICE")
                 .unwrap_or_else(|_| "auto".into()),
             whisper_command: env::var("WHISPER_COMMAND")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            ffmpeg_command: env::var("FFMPEG_COMMAND")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
         }

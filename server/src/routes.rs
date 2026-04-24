@@ -19,12 +19,13 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 use crate::{
     error::{AppError, AppResult},
     models::{
-        AdminResetPasswordRequest, AdminSettings, AdminStorageOverview, ChangePasswordRequest,
-        CreateDiagramRequest, CreateFolderRequest, CreateMessageRequest, CreateNoteRequest,
-        CreateRoomRequest, CreateUserRequest, DeleteFileRequest, HealthResponse, LoginRequest,
-        MoveFileRequest, OidcConfigResponse, RealtimeEvent, RenameFileRequest, RtcConfig,
-        SetupAdminRequest, UpdateDiagramRequest, UpdateNoteRequest, UpdateResourceShareRequest,
-        UpdateUserAccessRequest,
+        AdminResetPasswordRequest, AdminSettings, AdminStorageOverview,
+        ChangeCurrentUserPasswordRequest, ChangePasswordRequest, CreateDiagramRequest,
+        CreateFolderRequest, CreateMessageRequest, CreateNoteRequest, CreateRoomRequest,
+        CreateUserRequest, DeleteFileRequest, HealthResponse, LoginRequest, MoveFileRequest,
+        OidcConfigResponse, RealtimeEvent, RenameFileRequest, RtcConfig, SetupAdminRequest,
+        UpdateAccountCredentialsRequest, UpdateDiagramRequest, UpdateNoteRequest,
+        UpdateResourceShareRequest, UpdateUserAccessRequest,
     },
     state::AppState,
     worker, ws,
@@ -38,6 +39,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/change-password", post(change_password))
         .route("/api/v1/auth/oidc/config", get(oidc_config))
         .route("/api/v1/auth/oidc/callback", get(oidc_callback))
+        .route("/api/v1/users/me/avatar", post(upload_current_user_avatar))
+        .route("/api/v1/users/me/credentials", put(update_current_user_credentials))
+        .route(
+            "/api/v1/users/me/password",
+            post(change_current_user_password),
+        )
+        .route("/api/v1/users/{id}/avatar", get(get_user_avatar))
         .route(
             "/api/v1/admin/settings",
             get(get_admin_settings).put(update_admin_settings),
@@ -48,6 +56,10 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/admin/users", get(list_users).post(create_user))
         .route("/api/v1/admin/users/{id}/access", put(update_user_access))
+        .route(
+            "/api/v1/admin/users/{id}/credential-request",
+            post(resolve_user_credential_request),
+        )
         .route(
             "/api/v1/admin/users/{id}/reset-password",
             post(reset_user_password),
@@ -65,11 +77,12 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/voice-memos",
             get(list_voice_memos).post(create_voice_memo),
         )
+        .route("/api/v1/voice-memos/{id}", axum::routing::delete(delete_voice_memo))
         .route("/api/v1/voice-memos/{id}/audio", get(get_voice_audio))
         .route("/api/v1/voice-memos/{id}/job", get(get_job))
         .route("/api/v1/voice-memos/{id}/retry", post(retry_job))
         .route("/api/v1/rooms", get(list_rooms).post(create_room))
-        .route("/api/v1/rooms/{id}", put(update_room))
+        .route("/api/v1/rooms/{id}", put(update_room).delete(delete_room))
         .route(
             "/api/v1/rooms/{id}/messages",
             get(list_messages).post(create_message),
@@ -109,6 +122,107 @@ async fn change_password(
 ) -> AppResult<Json<crate::models::SessionResponse>> {
     let user = state.change_password(payload).await?;
     let session = state.session_response(user).await?;
+    Ok(Json(session))
+}
+
+async fn upload_current_user_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> AppResult<Json<crate::models::UserProfile>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+
+    let mut filename: Option<String> = None;
+    let mut content_type: Option<String> = None;
+    let mut bytes = Vec::new();
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|err| AppError::BadRequest(err.to_string()))?
+    {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "file" {
+            filename = field.file_name().map(str::to_string);
+            content_type = field.content_type().map(str::to_string);
+            bytes = field
+                .bytes()
+                .await
+                .map_err(|err| AppError::BadRequest(err.to_string()))?
+                .to_vec();
+        }
+    }
+
+    Ok(Json(
+        state
+            .update_current_user_avatar(user.id, filename, content_type, bytes)
+            .await?,
+    ))
+}
+
+async fn get_user_avatar(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> AppResult<Response<Body>> {
+    let Some((relative_path, content_type)) = state.get_user_avatar(id).await? else {
+        return Err(AppError::NotFound);
+    };
+    let bytes = tokio::fs::read(state.storage.resolve(&relative_path))
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?;
+    let mut response = Response::new(Body::from(bytes));
+    *response.status_mut() = StatusCode::OK;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&content_type)
+            .map_err(|err| AppError::Internal(err.to_string()))?,
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    Ok(response)
+}
+
+async fn update_current_user_credentials(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateAccountCredentialsRequest>,
+) -> AppResult<Json<crate::models::UserProfile>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(
+        state
+            .update_current_user_credentials(user.id, payload)
+            .await?,
+    ))
+}
+
+async fn change_current_user_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ChangeCurrentUserPasswordRequest>,
+) -> AppResult<Json<crate::models::SessionResponse>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    let updated = state.change_current_user_password(user.id, payload).await?;
+    let session = state.session_response(updated).await?;
     Ok(Json(session))
 }
 
@@ -166,6 +280,23 @@ async fn reset_user_password(
 ) -> AppResult<Json<crate::models::AdminUserSummary>> {
     Ok(Json(
         state.admin_reset_password(id, payload.password).await?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct ResolveCredentialRequestPayload {
+    approve: bool,
+}
+
+async fn resolve_user_credential_request(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(payload): Json<ResolveCredentialRequestPayload>,
+) -> AppResult<Json<crate::models::AdminUserSummary>> {
+    Ok(Json(
+        state
+            .approve_pending_credential_change(id, payload.approve)
+            .await?,
     ))
 }
 
@@ -311,6 +442,14 @@ async fn create_voice_memo(
     Ok(Json(memo))
 }
 
+async fn delete_voice_memo(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> AppResult<StatusCode> {
+    state.delete_voice_memo(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn get_job(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
@@ -442,6 +581,23 @@ async fn update_room(
     let room = state.update_room(id, payload, &user).await?;
     let _ = state.realtime.send(RealtimeEvent::ChatRoomsUpdated);
     Ok(Json(room))
+}
+
+async fn delete_room(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<StatusCode> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    state.delete_room(id, &user).await?;
+    let _ = state.realtime.send(RealtimeEvent::ChatRoomsUpdated);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_messages(

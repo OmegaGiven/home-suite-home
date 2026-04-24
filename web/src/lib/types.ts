@@ -5,6 +5,8 @@ export interface UserProfile {
   username: string
   email: string
   display_name: string
+  avatar_path?: string | null
+  avatar_content_type?: string | null
   role: UserRole
   roles: UserRole[]
   must_change_password: boolean
@@ -52,6 +54,8 @@ export interface AdminUserSummary {
   username: string
   email: string
   display_name: string
+  avatar_path?: string | null
+  avatar_content_type?: string | null
   role: UserRole
   roles: UserRole[]
   must_change_password: boolean
@@ -59,6 +63,7 @@ export interface AdminUserSummary {
   storage_used_bytes: number
   storage_limit_mb: number
   tool_scope: UserToolScope
+  pending_credential_change?: PendingCredentialChangeRequest | null
   created_at: string
   updated_at: string
 }
@@ -80,6 +85,25 @@ export interface ChangePasswordRequest {
   new_password_confirm: string
 }
 
+export interface UpdateAccountCredentialsRequest {
+  username: string
+  email: string
+}
+
+export interface ChangeCurrentUserPasswordRequest {
+  current_password: string
+  new_password: string
+  new_password_confirm: string
+}
+
+export interface PendingCredentialChangeRequest {
+  id: string
+  user_id: string
+  requested_username: string
+  requested_email: string
+  created_at: string
+}
+
 export interface UpdateUserAccessRequest {
   role: UserRole
   roles: UserRole[]
@@ -99,6 +123,8 @@ export interface AdminSettings {
   allow_member_diagrams: boolean
   allow_member_voice: boolean
   allow_member_coms: boolean
+  require_account_email: boolean
+  allow_user_credential_changes: boolean
   confirm_file_delete: boolean
   allow_user_custom_appearance: boolean
   enforce_org_appearance: boolean

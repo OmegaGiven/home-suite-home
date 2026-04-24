@@ -30,12 +30,25 @@ impl BlobStorage {
         fs::create_dir_all(root.join("drive"))
             .await
             .map_err(|err| AppError::Internal(err.to_string()))?;
+        fs::create_dir_all(root.join("avatars"))
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
         Ok(Self { root })
     }
 
     pub async fn save_voice_blob(&self, bytes: &[u8]) -> AppResult<String> {
         let name = format!("{}.webm", Uuid::new_v4());
         let path = self.root.join("voice").join(name);
+        fs::write(&path, bytes)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        Ok(relative_display(&self.root, &path))
+    }
+
+    pub async fn save_avatar_blob(&self, bytes: &[u8], extension: &str) -> AppResult<String> {
+        let ext = extension.trim().trim_start_matches('.').to_ascii_lowercase();
+        let name = format!("{}.{}", Uuid::new_v4(), if ext.is_empty() { "png" } else { &ext });
+        let path = self.root.join("avatars").join(name);
         fs::write(&path, bytes)
             .await
             .map_err(|err| AppError::Internal(err.to_string()))?;
@@ -91,8 +104,6 @@ impl BlobStorage {
             if previous_relative != next_relative {
                 let previous_full = self.resolve(&previous_relative);
                 let _ = fs::remove_file(&previous_full).await;
-                cleanup_empty_managed_parents(&self.root.join("notes"), previous_full.parent())
-                    .await?;
             }
         }
 
@@ -122,8 +133,6 @@ impl BlobStorage {
             if previous_relative != next_relative {
                 let previous_full = self.resolve(&previous_relative);
                 let _ = fs::remove_file(&previous_full).await;
-                cleanup_empty_managed_parents(&self.root.join("diagrams"), previous_full.parent())
-                    .await?;
             }
         }
 
@@ -510,7 +519,6 @@ impl BlobStorage {
                 .await
                 .map_err(|err| AppError::Internal(err.to_string()))?;
         }
-        cleanup_empty_managed_parents(&self.root.join("notes"), full.parent()).await?;
         Ok(())
     }
 
@@ -525,7 +533,6 @@ impl BlobStorage {
                 .await
                 .map_err(|err| AppError::Internal(err.to_string()))?;
         }
-        cleanup_empty_managed_parents(&self.root.join("diagrams"), full.parent()).await?;
         Ok(())
     }
 }

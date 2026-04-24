@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use argon2::{
     Argon2,
@@ -13,11 +13,12 @@ use crate::{
     config::Config,
     error::{AppError, AppResult},
     models::{
-        AdminSettings, AdminStorageOverview, AdminUserSummary, ChangePasswordRequest,
-        CreateDiagramRequest, CreateMessageRequest, CreateNoteRequest, CreateRoomRequest,
-        CreateUserRequest, Diagram, JobStatus, Message, Note, RealtimeEvent, ResourceShare,
-        ResourceVisibility, Room, SessionResponse, SetupAdminRequest, StoredUser,
-        TranscriptSegment, TranscriptionJob, UpdateDiagramRequest, UpdateNoteRequest,
+        AdminSettings, AdminStorageOverview, AdminUserSummary, ChangeCurrentUserPasswordRequest,
+        ChangePasswordRequest, CreateDiagramRequest, CreateMessageRequest, CreateNoteRequest,
+        CreateRoomRequest, CreateUserRequest, Diagram, JobStatus, Message, Note,
+        PendingCredentialChangeRequest, RealtimeEvent, ResourceShare, ResourceVisibility, Room,
+        SessionResponse, SetupAdminRequest, StoredUser, TranscriptSegment, TranscriptionJob,
+        UpdateAccountCredentialsRequest, UpdateDiagramRequest, UpdateNoteRequest,
         UpdateResourceShareRequest, UpdateUserAccessRequest, UserProfile, VoiceMemo,
     },
     persistence::PersistenceBackend,
@@ -49,6 +50,8 @@ pub(crate) struct StateData {
     pub messages: HashMap<Uuid, Vec<Message>>,
     #[serde(default)]
     pub resource_shares: HashMap<String, ResourceShare>,
+    #[serde(default)]
+    pub pending_credential_changes: HashMap<Uuid, PendingCredentialChangeRequest>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -75,6 +78,27 @@ impl AppState {
         let mut decorated = room.clone();
         decorated.participant_labels = participant_labels;
         decorated
+    }
+
+    fn admin_user_summary(&self, state: &StateData, user: &StoredUser) -> AdminUserSummary {
+        AdminUserSummary {
+            id: user.profile.id,
+            username: user.profile.username.clone(),
+            email: user.profile.email.clone(),
+            display_name: user.profile.display_name.clone(),
+            avatar_path: user.profile.avatar_path.clone(),
+            avatar_content_type: user.profile.avatar_content_type.clone(),
+            role: user.profile.role.clone(),
+            roles: user.profile.roles.clone(),
+            must_change_password: user.profile.must_change_password,
+            linked_sso: user.linked_oidc_subject.is_some(),
+            storage_used_bytes: storage_used_bytes_for_user(state, &self.storage, user.profile.id),
+            storage_limit_mb: user.storage_limit_mb,
+            tool_scope: user.tool_scope.clone(),
+            pending_credential_change: state.pending_credential_changes.get(&user.profile.id).cloned(),
+            created_at: user.created_at,
+            updated_at: user.updated_at,
+        }
     }
 
     pub async fn new(config: Config, storage: BlobStorage) -> AppResult<Self> {
@@ -219,25 +243,7 @@ impl AppState {
         let mut users = state
             .users
             .values()
-            .map(|user| AdminUserSummary {
-                id: user.profile.id,
-                username: user.profile.username.clone(),
-                email: user.profile.email.clone(),
-                display_name: user.profile.display_name.clone(),
-                role: user.profile.role.clone(),
-                roles: user.profile.roles.clone(),
-                must_change_password: user.profile.must_change_password,
-                linked_sso: user.linked_oidc_subject.is_some(),
-                storage_used_bytes: storage_used_bytes_for_user(
-                    &state,
-                    &self.storage,
-                    user.profile.id,
-                ),
-                storage_limit_mb: user.storage_limit_mb,
-                tool_scope: user.tool_scope.clone(),
-                created_at: user.created_at,
-                updated_at: user.updated_at,
-            })
+            .map(|user| self.admin_user_summary(&state, user))
             .collect::<Vec<_>>();
         users.sort_by(|left, right| left.username.cmp(&right.username));
         users
@@ -299,6 +305,8 @@ impl AppState {
             username,
             email,
             display_name,
+            avatar_path: None,
+            avatar_content_type: None,
             role: "admin".into(),
             roles: vec!["admin".into()],
             must_change_password: false,
@@ -325,11 +333,7 @@ impl AppState {
     pub async fn create_user(&self, payload: CreateUserRequest) -> AppResult<AdminUserSummary> {
         validate_password(&payload.password)?;
         let username = payload.username.trim().to_string();
-        let email = if payload.email.trim().is_empty() {
-            format!("{}@local.sweet", username.to_lowercase())
-        } else {
-            payload.email.trim().to_lowercase()
-        };
+        let requested_email = payload.email.trim().to_lowercase();
         let display_name = if payload.display_name.trim().is_empty() {
             username.clone()
         } else {
@@ -340,6 +344,14 @@ impl AppState {
         }
 
         let mut state = self.inner.write().await;
+        if state.admin_settings.require_account_email && requested_email.is_empty() {
+            return Err(AppError::BadRequest("email is required".into()));
+        }
+        let email = if requested_email.is_empty() {
+            format!("{}@local.sweet", username.to_lowercase())
+        } else {
+            requested_email
+        };
         if state
             .users
             .values()
@@ -363,6 +375,8 @@ impl AppState {
             username,
             email,
             display_name,
+            avatar_path: None,
+            avatar_content_type: None,
             role: primary_user_role(&roles),
             roles,
             must_change_password: true,
@@ -378,23 +392,10 @@ impl AppState {
         };
         state.users.insert(profile.id, stored.clone());
         let snapshot = state.clone();
+        let summary = self.admin_user_summary(&snapshot, &stored);
         drop(state);
         self.persist_snapshot(snapshot).await?;
-        Ok(AdminUserSummary {
-            id: stored.profile.id,
-            username: stored.profile.username,
-            email: stored.profile.email,
-            display_name: stored.profile.display_name,
-            role: stored.profile.role,
-            roles: stored.profile.roles,
-            must_change_password: true,
-            linked_sso: false,
-            storage_used_bytes: 0,
-            storage_limit_mb: stored.storage_limit_mb,
-            tool_scope: stored.tool_scope,
-            created_at: stored.created_at,
-            updated_at: stored.updated_at,
-        })
+        Ok(summary)
     }
 
     pub async fn admin_reset_password(
@@ -415,21 +416,7 @@ impl AppState {
             .get(&user_id)
             .cloned()
             .ok_or(AppError::NotFound)?;
-        let summary = AdminUserSummary {
-            id: user.profile.id,
-            username: user.profile.username,
-            email: user.profile.email,
-            display_name: user.profile.display_name,
-            role: user.profile.role,
-            roles: user.profile.roles,
-            must_change_password: true,
-            linked_sso: user.linked_oidc_subject.is_some(),
-            storage_used_bytes: storage_used_bytes_for_user(&state, &self.storage, user.profile.id),
-            storage_limit_mb: user.storage_limit_mb,
-            tool_scope: user.tool_scope,
-            created_at: user.created_at,
-            updated_at: user.updated_at,
-        };
+        let summary = self.admin_user_summary(&state, &user);
         let snapshot = state.clone();
         drop(state);
         self.persist_snapshot(snapshot).await?;
@@ -455,21 +442,162 @@ impl AppState {
             .get(&user_id)
             .cloned()
             .ok_or(AppError::NotFound)?;
-        let summary = AdminUserSummary {
-            id: user.profile.id,
-            username: user.profile.username,
-            email: user.profile.email,
-            display_name: user.profile.display_name,
-            role: user.profile.role,
-            roles: user.profile.roles,
-            must_change_password: user.profile.must_change_password,
-            linked_sso: user.linked_oidc_subject.is_some(),
-            storage_used_bytes: storage_used_bytes_for_user(&state, &self.storage, user.profile.id),
-            storage_limit_mb: user.storage_limit_mb,
-            tool_scope: user.tool_scope,
-            created_at: user.created_at,
-            updated_at: user.updated_at,
+        let summary = self.admin_user_summary(&state, &user);
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(summary)
+    }
+
+    pub async fn update_current_user_credentials(
+        &self,
+        user_id: Uuid,
+        payload: UpdateAccountCredentialsRequest,
+    ) -> AppResult<UserProfile> {
+        let requested_username = payload.username.trim().to_string();
+        let requested_email = payload.email.trim().to_lowercase();
+        if requested_username.is_empty() {
+            return Err(AppError::BadRequest("username is required".into()));
+        }
+
+        let mut state = self.inner.write().await;
+        if state.admin_settings.require_account_email && requested_email.is_empty() {
+            return Err(AppError::BadRequest("email is required".into()));
+        }
+        let normalized_email = if requested_email.is_empty() {
+            format!("{}@local.sweet", requested_username.to_lowercase())
+        } else {
+            requested_email
         };
+        let current_user = state.users.get(&user_id).ok_or(AppError::Unauthorized)?;
+        if state.users.values().any(|user| {
+            user.profile.id != user_id
+                && user
+                    .profile
+                    .username
+                    .eq_ignore_ascii_case(&requested_username)
+        }) {
+            return Err(AppError::BadRequest("username already exists".into()));
+        }
+        if state.users.values().any(|user| {
+            user.profile.id != user_id && user.profile.email.eq_ignore_ascii_case(&normalized_email)
+        }) {
+            return Err(AppError::BadRequest("email already exists".into()));
+        }
+        if current_user.profile.username == requested_username
+            && current_user.profile.email.eq_ignore_ascii_case(&normalized_email)
+        {
+            return Ok(current_user.profile.clone());
+        }
+
+        if state.admin_settings.allow_user_credential_changes {
+            state.pending_credential_changes.remove(&user_id);
+            let profile = {
+                let user = state.users.get_mut(&user_id).ok_or(AppError::Unauthorized)?;
+                user.profile.username = requested_username;
+                user.profile.email = normalized_email;
+                user.updated_at = Utc::now();
+                user.profile.clone()
+            };
+            let snapshot = state.clone();
+            drop(state);
+            self.persist_snapshot(snapshot).await?;
+            return Ok(profile);
+        }
+
+        let request = PendingCredentialChangeRequest {
+            id: Uuid::new_v4(),
+            user_id,
+            requested_username,
+            requested_email: normalized_email,
+            created_at: Utc::now(),
+        };
+        state.pending_credential_changes.insert(user_id, request);
+        let profile = state
+            .users
+            .get(&user_id)
+            .map(|user| user.profile.clone())
+            .ok_or(AppError::Unauthorized)?;
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(profile)
+    }
+
+    pub async fn change_current_user_password(
+        &self,
+        user_id: Uuid,
+        payload: ChangeCurrentUserPasswordRequest,
+    ) -> AppResult<UserProfile> {
+        if payload.new_password != payload.new_password_confirm {
+            return Err(AppError::BadRequest("passwords do not match".into()));
+        }
+        validate_password(&payload.new_password)?;
+        let mut state = self.inner.write().await;
+        let current_state_user_id = state.user.id;
+        let (profile, next_password_hash) = {
+            let user = state.users.get_mut(&user_id).ok_or(AppError::Unauthorized)?;
+            let parsed_hash = PasswordHash::new(&user.password_hash)
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+            Argon2::default()
+                .verify_password(payload.current_password.as_bytes(), &parsed_hash)
+                .map_err(|_| AppError::Unauthorized)?;
+            user.password_hash = hash_password(&payload.new_password)?;
+            user.profile.must_change_password = false;
+            user.updated_at = Utc::now();
+            (user.profile.clone(), user.password_hash.clone())
+        };
+        if current_state_user_id == profile.id {
+            state.user = profile.clone();
+            state.password_hash = next_password_hash;
+        }
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(profile)
+    }
+
+    pub async fn approve_pending_credential_change(
+        &self,
+        user_id: Uuid,
+        approve: bool,
+    ) -> AppResult<AdminUserSummary> {
+        let mut state = self.inner.write().await;
+        let pending = state
+            .pending_credential_changes
+            .get(&user_id)
+            .cloned()
+            .ok_or(AppError::NotFound)?;
+        if approve {
+            if state.users.values().any(|user| {
+                user.profile.id != user_id
+                    && user
+                        .profile
+                        .username
+                        .eq_ignore_ascii_case(&pending.requested_username)
+            }) {
+                return Err(AppError::BadRequest("username already exists".into()));
+            }
+            if state.users.values().any(|user| {
+                user.profile.id != user_id
+                    && user.profile.email.eq_ignore_ascii_case(&pending.requested_email)
+            }) {
+                return Err(AppError::BadRequest("email already exists".into()));
+            }
+            let profile = {
+                let user = state.users.get_mut(&user_id).ok_or(AppError::NotFound)?;
+                user.profile.username = pending.requested_username.clone();
+                user.profile.email = pending.requested_email.clone();
+                user.updated_at = Utc::now();
+                user.profile.clone()
+            };
+            if state.user.id == profile.id {
+                state.user = profile;
+            }
+        }
+        state.pending_credential_changes.remove(&user_id);
+        let user = state.users.get(&user_id).cloned().ok_or(AppError::NotFound)?;
+        let summary = self.admin_user_summary(&state, &user);
         let snapshot = state.clone();
         drop(state);
         self.persist_snapshot(snapshot).await?;
@@ -568,6 +696,73 @@ impl AppState {
         )
         .map_err(|err| AppError::Internal(err.to_string()))?;
         Ok(SessionResponse { user, token })
+    }
+
+    pub async fn update_current_user_avatar(
+        &self,
+        user_id: Uuid,
+        filename: Option<String>,
+        content_type: Option<String>,
+        bytes: Vec<u8>,
+    ) -> AppResult<UserProfile> {
+        if bytes.is_empty() {
+            return Err(AppError::BadRequest("missing avatar image".into()));
+        }
+        if bytes.len() > 5 * 1024 * 1024 {
+            return Err(AppError::BadRequest(
+                "avatar image must be 5 MB or smaller".into(),
+            ));
+        }
+
+        let normalized_content_type = normalize_avatar_content_type(content_type.as_deref())
+            .ok_or_else(|| AppError::BadRequest("unsupported avatar image type".into()))?;
+        let extension = avatar_extension_from_content_type(normalized_content_type)
+            .map(str::to_string)
+            .or_else(|| filename.as_deref().and_then(avatar_extension_from_filename))
+            .unwrap_or_else(|| "png".to_string());
+        let avatar_path = self.storage.save_avatar_blob(&bytes, &extension).await?;
+
+        let mut state = self.inner.write().await;
+        let previous_avatar_path = {
+            let user = state.users.get_mut(&user_id).ok_or(AppError::Unauthorized)?;
+            let previous = user.profile.avatar_path.clone();
+            user.profile.avatar_path = Some(avatar_path.clone());
+            user.profile.avatar_content_type = Some(normalized_content_type.to_string());
+            user.updated_at = Utc::now();
+            previous
+        };
+        let profile = state
+            .users
+            .get(&user_id)
+            .map(|stored| stored.profile.clone())
+            .ok_or(AppError::Unauthorized)?;
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+
+        if let Some(previous_avatar_path) = previous_avatar_path {
+            if previous_avatar_path != avatar_path {
+                let _ = tokio::fs::remove_file(self.storage.resolve(&previous_avatar_path)).await;
+            }
+        }
+
+        Ok(profile)
+    }
+
+    pub async fn get_user_avatar(&self, user_id: Uuid) -> AppResult<Option<(String, String)>> {
+        let state = self.inner.read().await;
+        let Some(user) = state.users.get(&user_id) else {
+            return Ok(None);
+        };
+        let Some(path) = user.profile.avatar_path.clone() else {
+            return Ok(None);
+        };
+        let content_type = user
+            .profile
+            .avatar_content_type
+            .clone()
+            .unwrap_or_else(|| "image/png".into());
+        Ok(Some((path, content_type)))
     }
 
     pub async fn authenticated_user_from_header(
@@ -965,6 +1160,11 @@ impl AppState {
         Ok(job_snapshot)
     }
 
+    pub async fn delete_voice_memo(&self, memo_id: Uuid) -> AppResult<()> {
+        let memo = self.get_memo(memo_id).await?;
+        self.delete_voice_path(&memo.audio_path).await
+    }
+
     pub async fn mark_transcription_running(&self, memo_id: Uuid) -> AppResult<()> {
         let mut state = self.inner.write().await;
         let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
@@ -1137,6 +1337,27 @@ impl AppState {
             self.persist_snapshot(snapshot).await?;
         }
         Ok(decorated)
+    }
+
+    pub async fn delete_room(&self, room_id: Uuid, actor: &UserProfile) -> AppResult<()> {
+        let mut state = self.inner.write().await;
+        let room = state.rooms.get(&room_id).ok_or(AppError::NotFound)?.clone();
+        if room.kind == crate::models::RoomKind::Direct && !room.participant_ids.contains(&actor.id)
+        {
+            return Err(AppError::Unauthorized);
+        }
+        state.rooms.remove(&room_id);
+        state.messages.remove(&room_id);
+        let uses_postgres = self.persistence.uses_postgres();
+        if uses_postgres {
+            self.persistence.delete_room(room_id).await?;
+        }
+        let snapshot = state.clone();
+        drop(state);
+        if !uses_postgres {
+            self.persist_snapshot(snapshot).await?;
+        }
+        Ok(())
     }
 
     pub async fn list_messages(
@@ -2309,6 +2530,16 @@ fn primary_user_role(roles: &[String]) -> String {
 }
 
 fn storage_used_bytes_for_user(state: &StateData, storage: &BlobStorage, user_id: Uuid) -> u64 {
+    let avatar_bytes = state
+        .users
+        .get(&user_id)
+        .and_then(|user| user.profile.avatar_path.as_ref())
+        .map(|avatar_path| {
+            std::fs::metadata(storage.resolve(avatar_path))
+                .map(|metadata| metadata.len())
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
     let notes_bytes = state
         .notes
         .values()
@@ -2337,9 +2568,41 @@ fn storage_used_bytes_for_user(state: &StateData, storage: &BlobStorage, user_id
                 )
         })
         .sum::<u64>();
-    notes_bytes
+    avatar_bytes
+        .saturating_add(notes_bytes)
         .saturating_add(diagrams_bytes)
         .saturating_add(voice_bytes)
+}
+
+fn normalize_avatar_content_type(content_type: Option<&str>) -> Option<&'static str> {
+    match content_type?.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("image/png"),
+        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
+        "image/webp" => Some("image/webp"),
+        "image/gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+fn avatar_extension_from_content_type(content_type: &str) -> Option<&'static str> {
+    match content_type {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        "image/gif" => Some("gif"),
+        _ => None,
+    }
+}
+
+fn avatar_extension_from_filename(filename: &str) -> Option<String> {
+    let extension = Path::new(filename)
+        .extension()
+        .and_then(|value| value.to_str())?
+        .to_ascii_lowercase();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "gif" => Some(extension),
+        _ => None,
+    }
 }
 
 fn effective_storage_limit_mb(state: &StateData, user_id: Uuid) -> u64 {
@@ -2512,6 +2775,8 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         username: "admin".into(),
         email: config.bootstrap_email.clone(),
         display_name: "Homelab Admin".into(),
+        avatar_path: None,
+        avatar_content_type: None,
         role: "admin".into(),
         roles: vec!["admin".into()],
         must_change_password: false,
@@ -2579,6 +2844,7 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         rooms: HashMap::from([(general_room.id, general_room)]),
         messages: HashMap::from([(welcome_message.room_id, vec![welcome_message])]),
         resource_shares: HashMap::new(),
+        pending_credential_changes: HashMap::new(),
     })
 }
 

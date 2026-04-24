@@ -1,3 +1,4 @@
+import type { DragEvent } from 'react'
 import { FileTreeNode } from './FileTreeNode'
 import type { FileNode, Note } from '../lib/types'
 import type { NoteFolderNode } from '../lib/ui-helpers'
@@ -6,10 +7,27 @@ type Props = {
   node: NoteFolderNode
   activeFolderPath: string | null
   selectedNoteId: string | null
+  draggingPath: string | null
+  dropTargetPath: string | null
   onSelectNote: (note: Note) => void
+  onDragStart: (event: DragEvent<HTMLElement>, path: string) => void
+  onDragEnd: () => void
+  onDropTargetChange: (path: string | null) => void
+  onDrop: (event: DragEvent<HTMLElement>, destinationDir: string) => Promise<void>
 }
 
-export function NoteLibraryTreeNode({ node, activeFolderPath, selectedNoteId, onSelectNote }: Props) {
+export function NoteLibraryTreeNode({
+  node,
+  activeFolderPath,
+  selectedNoteId,
+  draggingPath,
+  dropTargetPath,
+  onSelectNote,
+  onDragStart,
+  onDragEnd,
+  onDropTargetChange,
+  onDrop,
+}: Props) {
   const fileNode: FileNode = {
     name: node.name,
     path: node.path,
@@ -38,17 +56,22 @@ export function NoteLibraryTreeNode({ node, activeFolderPath, selectedNoteId, on
       selectedPath={selectedNoteId ? `note:${selectedNoteId}` : ''}
       activePath={selectedNoteId ? `note:${selectedNoteId}` : null}
       markedPaths={[]}
-      draggingPath={null}
-      dropTargetPath={null}
+      draggingPath={draggingPath}
+      dropTargetPath={dropTargetPath}
       onSelect={(path) => {
         if (!path.startsWith('note:')) return
         const note = findNoteInFolderNode(node, path.slice('note:'.length))
         if (note) onSelectNote(note)
       }}
-      onDragStart={() => {}}
-      onDragEnd={() => {}}
-      onDropTargetChange={() => {}}
-      onDrop={async () => {}}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDropTargetChange={onDropTargetChange}
+      onDrop={onDrop}
+      canDragNode={(treeNode) =>
+        treeNode.kind === 'file'
+          ? treeNode.path.startsWith('note:')
+          : treeNode.path !== 'Inbox'
+      }
       isNodeActive={(treeNode) =>
         treeNode.kind === 'directory'
           ? activeFolderPath === treeNode.path || (activeFolderPath?.startsWith(`${treeNode.path}/`) ?? false)

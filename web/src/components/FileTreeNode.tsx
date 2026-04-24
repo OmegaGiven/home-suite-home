@@ -1,4 +1,4 @@
-import type { DragEvent } from 'react'
+import { useEffect, useState, type DragEvent } from 'react'
 import type { FileNode } from '../lib/types'
 
 type Props = {
@@ -15,6 +15,7 @@ type Props = {
   onDropTargetChange: (path: string | null) => void
   onDrop: (event: DragEvent<HTMLElement>, destinationDir: string) => Promise<void>
   isNodeActive?: (node: FileNode, selectedPath: string, activePath: string | null) => boolean
+  canDragNode?: (node: FileNode) => boolean
 }
 
 export function FileTreeNode({
@@ -31,18 +32,28 @@ export function FileTreeNode({
   onDropTargetChange,
   onDrop,
   isNodeActive,
+  canDragNode,
 }: Props) {
   const isActive = isNodeActive ? isNodeActive(node, selectedPath, activePath) : selectedPath === node.path || activePath === node.path
   const isMarked = markedPaths.includes(node.path)
   const displayName = getDisplayName(node)
+  const isDraggable = canDragNode
+    ? canDragNode(node)
+    : node.path.startsWith('drive/') || node.path.startsWith('notes/') || node.path.startsWith('diagrams/')
+  const hasChildren = node.kind === 'directory' && node.children.length > 0
+  const [collapsed, setCollapsed] = useState(false)
+
+  useEffect(() => {
+    if (isActive) {
+      setCollapsed(false)
+    }
+  }, [isActive])
 
   return (
     <div className="folder-node">
       <button
         className={`folder-row ${isActive ? 'active' : ''} ${dropTargetPath === node.path ? 'drop-target' : ''}`}
-        draggable={
-          node.path.startsWith('drive/') || node.path.startsWith('notes/') || node.path.startsWith('diagrams/')
-        }
+        draggable={isDraggable}
         onDragStart={(event) => onDragStart(event, node.path)}
         onDragEnd={onDragEnd}
         onDragOver={(event) => {
@@ -66,8 +77,20 @@ export function FileTreeNode({
         <span className={`tree-row-label ${node.kind === 'file' ? 'file-entry' : 'directory-entry'}`}>
           <span>{node.kind === 'directory' ? `/${displayName}` : displayName}</span>
         </span>
+        {hasChildren ? (
+          <span
+            className={`tree-collapse-toggle tree-collapse-toggle-end ${collapsed ? 'collapsed' : ''}`}
+            onClick={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+              setCollapsed((current) => !current)
+            }}
+          >
+            ▾
+          </span>
+        ) : null}
       </button>
-      {node.kind === 'directory' && node.children.length > 0 ? (
+      {hasChildren && !collapsed ? (
         <div className="folder-children">
           {node.children.map((child) => (
             <FileTreeNode
@@ -85,6 +108,7 @@ export function FileTreeNode({
               onDropTargetChange={onDropTargetChange}
               onDrop={onDrop}
               isNodeActive={isNodeActive}
+              canDragNode={canDragNode}
             />
           ))}
         </div>

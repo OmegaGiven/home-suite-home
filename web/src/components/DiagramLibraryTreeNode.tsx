@@ -1,3 +1,4 @@
+import type { DragEvent } from 'react'
 import { FileTreeNode } from './FileTreeNode'
 import type { FileNode } from '../lib/types'
 import type { DiagramFolderNode } from '../lib/ui-helpers'
@@ -6,10 +7,26 @@ import { diagramDisplayName } from '../lib/ui-helpers'
 type Props = {
   node: DiagramFolderNode
   selectedDiagramId: string | null
+  draggingPath: string | null
+  dropTargetPath: string | null
   onSelectDiagram: (id: string) => void
+  onDragStart: (event: DragEvent<HTMLElement>, path: string) => void
+  onDragEnd: () => void
+  onDropTargetChange: (path: string | null) => void
+  onDrop: (event: DragEvent<HTMLElement>, destinationDir: string) => Promise<void>
 }
 
-export function DiagramLibraryTreeNode({ node, selectedDiagramId, onSelectDiagram }: Props) {
+export function DiagramLibraryTreeNode({
+  node,
+  selectedDiagramId,
+  draggingPath,
+  dropTargetPath,
+  onSelectDiagram,
+  onDragStart,
+  onDragEnd,
+  onDropTargetChange,
+  onDrop,
+}: Props) {
   const fileNode = convertDiagramFolderNode(node)
 
   return (
@@ -19,16 +36,21 @@ export function DiagramLibraryTreeNode({ node, selectedDiagramId, onSelectDiagra
       selectedPath={selectedDiagramId ? `diagram:${selectedDiagramId}` : ''}
       activePath={selectedDiagramId ? `diagram:${selectedDiagramId}` : null}
       markedPaths={[]}
-      draggingPath={null}
-      dropTargetPath={null}
+      draggingPath={draggingPath}
+      dropTargetPath={dropTargetPath}
       onSelect={(path) => {
         if (!path.startsWith('diagram:')) return
         onSelectDiagram(path.slice('diagram:'.length))
       }}
-      onDragStart={() => {}}
-      onDragEnd={() => {}}
-      onDropTargetChange={() => {}}
-      onDrop={async () => {}}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
+      onDropTargetChange={onDropTargetChange}
+      onDrop={onDrop}
+      canDragNode={(treeNode) =>
+        treeNode.kind === 'file'
+          ? treeNode.path.startsWith('diagram:')
+          : treeNode.path !== 'Diagrams'
+      }
       isNodeActive={(treeNode) =>
         treeNode.kind === 'directory'
           ? directoryContainsDiagramId(node, treeNode.path, selectedDiagramId)

@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { NavItemPath, RoutePath } from '../lib/app-config'
+import type { UserProfile } from '../lib/types'
+import { UserAvatar } from './UserAvatar'
 
 type NavItem = {
   path: NavItemPath
@@ -9,6 +11,7 @@ type NavItem = {
 type Props = {
   orderedNavItems: NavItem[]
   route: RoutePath
+  currentUser: UserProfile | null
   navUnreadCounts?: Partial<Record<NavItemPath, number>>
   shortcutsHelpOpen: boolean
   onNavigate: (path: RoutePath) => void
@@ -20,6 +23,7 @@ type Props = {
 export function TopNav({
   orderedNavItems,
   route,
+  currentUser,
   navUnreadCounts,
   shortcutsHelpOpen,
   onNavigate,
@@ -165,18 +169,25 @@ export function TopNav({
         </div>
         {adminNavItem ? (
           <button
-            className={`nav-link nav-link-utility ${route === adminNavItem.path ? 'active' : ''}`}
+            className={`icon-button ${route === adminNavItem.path ? 'active' : ''}`}
             onClick={() => onNavigate(adminNavItem.path)}
+            aria-label={adminNavItem.label}
+            title={adminNavItem.label}
           >
-            {adminNavItem.label}
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+              <path d="M5 7h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+              <path d="M5 12h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+              <path d="M5 17h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+            </svg>
           </button>
         ) : null}
         <button
           className={`icon-button ${route === '/settings' ? 'active' : ''}`}
           aria-label="Open settings"
+          title="Account and settings"
           onClick={() => onNavigate('/settings')}
         >
-          ☰
+          {currentUser ? <UserAvatar user={currentUser} /> : '⚙'}
         </button>
       </div>
       <div className="nav-measure" ref={measureRef} aria-hidden="true">
