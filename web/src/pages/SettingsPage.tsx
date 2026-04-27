@@ -254,6 +254,30 @@ export function SettingsPage({
                   />
                 </div>
               </label>
+              <label className="settings-field">
+                <span>Element background color</span>
+                <div className="color-row">
+                  <input
+                    className="color-picker"
+                    type="color"
+                    disabled={!canCustomizeAppearance}
+                    value={appearance.secondaryBackground}
+                    onChange={(event) => onSetAppearance((current) => ({ ...current, secondaryBackground: event.target.value, mode: 'custom' }))}
+                  />
+                  <input
+                    className="input"
+                    disabled={!canCustomizeAppearance}
+                    value={appearance.secondaryBackground}
+                    onChange={(event) =>
+                      onSetAppearance((current) => ({
+                        ...current,
+                        secondaryBackground: event.target.value || DEFAULT_APPEARANCE.secondaryBackground,
+                        mode: 'custom',
+                      }))
+                    }
+                  />
+                </div>
+              </label>
               <label className="settings-toggle">
                 <input
                   type="checkbox"

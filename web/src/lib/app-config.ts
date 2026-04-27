@@ -29,6 +29,7 @@ export type AppearanceSettings = {
   radius: number
   surfaceOpacity: number
   accent: string
+  secondaryBackground: string
   fontFamily: string
   background: string
   backgroundImage: string
@@ -87,6 +88,7 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   radius: 20,
   surfaceOpacity: 84,
   accent: '#41b883',
+  secondaryBackground: '#16202d',
   fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
   background: '#0d1520',
   backgroundImage: '',
@@ -153,6 +155,7 @@ export function normalizeRoute(pathname: string): RoutePath {
 export function buildAppearanceStyle(appearance: AppearanceSettings): CSSProperties {
   const gradientStrength = appearance.gradientStrength / 100
   const surfaceOpacity = clamp(appearance.surfaceOpacity / 100, 0, 1)
+  const surfaceBase = appearance.secondaryBackground || DEFAULT_APPEARANCE.secondaryBackground
   const topCornerReach = 42 + gradientStrength * 58
   const bottomCornerReach = 46 + gradientStrength * 54
   const customGradientLayers = appearance.disableGradients
@@ -179,12 +182,12 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
           bg: '#eef3f8',
           text: '#14202c',
           muted: '#546679',
-          surface: `rgba(255, 255, 255, ${surfaceOpacity})`,
-          surfaceSubtle: `rgba(255, 255, 255, ${clamp(surfaceOpacity * 0.8, 0, 1)})`,
-          surfaceStrong: `rgba(255, 255, 255, ${clamp(surfaceOpacity * 1.08, 0, 1)})`,
-          panelSurface: `rgba(255, 255, 255, ${surfaceOpacity})`,
-          panelSurfaceSubtle: `rgba(255, 255, 255, ${clamp(surfaceOpacity * 0.9, 0, 1)})`,
-          panelSurfaceStrong: `rgba(255, 255, 255, ${clamp(surfaceOpacity * 1.12, 0, 1)})`,
+          surface: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.82), surfaceOpacity),
+          surfaceSubtle: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.9), clamp(surfaceOpacity * 0.8, 0, 1)),
+          surfaceStrong: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.74), clamp(surfaceOpacity * 1.08, 0, 1)),
+          panelSurface: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.78), surfaceOpacity),
+          panelSurfaceSubtle: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.84), clamp(surfaceOpacity * 0.9, 0, 1)),
+          panelSurfaceStrong: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.68), clamp(surfaceOpacity * 1.12, 0, 1)),
           border: 'rgba(20, 32, 44, 0.12)',
           navBg: `rgba(248, 251, 255, ${clamp(surfaceOpacity * 1.05, 0, 0.98)})`,
           shadow: '0 18px 42px rgba(43, 63, 89, 0.12)',
@@ -196,12 +199,12 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
             bg: appearance.background,
             text: '#edf5fb',
             muted: '#95a7bb',
-            surface: hexToRgba(mixHex(appearance.background, '#ffffff', 0.08), clamp(surfaceOpacity * 0.96, 0, 0.96)),
-            surfaceSubtle: hexToRgba(mixHex(appearance.background, '#ffffff', 0.14), clamp(surfaceOpacity * 0.56, 0, 0.56)),
-            surfaceStrong: hexToRgba(mixHex(appearance.background, '#000000', 0.16), clamp(surfaceOpacity, 0, 0.98)),
-            panelSurface: hexToRgba(mixHex(appearance.background, '#ffffff', 0.1), clamp(surfaceOpacity, 0, 0.98)),
-            panelSurfaceSubtle: hexToRgba(mixHex(appearance.background, '#ffffff', 0.12), clamp(surfaceOpacity * 0.82, 0, 0.9)),
-            panelSurfaceStrong: hexToRgba(mixHex(appearance.background, '#000000', 0.18), clamp(surfaceOpacity * 1.02, 0, 1)),
+            surface: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.08), clamp(surfaceOpacity * 0.96, 0, 0.96)),
+            surfaceSubtle: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.14), clamp(surfaceOpacity * 0.56, 0, 0.56)),
+            surfaceStrong: hexToRgba(mixHex(surfaceBase, '#000000', 0.16), clamp(surfaceOpacity, 0, 0.98)),
+            panelSurface: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.1), clamp(surfaceOpacity, 0, 0.98)),
+            panelSurfaceSubtle: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.12), clamp(surfaceOpacity * 0.82, 0, 0.9)),
+            panelSurfaceStrong: hexToRgba(mixHex(surfaceBase, '#000000', 0.18), clamp(surfaceOpacity * 1.02, 0, 1)),
             border: 'rgba(255, 255, 255, 0.1)',
             navBg: hexToRgba(mixHex(appearance.background, '#000000', 0.14), clamp(surfaceOpacity * 1.02, 0, 0.98)),
             shadow: '0 24px 60px rgba(0, 0, 0, 0.26)',
@@ -211,12 +214,12 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
             bg: '#09111b',
             text: '#edf5fb',
             muted: '#9aabbe',
-            surface: `rgba(10, 18, 29, ${clamp(surfaceOpacity * 0.94, 0, 0.96)})`,
-            surfaceSubtle: `rgba(255, 255, 255, ${clamp(surfaceOpacity * 0.18, 0, 0.22)})`,
-            surfaceStrong: `rgba(8, 13, 22, ${clamp(surfaceOpacity, 0, 0.98)})`,
-            panelSurface: `rgba(10, 18, 29, ${clamp(surfaceOpacity, 0, 0.98)})`,
-            panelSurfaceSubtle: `rgba(13, 20, 32, ${clamp(surfaceOpacity * 0.82, 0, 0.86)})`,
-            panelSurfaceStrong: `rgba(8, 13, 22, ${clamp(surfaceOpacity * 1.04, 0, 1)})`,
+            surface: hexToRgba(surfaceBase, clamp(surfaceOpacity * 0.94, 0, 0.96)),
+            surfaceSubtle: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.14), clamp(surfaceOpacity * 0.3, 0, 0.3)),
+            surfaceStrong: hexToRgba(mixHex(surfaceBase, '#000000', 0.16), clamp(surfaceOpacity, 0, 0.98)),
+            panelSurface: hexToRgba(surfaceBase, clamp(surfaceOpacity, 0, 0.98)),
+            panelSurfaceSubtle: hexToRgba(mixHex(surfaceBase, '#ffffff', 0.08), clamp(surfaceOpacity * 0.82, 0, 0.86)),
+            panelSurfaceStrong: hexToRgba(mixHex(surfaceBase, '#000000', 0.18), clamp(surfaceOpacity * 1.04, 0, 1)),
             border: 'rgba(255, 255, 255, 0.1)',
             navBg: `rgba(7, 13, 22, ${clamp(surfaceOpacity * 1.02, 0, 0.98)})`,
             shadow: '0 24px 60px rgba(0, 0, 0, 0.28)',

@@ -9,6 +9,7 @@ export type NotePresenceEntry = {
 }
 
 type PersistedNoteState = Record<string, { title: string; folder: string; markdown: string }>
+type RealtimeDraftBaseState = Record<string, string>
 
 type CreateNoteActionsContext = {
   noteEditorMode: NoteEditorMode
@@ -19,6 +20,7 @@ type CreateNoteActionsContext = {
   selectedFolderPathRef: MutableRefObject<string>
   notesRef: MutableRefObject<Note[]>
   persistedNoteStateRef: MutableRefObject<PersistedNoteState>
+  realtimeDraftBaseRef: MutableRefObject<RealtimeDraftBaseState>
   locallyDirtyNoteIdsRef: MutableRefObject<Set<string>>
   noteSavePromiseRef: MutableRefObject<Promise<boolean> | null>
   noteDraftBroadcastTimeoutRef: MutableRefObject<number | null>
@@ -90,6 +92,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
         },
       ]),
     )
+    context.realtimeDraftBaseRef.current = Object.fromEntries(nextNotes.map((note) => [note.id, note.markdown]))
   }
 
   function currentNoteIsDirty() {
@@ -291,6 +294,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
           folder: updated.folder,
           markdown: updated.markdown,
         }
+        context.realtimeDraftBaseRef.current[updated.id] = updated.markdown
         clearNoteLocallyDirty(updated.id)
         if (updated.id === context.selectedNoteIdRef.current) {
           context.setNoteDraft(updated.markdown)
@@ -340,6 +344,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
               folder: rebased.folder,
               markdown: rebased.markdown,
             }
+            context.realtimeDraftBaseRef.current[rebased.id] = rebased.markdown
             clearNoteLocallyDirty(rebased.id)
             if (rebased.id === context.selectedNoteIdRef.current) {
               context.setNoteDraft(rebased.markdown)

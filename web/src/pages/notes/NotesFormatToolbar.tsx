@@ -23,7 +23,23 @@ const BUTTONS: ToolbarButton[] = [
   { key: 'code-block', label: 'Code', title: 'Code block', content: '[ ]' },
   { key: 'table', label: 'Table', title: 'Table', content: '⊞' },
   { key: 'quote', label: 'Quote', title: 'Quote', content: '❞' },
-  { key: 'link', label: 'Link', title: 'Insert link', content: '🔗' },
+  {
+    key: 'link',
+    label: 'Link',
+    title: 'Insert link',
+    content: (
+      <svg viewBox="0 0 24 24" className="notes-format-toolbar-icon" aria-hidden="true">
+        <path
+          d="M10.6 13.4a3 3 0 0 0 4.24 0l3.18-3.18a3 3 0 0 0-4.24-4.24l-1.77 1.77M13.4 10.6a3 3 0 0 0-4.24 0l-3.18 3.18a3 3 0 0 0 4.24 4.24l1.77-1.77"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.9"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    ),
+  },
 ]
 
 export function NotesFormatToolbar({ onRunAction }: Props) {

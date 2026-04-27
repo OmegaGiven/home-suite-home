@@ -89,10 +89,22 @@ function formatFullDayLabel(date: Date) {
   return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(date)
 }
 
+function formatWeekHourLabel(hour: number) {
+  return new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).format(new Date(2026, 0, 1, hour, 0, 0, 0))
+}
+
+function minutesIntoDay(timestamp: string) {
+  const date = new Date(timestamp)
+  return date.getHours() * 60 + date.getMinutes()
+}
+
 const MONTH_OPTIONS = Array.from({ length: 12 }, (_, monthIndex) => ({
   value: monthIndex,
   label: new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, monthIndex, 1)),
 }))
+
+const WEEK_HOURS = Array.from({ length: 24 }, (_, hour) => hour)
+const WEEK_HOUR_HEIGHT = 56
 
 function toDatetimeLocalValue(value?: string | null) {
   if (!value) return ''
@@ -225,6 +237,32 @@ export function CalendarPage({
     }
     return `${formatMonthDayLabel(first)} - ${formatMonthDayLabel(last)}`
   }, [visibleWeekDays])
+  const visibleWeekEvents = useMemo(
+    () =>
+      visibleWeekDays.map((day) => {
+        const key = day.toISOString().slice(0, 10)
+        const dayEvents = [...(eventsByDay.get(key) ?? [])].sort(
+          (left, right) => new Date(left.start_at).getTime() - new Date(right.start_at).getTime(),
+        )
+        return {
+          day,
+          key,
+          allDayEvents: dayEvents.filter((event) => event.all_day),
+          timedEvents: dayEvents
+            .filter((event) => !event.all_day)
+            .map((event) => {
+              const startMinutes = Math.max(0, Math.min(24 * 60, minutesIntoDay(event.start_at)))
+              const endMinutes = Math.max(startMinutes + 30, Math.min(24 * 60, minutesIntoDay(event.end_at)))
+              return {
+                event,
+                startMinutes,
+                endMinutes,
+              }
+            }),
+        }
+      }),
+    [eventsByDay, visibleWeekDays],
+  )
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear()
     return Array.from({ length: 21 }, (_, index) => currentYear - 10 + index)
@@ -297,11 +335,11 @@ export function CalendarPage({
     <>
       {feedModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setFeedModalOpen(false)}>
-          <div className="modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
+          <div className="modal-card calendar-modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="calendar-modal-header">
               <h3>Add Apple/iCloud Calendar</h3>
             </div>
-            <div className="modal-body">
+            <div className="calendar-modal-body">
               <label className="settings-field">
                 <span>Title</span>
                 <input className="input" value={feedTitle} onChange={(event) => setFeedTitle(event.target.value)} placeholder="Team calendar" />
@@ -311,7 +349,7 @@ export function CalendarPage({
                 <input className="input" value={feedUrl} onChange={(event) => setFeedUrl(event.target.value)} placeholder="webcal://..." />
               </label>
             </div>
-            <div className="modal-actions">
+            <div className="calendar-modal-actions">
               <button className="button-secondary" type="button" onClick={() => setFeedModalOpen(false)}>
                 Cancel
               </button>
@@ -334,17 +372,17 @@ export function CalendarPage({
       ) : null}
       {localModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setLocalModalOpen(false)}>
-          <div className="modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
+          <div className="modal-card calendar-modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="calendar-modal-header">
               <h3>New calendar</h3>
             </div>
-            <div className="modal-body">
+            <div className="calendar-modal-body">
               <label className="settings-field">
                 <span>Title</span>
                 <input className="input" value={localTitle} onChange={(event) => setLocalTitle(event.target.value)} placeholder="Operations" />
               </label>
             </div>
-            <div className="modal-actions">
+            <div className="calendar-modal-actions">
               <button className="button-secondary" type="button" onClick={() => setLocalModalOpen(false)}>
                 Cancel
               </button>
@@ -476,78 +514,80 @@ export function CalendarPage({
           <div className="calendar-content">
             <div className="calendar-pane">
               <div className="calendar-pane-header">
-                <div className="calendar-pane-title">
-                  {renamingConnection && singleSelectedConnection ? (
-                    <input
-                      className="input"
-                      value={renameDraft}
-                      onChange={(event) => setRenameDraft(event.target.value)}
-                      onBlur={() => {
-                        void onRenameConnection(singleSelectedConnection.id, renameDraft)
-                        setRenamingConnection(false)
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+                <div className="calendar-pane-header-primary">
+                  <div className="calendar-pane-title">
+                    {renamingConnection && singleSelectedConnection ? (
+                      <input
+                        className="input"
+                        value={renameDraft}
+                        onChange={(event) => setRenameDraft(event.target.value)}
+                        onBlur={() => {
                           void onRenameConnection(singleSelectedConnection.id, renameDraft)
                           setRenamingConnection(false)
-                        } else if (event.key === 'Escape') {
-                          setRenameDraft(singleSelectedConnection.title)
-                          setRenamingConnection(false)
-                        }
-                      }}
-                      autoFocus
-                    />
-                  ) : null}
-                </div>
-                <div className="calendar-month-header calendar-month-header-inline">
-                  <button
-                    className="calendar-month-arrow"
-                    type="button"
-                    aria-label="Previous month"
-                    onClick={() => shiftVisibleRange(-1)}
-                  >
-                    ←
-                  </button>
-                  <div className="calendar-month-controls">
-                    <label className="calendar-month-picker">
-                      <select
-                        className="input calendar-month-select"
-                        value={displayedMonth.getMonth()}
-                        aria-label="Month"
-                        onChange={(event) => setVisibleMonthParts(Number(event.target.value), displayedMonth.getFullYear())}
-                      >
-                        {MONTH_OPTIONS.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="calendar-year-picker">
-                      <select
-                        className="input calendar-year-select"
-                        value={displayedMonth.getFullYear()}
-                        aria-label="Year"
-                        onChange={(event) => setVisibleMonthParts(displayedMonth.getMonth(), Number(event.target.value))}
-                      >
-                        {yearOptions.map((year) => (
-                          <option key={year} value={year}>
-                            {year}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            void onRenameConnection(singleSelectedConnection.id, renameDraft)
+                            setRenamingConnection(false)
+                          } else if (event.key === 'Escape') {
+                            setRenameDraft(singleSelectedConnection.title)
+                            setRenamingConnection(false)
+                          }
+                        }}
+                        autoFocus
+                      />
+                    ) : null}
                   </div>
-                  <button
-                    className="calendar-month-arrow"
-                    type="button"
-                    aria-label="Next month"
-                    onClick={() => shiftVisibleRange(1)}
-                  >
-                    →
-                  </button>
+                  <div className="calendar-month-header calendar-month-header-inline">
+                    <button
+                      className="calendar-month-arrow"
+                      type="button"
+                      aria-label="Previous month"
+                      onClick={() => shiftVisibleRange(-1)}
+                    >
+                      ←
+                    </button>
+                    <div className="calendar-month-controls">
+                      <label className="calendar-month-picker">
+                        <select
+                          className="input calendar-month-select"
+                          value={displayedMonth.getMonth()}
+                          aria-label="Month"
+                          onChange={(event) => setVisibleMonthParts(Number(event.target.value), displayedMonth.getFullYear())}
+                        >
+                          {MONTH_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="calendar-year-picker">
+                        <select
+                          className="input calendar-year-select"
+                          value={displayedMonth.getFullYear()}
+                          aria-label="Year"
+                          onChange={(event) => setVisibleMonthParts(displayedMonth.getMonth(), Number(event.target.value))}
+                        >
+                          {yearOptions.map((year) => (
+                            <option key={year} value={year}>
+                              {year}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <button
+                      className="calendar-month-arrow"
+                      type="button"
+                      aria-label="Next month"
+                      onClick={() => shiftVisibleRange(1)}
+                    >
+                      →
+                    </button>
+                  </div>
                 </div>
-                <div className="button-row">
+                <div className="button-row calendar-pane-header-actions">
                   <div className="calendar-view-toggle" role="tablist" aria-label="Calendar view">
                     {(['month', 'week', 'day'] as const).map((mode) => (
                       <button
@@ -707,46 +747,81 @@ export function CalendarPage({
                       ) : null}
                     </div>
                     <div className="calendar-week-grid">
-                      {visibleWeekDays.map((day) => {
-                        const key = day.toISOString().slice(0, 10)
-                        const dayEvents = eventsByDay.get(key) ?? []
-                        return (
-                          <section
-                            key={key}
-                            className={`calendar-week-column ${sameDay(day, selectedDay) ? 'is-selected' : ''}`}
-                          >
-                            <button type="button" className="calendar-week-heading" onClick={() => setSelectedDay(day)}>
-                              <strong>{formatWeekdayLabel(day)}</strong>
-                              <span>{formatMonthDayLabel(day)}</span>
-                            </button>
-                            {dayEvents.length === 0 ? (
-                              <div className="empty-state">No events</div>
-                            ) : (
-                              <div className="calendar-event-list">
-                                {dayEvents.map((event) => (
-                                  <article
-                                    key={event.id}
-                                    className={`calendar-event-card ${canEditEvent(event) ? 'is-editable' : ''}`}
-                                    onClick={() => {
-                                      setSelectedDay(day)
-                                      if (canEditEvent(event)) {
-                                        openEditEventModal(event)
-                                      }
-                                    }}
-                                  >
-                                    <div className="calendar-event-time">{formatEventTimeRange(event)}</div>
-                                    <div className="calendar-event-main">
-                                      <strong>{event.title}</strong>
-                                      {event.location ? <span className="muted">{event.location}</span> : null}
-                                      {event.description ? <span className="muted">{event.description}</span> : null}
-                                    </div>
-                                  </article>
+                      <div className="calendar-week-grid-frame">
+                        <div className="calendar-week-grid-header">
+                          <div className="calendar-week-time-spacer" aria-hidden="true" />
+                          {visibleWeekEvents.map(({ day, key, allDayEvents }) => (
+                            <div
+                              key={key}
+                              className={`calendar-week-header-cell ${sameDay(day, selectedDay) ? 'is-selected' : ''}`}
+                            >
+                              <button type="button" className="calendar-week-heading" onClick={() => setSelectedDay(day)}>
+                                <strong>{formatWeekdayLabel(day)}</strong>
+                                <span>{formatMonthDayLabel(day)}</span>
+                              </button>
+                              {allDayEvents.length > 0 ? (
+                                <div className="calendar-week-all-day-list">
+                                  {allDayEvents.map(({ id, title }) => (
+                                    <article
+                                      key={id}
+                                      className="calendar-week-all-day-chip"
+                                      title={title}
+                                    >
+                                      {title}
+                                    </article>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="calendar-week-all-day-empty">All day</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        <div className="calendar-week-grid-body">
+                          <div className="calendar-week-time-axis" aria-hidden="true">
+                            {WEEK_HOURS.map((hour) => (
+                              <div key={hour} className="calendar-week-time-slot">
+                                <span>{formatWeekHourLabel(hour)}</span>
+                              </div>
+                            ))}
+                          </div>
+                          {visibleWeekEvents.map(({ day, key, timedEvents }) => (
+                            <div
+                              key={key}
+                              className={`calendar-week-day-column ${sameDay(day, selectedDay) ? 'is-selected' : ''}`}
+                            >
+                              <div className="calendar-week-hour-grid" aria-hidden="true">
+                                {WEEK_HOURS.map((hour) => (
+                                  <div key={hour} className="calendar-week-hour-line" />
                                 ))}
                               </div>
-                            )}
-                          </section>
-                        )
-                      })}
+                              <div className="calendar-week-events-layer">
+                                {timedEvents.map(({ event, startMinutes, endMinutes }) => {
+                                  const top = (startMinutes / 60) * WEEK_HOUR_HEIGHT
+                                  const height = Math.max(28, ((endMinutes - startMinutes) / 60) * WEEK_HOUR_HEIGHT)
+                                  return (
+                                    <article
+                                      key={event.id}
+                                      className={`calendar-week-event-block ${canEditEvent(event) ? 'is-editable' : ''}`}
+                                      style={{ top: `${top}px`, height: `${height}px` }}
+                                      onClick={() => {
+                                        setSelectedDay(day)
+                                        if (canEditEvent(event)) {
+                                          openEditEventModal(event)
+                                        }
+                                      }}
+                                    >
+                                      <strong>{event.title}</strong>
+                                      <span>{formatEventTimeRange(event)}</span>
+                                      {event.location ? <span>{event.location}</span> : null}
+                                    </article>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   </section>
                 </div>

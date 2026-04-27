@@ -386,6 +386,7 @@ function App() {
   const memosRef = useRef<VoiceMemo[]>([])
   const syncNoticeTimeoutRef = useRef<number | null>(null)
   const persistedNoteStateRef = useRef<Record<string, { title: string; folder: string; markdown: string }>>({})
+  const realtimeDraftBaseRef = useRef<Record<string, string>>({})
   const locallyDirtyNoteIdsRef = useRef<Set<string>>(new Set())
   const pendingLocalDraftRestoreRef = useRef<{ noteId: string; markdown: string } | null>(null)
   const noteSavePromiseRef = useRef<Promise<boolean> | null>(null)
@@ -514,6 +515,7 @@ function App() {
     selectedFolderPathRef,
     notesRef,
     persistedNoteStateRef,
+    realtimeDraftBaseRef,
     locallyDirtyNoteIdsRef,
     noteSavePromiseRef,
     noteDraftBroadcastTimeoutRef,
@@ -2372,6 +2374,8 @@ function App() {
         surfaceOpacity:
           typeof parsed.surfaceOpacity === 'number' ? parsed.surfaceOpacity : DEFAULT_APPEARANCE.surfaceOpacity,
         accent: typeof parsed.accent === 'string' ? parsed.accent : DEFAULT_APPEARANCE.accent,
+        secondaryBackground:
+          typeof parsed.secondaryBackground === 'string' ? parsed.secondaryBackground : DEFAULT_APPEARANCE.secondaryBackground,
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily : DEFAULT_APPEARANCE.fontFamily,
         background: typeof parsed.background === 'string' ? parsed.background : DEFAULT_APPEARANCE.background,
         backgroundImage:
@@ -2848,13 +2852,17 @@ function App() {
           currentSelected?.id === payload.note_id &&
           currentNoteIsDirty() &&
           editorHasLocalFocus
-        const persistedBeforeUpdate = persistedNoteStateRef.current[payload.note_id]
+        const realtimeBaseBeforeUpdate =
+          realtimeDraftBaseRef.current[payload.note_id] ??
+          persistedNoteStateRef.current[payload.note_id]?.markdown ??
+          currentSelected?.markdown ??
+          ''
         const localSelectedMarkdown =
           selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
         const mergedSelectedPatch =
           selectedDirty && localSelectedMarkdown !== null
             ? mergeConcurrentMarkdown(
-                persistedBeforeUpdate?.markdown ?? currentSelected?.markdown ?? '',
+                realtimeBaseBeforeUpdate,
                 localSelectedMarkdown,
                 payload.markdown,
               )
@@ -2866,6 +2874,7 @@ function App() {
             folder: payload.folder,
             markdown: payload.markdown,
           }
+          realtimeDraftBaseRef.current[payload.note_id] = payload.markdown
           if (!locallyDirtyNoteIdsRef.current.has(payload.note_id)) {
             clearNoteLocallyDirty(payload.note_id)
           }
@@ -2914,19 +2923,24 @@ function App() {
             document.activeElement.classList.contains('note-raw-editor'))
         const selectedDirty = isSelectedNote && currentNoteIsDirty()
         const currentSelected = selectedNoteRef.current
-        const persistedBeforeUpdate = persistedNoteStateRef.current[payload.note_id]
+        const realtimeBaseBeforeUpdate =
+          realtimeDraftBaseRef.current[payload.note_id] ??
+          persistedNoteStateRef.current[payload.note_id]?.markdown ??
+          currentSelected?.markdown ??
+          ''
         const localSelectedMarkdown =
           isSelectedNote && selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
         const mergedSelectedDraft =
           isSelectedNote && selectedDirty && localSelectedMarkdown !== null
             ? mergeConcurrentMarkdown(
-                persistedBeforeUpdate?.markdown ?? currentSelected?.markdown ?? '',
+                realtimeBaseBeforeUpdate,
                 localSelectedMarkdown,
                 payload.markdown,
               )
             : null
 
         startTransition(() => {
+          realtimeDraftBaseRef.current[payload.note_id] = payload.markdown
           setNotes((current) =>
             current.map((note) =>
               note.id === payload.note_id
