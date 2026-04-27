@@ -6,6 +6,11 @@ import { UploadIcon } from '../components/LibraryActionIcons'
 import type { SessionResponse } from '../lib/types'
 import { normalizeShortcutBinding } from '../lib/shortcuts'
 
+function isGeneratedLocalEmail(email: string | null | undefined) {
+  if (!email) return false
+  return email.endsWith('@local.sweet') || email.endsWith('@local.home-suite-home')
+}
+
 type NavItem = {
   path: NavItemPath
   label: string
@@ -73,7 +78,7 @@ export function SettingsPage({
 
   useEffect(() => {
     setUsernameDraft(session?.user.username ?? '')
-    setEmailDraft(session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? '')
+    setEmailDraft(isGeneratedLocalEmail(session?.user.email) ? '' : session?.user.email ?? '')
   }, [session?.user.email, session?.user.username])
 
   async function readFileAsDataUrl(file: File) {
@@ -138,6 +143,23 @@ export function SettingsPage({
                     onSetAppearance((current) => ({
                       ...current,
                       radius: Number(event.target.value),
+                      mode: current.mode === 'dark' || current.mode === 'light' ? current.mode : 'custom',
+                    }))
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Panel opacity: {appearance.surfaceOpacity}%</span>
+                <input
+                  type="range"
+                  min="55"
+                  max="100"
+                  disabled={!canCustomizeAppearance}
+                  value={appearance.surfaceOpacity}
+                  onChange={(event) =>
+                    onSetAppearance((current) => ({
+                      ...current,
+                      surfaceOpacity: Number(event.target.value),
                       mode: current.mode === 'dark' || current.mode === 'light' ? current.mode : 'custom',
                     }))
                   }
@@ -609,7 +631,7 @@ export function SettingsPage({
                     className="button-secondary"
                     type="button"
                     onClick={() => {
-                      setEmailDraft(session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? '')
+                      setEmailDraft(isGeneratedLocalEmail(session?.user.email) ? '' : session?.user.email ?? '')
                       setEmailError(null)
                       setEmailModalOpen(true)
                     }}
@@ -649,7 +671,7 @@ export function SettingsPage({
                       setCredentialsMessage(null)
                       setUsernameSaving(true)
                       try {
-                        const currentVisibleEmail = session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? ''
+                        const currentVisibleEmail = isGeneratedLocalEmail(session?.user.email) ? '' : session?.user.email ?? ''
                         const message = await onUpdateCredentials({
                           username: usernameDraft,
                           email: currentVisibleEmail,
@@ -788,7 +810,7 @@ export function SettingsPage({
                         onClick={() => {
                           setEmailModalOpen(false)
                           setEmailError(null)
-                          setEmailDraft(session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? '')
+                          setEmailDraft(isGeneratedLocalEmail(session?.user.email) ? '' : session?.user.email ?? '')
                         }}
                       >
                         Cancel

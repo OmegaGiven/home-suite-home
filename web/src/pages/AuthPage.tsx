@@ -1,16 +1,20 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ChangePasswordRequest, SetupAdminRequest } from '../lib/types'
 
 type Props = {
-  mode: 'setup' | 'login' | 'change-password'
+  mode: 'connect' | 'setup' | 'login' | 'change-password'
   status: string
   ssoConfigured: boolean
+  serverUrl: string
+  onSaveServerUrl: (url: string) => Promise<void>
+  onEditServerUrl?: () => void
   onLogin: (identifier: string, password: string) => Promise<void>
   onSetupAdmin: (payload: SetupAdminRequest) => Promise<void>
   onChangePassword: (payload: ChangePasswordRequest) => Promise<void>
 }
 
-export function AuthPage({ mode, status, ssoConfigured, onLogin, onSetupAdmin, onChangePassword }: Props) {
+export function AuthPage({ mode, status, ssoConfigured, serverUrl, onSaveServerUrl, onEditServerUrl, onLogin, onSetupAdmin, onChangePassword }: Props) {
+  const [serverDraft, setServerDraft] = useState(serverUrl)
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [changePassword, setChangePassword] = useState<ChangePasswordRequest>({
@@ -27,18 +31,42 @@ export function AuthPage({ mode, status, ssoConfigured, onLogin, onSetupAdmin, o
     password_confirm: '',
   })
 
+  useEffect(() => {
+    setServerDraft(serverUrl)
+  }, [serverUrl])
+
   return (
     <section className="auth-shell">
       <div className="auth-card">
-        <h1>{mode === 'setup' ? 'Create Admin Account' : 'Sign In'}</h1>
+        <h1>{mode === 'connect' ? 'Connect to Server' : mode === 'setup' ? 'Create Admin Account' : 'Sign In'}</h1>
         <p className="muted">
-          {mode === 'setup'
+          {mode === 'connect'
+            ? 'Enter the Home Suite Home server URL you want this app to use.'
+            : mode === 'setup'
             ? 'This instance has not been initialized yet. Create the first admin account to finish setup.'
             : mode === 'change-password'
               ? 'Change your password before continuing.'
               : 'Sign in with your username or email.'}
         </p>
-        {mode === 'setup' ? (
+        {mode === 'connect' ? (
+          <form
+            className="auth-form"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void onSaveServerUrl(serverDraft)
+            }}
+          >
+            <input
+              className="input"
+              placeholder="https://your-server.example.com"
+              value={serverDraft}
+              onChange={(event) => setServerDraft(event.target.value)}
+            />
+            <button className="button" type="submit" disabled={!serverDraft.trim()}>
+              Connect
+            </button>
+          </form>
+        ) : mode === 'setup' ? (
           <form
             className="auth-form"
             onSubmit={(event) => {
@@ -80,6 +108,11 @@ export function AuthPage({ mode, status, ssoConfigured, onLogin, onSetupAdmin, o
             <button className="button" type="submit">Sign in</button>
           </form>
         )}
+        {mode !== 'connect' && onEditServerUrl ? (
+          <button className="button-secondary" type="button" onClick={onEditServerUrl}>
+            Change Server
+          </button>
+        ) : null}
         <div className="muted">{status}</div>
         {ssoConfigured ? <div className="muted">SSO is configured and can be linked to accounts in a later pass.</div> : null}
       </div>

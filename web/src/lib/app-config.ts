@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 
-export const demoMarkdown = `# Sweet Notes\n\n- Collaborative markdown editing\n- Live preview\n- Websocket note sync`
+export const demoMarkdown = `# Home Suite Home Notes\n\n- Collaborative markdown editing\n- Live preview\n- Websocket note sync`
 
 export const NAV_ITEMS = [
   { path: '/files', label: 'Files' },
@@ -27,6 +27,7 @@ export type AppearanceSettings = {
   mode: AppearanceMode
   pageGutter: number
   radius: number
+  surfaceOpacity: number
   accent: string
   fontFamily: string
   background: string
@@ -84,6 +85,7 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   mode: 'dark',
   pageGutter: 16,
   radius: 20,
+  surfaceOpacity: 84,
   accent: '#41b883',
   fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
   background: '#0d1520',
@@ -150,6 +152,7 @@ export function normalizeRoute(pathname: string): RoutePath {
 
 export function buildAppearanceStyle(appearance: AppearanceSettings): CSSProperties {
   const gradientStrength = appearance.gradientStrength / 100
+  const surfaceOpacity = clamp(appearance.surfaceOpacity / 100, 0.35, 1)
   const topCornerReach = 42 + gradientStrength * 58
   const bottomCornerReach = 46 + gradientStrength * 54
   const customGradientLayers = appearance.disableGradients
@@ -176,11 +179,11 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
           bg: '#eef3f8',
           text: '#14202c',
           muted: '#546679',
-          surface: 'rgba(255, 255, 255, 0.88)',
-          surfaceSubtle: 'rgba(255, 255, 255, 0.7)',
-          surfaceStrong: '#ffffff',
+          surface: `rgba(255, 255, 255, ${clamp(surfaceOpacity, 0.5, 1)})`,
+          surfaceSubtle: `rgba(255, 255, 255, ${clamp(surfaceOpacity - 0.18, 0.24, 0.88)})`,
+          surfaceStrong: `rgba(255, 255, 255, ${clamp(surfaceOpacity + 0.08, 0.72, 1)})`,
           border: 'rgba(20, 32, 44, 0.12)',
-          navBg: 'rgba(248, 251, 255, 0.96)',
+          navBg: `rgba(248, 251, 255, ${clamp(surfaceOpacity + 0.08, 0.76, 0.98)})`,
           shadow: '0 18px 42px rgba(43, 63, 89, 0.12)',
           bgGradient:
             'radial-gradient(circle at top left, rgba(160, 191, 224, 0.42), transparent 44%), radial-gradient(circle at top right, rgba(188, 225, 213, 0.38), transparent 40%)',
@@ -190,11 +193,11 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
             bg: appearance.background,
             text: '#edf5fb',
             muted: '#95a7bb',
-            surface: hexToRgba(mixHex(appearance.background, '#ffffff', 0.08), 0.86),
-            surfaceSubtle: hexToRgba(mixHex(appearance.background, '#ffffff', 0.14), 0.38),
-            surfaceStrong: hexToRgba(mixHex(appearance.background, '#000000', 0.16), 0.92),
+            surface: hexToRgba(mixHex(appearance.background, '#ffffff', 0.08), clamp(0.16 + surfaceOpacity * 0.8, 0.24, 0.96)),
+            surfaceSubtle: hexToRgba(mixHex(appearance.background, '#ffffff', 0.14), clamp(0.04 + surfaceOpacity * 0.34, 0.08, 0.52)),
+            surfaceStrong: hexToRgba(mixHex(appearance.background, '#000000', 0.16), clamp(0.22 + surfaceOpacity * 0.76, 0.3, 0.98)),
             border: 'rgba(255, 255, 255, 0.1)',
-            navBg: hexToRgba(mixHex(appearance.background, '#000000', 0.14), 0.95),
+            navBg: hexToRgba(mixHex(appearance.background, '#000000', 0.14), clamp(0.28 + surfaceOpacity * 0.7, 0.42, 0.98)),
             shadow: '0 24px 60px rgba(0, 0, 0, 0.26)',
             bgGradient: customGradient,
           }
@@ -202,11 +205,11 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
             bg: '#09111b',
             text: '#edf5fb',
             muted: '#9aabbe',
-            surface: 'rgba(10, 18, 29, 0.78)',
-            surfaceSubtle: 'rgba(255, 255, 255, 0.04)',
-            surfaceStrong: 'rgba(8, 13, 22, 0.86)',
+            surface: `rgba(10, 18, 29, ${clamp(0.16 + surfaceOpacity * 0.78, 0.24, 0.96)})`,
+            surfaceSubtle: `rgba(255, 255, 255, ${clamp(0.01 + surfaceOpacity * 0.14, 0.03, 0.22)})`,
+            surfaceStrong: `rgba(8, 13, 22, ${clamp(0.22 + surfaceOpacity * 0.78, 0.3, 0.98)})`,
             border: 'rgba(255, 255, 255, 0.1)',
-            navBg: 'rgba(7, 13, 22, 0.94)',
+            navBg: `rgba(7, 13, 22, ${clamp(0.28 + surfaceOpacity * 0.72, 0.42, 0.98)})`,
             shadow: '0 24px 60px rgba(0, 0, 0, 0.28)',
             bgGradient:
               'radial-gradient(circle at top left, rgba(24, 45, 73, 0.28), transparent 42%), radial-gradient(circle at top right, rgba(10, 75, 56, 0.22), transparent 38%)',
@@ -239,6 +242,10 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
     ['--nav-bg' as string]: palette.navBg,
     ['--shadow' as string]: palette.shadow,
   } as CSSProperties
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }
 
 function hexToRgba(hex: string, alpha: number) {
