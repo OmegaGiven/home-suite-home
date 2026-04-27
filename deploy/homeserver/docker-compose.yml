@@ -3,9 +3,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-sweet}
-      POSTGRES_USER: ${POSTGRES_USER:-sweet}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sweet}
+      POSTGRES_DB: ${POSTGRES_DB:-home_suite_home}
+      POSTGRES_USER: ${POSTGRES_USER:-hsh}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hsh}
     volumes:
       - postgres-data:/var/lib/postgresql/data
 
@@ -17,9 +17,9 @@ services:
       - --log-file=stdout
       - --min-port=49160
       - --max-port=49200
-      - --realm=${TURN_REALM:-sweet.local}
+      - --realm=${TURN_REALM:-home-suite-home.local}
       - --use-auth-secret
-      - --static-auth-secret=${TURN_STATIC_AUTH_SECRET:-sweetturn}
+      - --static-auth-secret=${TURN_STATIC_AUTH_SECRET:-hshturn}
       - --listening-port=3478
     ports:
       - "3478:3478"
@@ -29,9 +29,11 @@ services:
   drawio:
     image: jgraph/drawio:latest
     restart: unless-stopped
+    ports:
+      - "${HSH_DRAWIO_HOST_PORT:-18083}:8080"
 
   server:
-    image: ${SWEET_SERVER_IMAGE:-ghcr.io/example/sweet-server:latest}
+    image: ${HSH_SERVER_IMAGE:-ghcr.io/example/home-suite-home-server:latest}
     restart: unless-stopped
     env_file:
       - .env
@@ -40,14 +42,14 @@ services:
       APP_PORT: 8080
       APP_BASE_URL: ${APP_BASE_URL}
       WEB_BASE_URL: ${WEB_BASE_URL}
-      APP_VERSION: ${SWEET_RELEASE_LABEL:-latest}
+      APP_VERSION: ${HSH_RELEASE_LABEL:-latest}
       APP_UPDATE_TARGET: ${APP_UPDATE_TARGET:-homeserver docker stack}
-      APP_UPDATE_COMMAND: /usr/local/bin/update-sweet
+      APP_UPDATE_COMMAND: /usr/local/bin/update-home-suite-home
       STORAGE_ROOT: /app/storage
-      DATABASE_URL: postgres://${POSTGRES_USER:-sweet}:${POSTGRES_PASSWORD:-sweet}@postgres:5432/${POSTGRES_DB:-sweet}
+      DATABASE_URL: postgres://${POSTGRES_USER:-hsh}:${POSTGRES_PASSWORD:-hsh}@postgres:5432/${POSTGRES_DB:-home_suite_home}
       TURN_URLS: ${TURN_URLS:-turn:${PUBLIC_HOSTNAME:-localhost}:3478?transport=udp}
-      TURN_USERNAME: ${TURN_USERNAME:-sweet}
-      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-sweetturn}
+      TURN_USERNAME: ${TURN_USERNAME:-hsh}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-hshturn}
       WHISPER_COMMAND: /usr/local/bin/whisper-cli
       FFMPEG_COMMAND: /usr/bin/ffmpeg
       TRANSCRIPTION_MODEL: tiny.en
@@ -61,13 +63,13 @@ services:
     volumes:
       - server-storage:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/opt/sweet-deploy
-      - ./update-sweet.sh:/usr/local/bin/update-sweet:ro
+      - ./:/opt/home-suite-home-deploy
+      - ./update-home-suite-home.sh:/usr/local/bin/update-home-suite-home:ro
     ports:
-      - "8080:8080"
+      - "${HSH_SERVER_HOST_PORT:-18093}:8080"
 
   web:
-    image: ${SWEET_WEB_IMAGE:-ghcr.io/example/sweet-web:latest}
+    image: ${HSH_WEB_IMAGE:-ghcr.io/example/home-suite-home-web:latest}
     restart: unless-stopped
     depends_on:
       - server
@@ -75,7 +77,7 @@ services:
     environment:
       PORT: 4173
     ports:
-      - "4173:4173"
+      - "${HSH_WEB_HOST_PORT:-14173}:4173"
 
 volumes:
   postgres-data:

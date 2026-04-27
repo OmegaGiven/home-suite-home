@@ -1,24 +1,24 @@
-# Sweet homeserver deployment
+# Home Suite Home homeserver deployment
 
-This directory is the production-oriented Docker shape for running Sweet on a homeserver with:
+This directory is the production-oriented Docker shape for running Home Suite Home on a homeserver with:
 
 - prebuilt `server` and `web` images
 - in-app admin-triggered updates
-- persistent storage for PostgreSQL and Sweet files
+- persistent storage for PostgreSQL and Home Suite Home files
 
 ## How the admin update button works
 
-The `Deployment > Update now` button in Sweet calls the server's admin update endpoint. That endpoint runs the command in `APP_UPDATE_COMMAND`.
+The `Deployment > Update now` button in Home Suite Home calls the server's admin update endpoint. That endpoint runs the command in `APP_UPDATE_COMMAND`.
 
 In this example:
 
 - the server container mounts the host Docker socket
-- the deployment directory is mounted at `/opt/sweet-deploy`
-- `/usr/local/bin/update-sweet` runs:
+- the deployment directory is mounted at `/opt/home-suite-home-deploy`
+- `/usr/local/bin/update-home-suite-home` runs:
 
 ```sh
-docker-compose -f /opt/sweet-deploy/docker-compose.yml pull server web
-docker-compose -f /opt/sweet-deploy/docker-compose.yml up -d server web
+docker-compose -f /opt/home-suite-home-deploy/docker-compose.yml pull server web
+docker-compose -f /opt/home-suite-home-deploy/docker-compose.yml up -d server web
 ```
 
 That means the app can pull the latest published `server` and `web` images and restart only those services.
@@ -30,27 +30,63 @@ That means the app can pull the latest published `server` and `web` images and r
 3. Set at minimum:
 
 ```env
-APP_BASE_URL=https://sweet.example.com
-WEB_BASE_URL=https://sweet.example.com
-PUBLIC_HOSTNAME=sweet.example.com
+APP_BASE_URL=https://home-suite-home.example.com
+WEB_BASE_URL=https://home-suite-home.example.com
+PUBLIC_HOSTNAME=home-suite-home.example.com
 JWT_SECRET=replace-me
 BOOTSTRAP_EMAIL=admin@example.com
 BOOTSTRAP_PASSWORD=replace-me
-SWEET_SERVER_IMAGE=ghcr.io/your-org/sweet-server:latest
-SWEET_WEB_IMAGE=ghcr.io/your-org/sweet-web:latest
-SWEET_RELEASE_LABEL=latest
+HSH_SERVER_IMAGE=ghcr.io/your-org/home-suite-home-server:latest
+HSH_WEB_IMAGE=ghcr.io/your-org/home-suite-home-web:latest
+HSH_RELEASE_LABEL=latest
+HSH_SERVER_HOST_PORT=18093
+HSH_WEB_HOST_PORT=14173
+HSH_DRAWIO_HOST_PORT=18083
 ```
 
 4. Make the updater executable:
 
 ```sh
-chmod +x update-sweet.sh
+chmod +x update-home-suite-home.sh
 ```
 
 5. Start the stack:
 
 ```sh
 docker-compose up -d
+```
+
+## Recommended reverse proxy shape
+
+Use one public origin for the browser app and proxy the private host ports from this stack:
+
+- `/` -> `127.0.0.1:${HSH_WEB_HOST_PORT:-14173}`
+- `/api/*` -> `127.0.0.1:${HSH_SERVER_HOST_PORT:-18093}`
+- `/ws/*` -> `127.0.0.1:${HSH_SERVER_HOST_PORT:-18093}`
+- `/drawio*` -> `127.0.0.1:${HSH_DRAWIO_HOST_PORT:-18083}` with the `/drawio` prefix stripped before proxying upstream
+
+With this shape, the published web image does not need a machine-specific API base URL. It uses the same public origin by default and talks to the backend through `/api` and `/ws`.
+
+Example Caddy shape:
+
+```caddy
+home-suite-home.example.com {
+    handle_path /api/* {
+        reverse_proxy 127.0.0.1:18093
+    }
+
+    handle_path /ws/* {
+        reverse_proxy 127.0.0.1:18093
+    }
+
+    handle_path /drawio* {
+        reverse_proxy 127.0.0.1:18083
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:14173
+    }
+}
 ```
 
 ## Publishing images
@@ -60,14 +96,14 @@ The update button only works if newer `server` and `web` images have already bee
 Typical manual publish flow:
 
 ```sh
-docker build -t ghcr.io/your-org/sweet-server:latest ./server
-docker push ghcr.io/your-org/sweet-server:latest
+docker build -t ghcr.io/your-org/home-suite-home-server:latest ./server
+docker push ghcr.io/your-org/home-suite-home-server:latest
 
-docker build -t ghcr.io/your-org/sweet-web:latest ./web
-docker push ghcr.io/your-org/sweet-web:latest
+docker build -t ghcr.io/your-org/home-suite-home-web:latest ./web
+docker push ghcr.io/your-org/home-suite-home-web:latest
 ```
 
-If you use versioned tags, update `SWEET_SERVER_IMAGE`, `SWEET_WEB_IMAGE`, and `SWEET_RELEASE_LABEL` in `.env` before triggering the in-app update.
+If you use versioned tags, update `HSH_SERVER_IMAGE`, `HSH_WEB_IMAGE`, and `HSH_RELEASE_LABEL` in `.env` before triggering the in-app update.
 
 ## Security note
 

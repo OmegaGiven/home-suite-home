@@ -25,7 +25,7 @@ function resolveRuntimeBaseUrl(configuredUrl: string | undefined, fallbackPort: 
     return configuredUrl ?? `http://localhost:${fallbackPort}`
   }
 
-  const fallback = `${window.location.protocol}//${window.location.hostname}:${fallbackPort}`
+  const fallback = `${window.location.origin}/drawio`
   const raw = configuredUrl?.trim() || fallback
 
   try {
@@ -50,6 +50,13 @@ function resolveRuntimeBaseUrl(configuredUrl: string | undefined, fallbackPort: 
 
 export function getDrawioBaseUrl() {
   return resolveRuntimeBaseUrl(import.meta.env.VITE_DRAWIO_URL, 18083)
+}
+
+function getDrawioOrigin() {
+  return new URL(
+    getDrawioBaseUrl(),
+    typeof window !== 'undefined' ? window.location.origin : 'http://localhost:18083',
+  ).origin
 }
 
 export function getStandaloneDrawioUrl() {
@@ -89,7 +96,7 @@ export const DrawioDiagramEditor = forwardRef<DrawioDiagramEditorHandle, Props>(
   }, [xml])
 
   function postMessage(message: object) {
-    frameRef.current?.contentWindow?.postMessage(JSON.stringify(message), getDrawioBaseUrl())
+    frameRef.current?.contentWindow?.postMessage(JSON.stringify(message), getDrawioOrigin())
   }
 
   useImperativeHandle(
@@ -109,7 +116,7 @@ export const DrawioDiagramEditor = forwardRef<DrawioDiagramEditorHandle, Props>(
 
   useEffect(() => {
     function onMessage(event: MessageEvent) {
-      if (event.origin !== getDrawioBaseUrl()) return
+      if (event.origin !== getDrawioOrigin()) return
       if (event.source !== frameRef.current?.contentWindow) return
       if (typeof event.data !== 'string') return
 

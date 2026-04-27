@@ -1061,7 +1061,7 @@ function App() {
       provider: 'sweet',
       external_id: '',
       calendar_id: `sweet:${title.toLowerCase().replace(/\s+/g, '-')}`,
-      account_label: 'Sweet calendar',
+      account_label: 'Home Suite Home calendar',
       access_token: null,
       refresh_token: null,
       token_expires_at: null,
@@ -2763,7 +2763,7 @@ function App() {
   }, [route, selectedRoomId])
 
   useEffect(() => {
-    const socket = new WebSocket(api.apiBase.replace('http', 'ws') + '/ws/realtime')
+    const socket = new WebSocket(api.realtimeUrl('/ws/realtime'))
     socketRef.current = socket
 
     socket.onopen = () => {

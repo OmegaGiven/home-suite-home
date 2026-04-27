@@ -33,13 +33,15 @@ import type {
 } from './types'
 import { sessionStore } from './platform'
 
-function resolveRuntimeBaseUrl(configuredUrl: string | undefined, fallbackPort: number) {
+function resolveRuntimeBaseUrl(configuredUrl: string | undefined) {
   if (typeof window === 'undefined') {
-    return configuredUrl ?? `http://localhost:${fallbackPort}`
+    return configuredUrl?.trim() || 'http://localhost:8080'
   }
 
-  const fallback = `${window.location.protocol}//${window.location.hostname}:${fallbackPort}`
-  const raw = configuredUrl?.trim() || fallback
+  const raw = configuredUrl?.trim()
+  if (!raw) {
+    return ''
+  }
 
   try {
     const url = new URL(raw, window.location.origin)
@@ -61,7 +63,21 @@ function resolveRuntimeBaseUrl(configuredUrl: string | undefined, fallbackPort: 
   }
 }
 
-const API_BASE = resolveRuntimeBaseUrl(import.meta.env.VITE_API_BASE_URL, 18082)
+function buildUrl(path: string) {
+  return API_BASE ? `${API_BASE}${path}` : path
+}
+
+function buildRealtimeBase() {
+  if (typeof window === 'undefined') {
+    return API_BASE.replace(/^http/i, 'ws')
+  }
+  if (!API_BASE) {
+    return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+  }
+  return API_BASE.replace(/^http/i, 'ws')
+}
+
+const API_BASE = resolveRuntimeBaseUrl(import.meta.env.VITE_API_BASE_URL)
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const session = await sessionStore.get()
@@ -69,7 +85,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (session?.token) {
     headers.set('Authorization', `Bearer ${session.token}`)
   }
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(buildUrl(path), {
     ...init,
     headers,
   })
@@ -89,6 +105,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   apiBase: API_BASE,
+  realtimeUrl(path = '/ws/realtime') {
+    return `${buildRealtimeBase()}${path}`
+  },
   login(email: string, password: string) {
     return request<SessionResponse>('/api/v1/auth/login', {
       method: 'POST',
@@ -210,11 +229,11 @@ export const api = {
     return request<TranscriptionJob>(`/api/v1/voice-memos/${id}/job`)
   },
   voiceMemoAudioUrl(id: string) {
-    return `${API_BASE}/api/v1/voice-memos/${id}/audio`
+    return buildUrl(`/api/v1/voice-memos/${id}/audio`)
   },
   userAvatarUrl(userId: string, avatarPath?: string | null) {
     const version = avatarPath ? `?v=${encodeURIComponent(avatarPath)}` : ''
-    return `${API_BASE}/api/v1/users/${encodeURIComponent(userId)}/avatar${version}`
+    return buildUrl(`/api/v1/users/${encodeURIComponent(userId)}/avatar${version}`)
   },
   uploadCurrentUserAvatar(file: Blob, filename: string) {
     const body = new FormData()
@@ -483,7 +502,7 @@ export const api = {
     })
   },
   async deleteFile(path: string) {
-    const response = await fetch(`${API_BASE}/api/v1/files/delete`, {
+    const response = await fetch(buildUrl('/api/v1/files/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -494,10 +513,10 @@ export const api = {
     }
   },
   fileDownloadUrl(path: string) {
-    return `${API_BASE}/api/v1/files/download?path=${encodeURIComponent(path)}`
+    return buildUrl(`/api/v1/files/download?path=${encodeURIComponent(path)}`)
   },
   async fileText(path: string) {
-    const response = await fetch(`${API_BASE}/api/v1/files/download?path=${encodeURIComponent(path)}`)
+    const response = await fetch(buildUrl(`/api/v1/files/download?path=${encodeURIComponent(path)}`))
     if (!response.ok) {
       const body = await response.text()
       throw new Error(body || `Request failed: ${response.status}`)
