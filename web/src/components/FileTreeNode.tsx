@@ -160,18 +160,17 @@ export function FileTreeNode({
             {rowMetaVisibility.created && rowMeta.created ? <span className="tree-row-meta-item tree-row-meta-created">{rowMeta.created}</span> : null}
           </span>
         ) : null}
-        {hasChildren ? (
-          <span
-            className={`tree-collapse-toggle tree-collapse-toggle-end ${collapsed ? 'collapsed' : ''}`}
-            onClick={(event) => {
-              event.preventDefault()
-              event.stopPropagation()
-              setCollapsed((current) => !current)
-            }}
-          >
-            ▾
-          </span>
-        ) : null}
+        <span
+          className={`tree-collapse-toggle tree-collapse-toggle-end ${hasChildren ? '' : 'tree-collapse-toggle-placeholder'} ${collapsed ? 'collapsed' : ''}`}
+          onClick={(event) => {
+            if (!hasChildren) return
+            event.preventDefault()
+            event.stopPropagation()
+            setCollapsed((current) => !current)
+          }}
+        >
+          {hasChildren ? '▾' : ''}
+        </span>
       </button>
       {hasChildren && !collapsed ? (
         <div className="folder-children">

@@ -6,10 +6,9 @@ type Props = {
   currentUserId: string | null
   googleConfig: GoogleCalendarConfig | null
   connections: CalendarConnection[]
-  selectedConnectionId: string | null
+  selectedConnectionIds: string[]
   events: CalendarEvent[]
-  loading: boolean
-  onSelectConnection: (id: string) => void
+  onToggleConnection: (id: string) => void
   onStartGoogleConnect: () => void
   onCreateIcsConnection: (title: string, url: string) => Promise<void>
   onCreateLocalConnection: (title: string) => Promise<void>
@@ -61,8 +60,33 @@ function startOfMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), 1)
 }
 
+function startOfWeek(date: Date) {
+  const next = new Date(date)
+  next.setHours(0, 0, 0, 0)
+  next.setDate(next.getDate() - next.getDay())
+  return next
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
 function sameDay(left: Date, right: Date) {
   return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate()
+}
+
+function formatWeekdayLabel(date: Date) {
+  return new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(date)
+}
+
+function formatMonthDayLabel(date: Date) {
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date)
+}
+
+function formatFullDayLabel(date: Date) {
+  return new Intl.DateTimeFormat(undefined, { weekday: 'long', month: 'long', day: 'numeric' }).format(date)
 }
 
 const MONTH_OPTIONS = Array.from({ length: 12 }, (_, monthIndex) => ({
@@ -85,10 +109,9 @@ export function CalendarPage({
   currentUserId,
   googleConfig,
   connections,
-  selectedConnectionId,
+  selectedConnectionIds,
   events,
-  loading,
-  onSelectConnection,
+  onToggleConnection,
   onStartGoogleConnect,
   onCreateIcsConnection,
   onCreateLocalConnection,
@@ -111,6 +134,7 @@ export function CalendarPage({
   const [renameDraft, setRenameDraft] = useState('')
   const [visibleMonth, setVisibleMonth] = useState(() => startOfMonth(new Date()))
   const [selectedDay, setSelectedDay] = useState(() => new Date())
+  const [viewMode, setViewMode] = useState<'month' | 'week' | 'day'>('month')
   const [eventModalOpen, setEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState<string | null>(null)
   const [eventTitle, setEventTitle] = useState('')
@@ -120,14 +144,25 @@ export function CalendarPage({
   const [eventEnd, setEventEnd] = useState('')
   const [eventAllDay, setEventAllDay] = useState(false)
 
-  const selectedConnection = connections.find((connection) => connection.id === selectedConnectionId) ?? null
-  const isSelectedOwnedByCurrentUser = selectedConnection?.owner_id === currentUserId
-  const isSelectedLocalCalendar = selectedConnection?.provider === 'sweet'
+  const selectedConnections = useMemo(
+    () => connections.filter((connection) => selectedConnectionIds.includes(connection.id)),
+    [connections, selectedConnectionIds],
+  )
+  const singleSelectedConnection = selectedConnections.length === 1 ? selectedConnections[0] : null
+  const isSelectedOwnedByCurrentUser = singleSelectedConnection?.owner_id === currentUserId
+  const isSelectedLocalCalendar = singleSelectedConnection?.provider === 'sweet'
+  const connectionById = useMemo(() => new Map(connections.map((connection) => [connection.id, connection])), [connections])
+
+  function canEditEvent(event: CalendarEvent) {
+    if (event.id.startsWith('task:')) return false
+    const connection = connectionById.get(event.connection_id)
+    return connection?.provider === 'sweet' && connection.owner_id === currentUserId
+  }
 
   useEffect(() => {
-    setRenameDraft(selectedConnection?.title ?? '')
+    setRenameDraft(singleSelectedConnection?.title ?? '')
     setRenamingConnection(false)
-  }, [selectedConnection?.id, selectedConnection?.title])
+  }, [singleSelectedConnection?.id, singleSelectedConnection?.title])
 
   const filteredConnections = useMemo(() => {
     const query = searchQuery.trim().toLowerCase()
@@ -176,13 +211,60 @@ export function CalendarPage({
 
   const selectedDayKey = selectedDay.toISOString().slice(0, 10)
   const selectedDayEvents = eventsByDay.get(selectedDayKey) ?? []
+  const displayedMonth = viewMode === 'month' ? visibleMonth : startOfMonth(selectedDay)
+  const visibleWeekDays = useMemo(() => {
+    const start = startOfWeek(selectedDay)
+    return Array.from({ length: 7 }, (_, index) => addDays(start, index))
+  }, [selectedDay])
+  const visibleWeekRangeLabel = useMemo(() => {
+    const first = visibleWeekDays[0]
+    const last = visibleWeekDays[6]
+    const sameMonthRange = first.getMonth() === last.getMonth() && first.getFullYear() === last.getFullYear()
+    if (sameMonthRange) {
+      return `${new Intl.DateTimeFormat(undefined, { month: 'long' }).format(first)} ${first.getDate()}-${last.getDate()}, ${first.getFullYear()}`
+    }
+    return `${formatMonthDayLabel(first)} - ${formatMonthDayLabel(last)}`
+  }, [visibleWeekDays])
   const yearOptions = useMemo(() => {
     const currentYear = new Date().getFullYear()
     return Array.from({ length: 21 }, (_, index) => currentYear - 10 + index)
   }, [])
 
+  const upcomingGroups = useMemo(() => groupedEvents.slice(0, 8), [groupedEvents])
+
   function setVisibleMonthParts(month: number, year: number) {
-    setVisibleMonth(startOfMonth(new Date(year, month, 1)))
+    const nextVisibleMonth = startOfMonth(new Date(year, month, 1))
+    setVisibleMonth(nextVisibleMonth)
+    if (viewMode !== 'month') {
+      const nextDay = Math.min(selectedDay.getDate(), new Date(year, month + 1, 0).getDate())
+      setSelectedDay(new Date(year, month, nextDay))
+    }
+  }
+
+  function shiftVisibleRange(direction: -1 | 1) {
+    if (viewMode === 'month') {
+      setVisibleMonth(startOfMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + direction, 1)))
+      return
+    }
+    if (viewMode === 'week') {
+      setSelectedDay((current) => {
+        const next = addDays(current, direction * 7)
+        setVisibleMonth(startOfMonth(next))
+        return next
+      })
+      return
+    }
+    setSelectedDay((current) => {
+      const next = addDays(current, direction)
+      setVisibleMonth(startOfMonth(next))
+      return next
+    })
+  }
+
+  function jumpToToday() {
+    const today = new Date()
+    setVisibleMonth(startOfMonth(today))
+    setSelectedDay(today)
   }
 
   function openCreateEventModal() {
@@ -352,13 +434,13 @@ export function CalendarPage({
           <aside className="file-sidebar calendar-sidebar">
             <div className="file-sidebar-header-row">
               <div className="calendar-connect-actions">
-                <button className="calendar-connect-button" type="button" onClick={() => setLocalModalOpen(true)} disabled={loading}>
-                  New Home Suite Home calendar
+                <button className="calendar-connect-button" type="button" onClick={() => setLocalModalOpen(true)}>
+                  New calendar
                 </button>
-                <button className="calendar-connect-button" type="button" onClick={onStartGoogleConnect} disabled={loading || !googleConfig?.enabled}>
+                <button className="calendar-connect-button" type="button" onClick={onStartGoogleConnect} disabled={!googleConfig?.enabled}>
                   Connect Google
                 </button>
-                <button className="calendar-connect-button" type="button" onClick={() => setFeedModalOpen(true)} disabled={loading}>
+                <button className="calendar-connect-button" type="button" onClick={() => setFeedModalOpen(true)}>
                   Add Apple/iCloud
                 </button>
               </div>
@@ -371,9 +453,9 @@ export function CalendarPage({
                 filteredConnections.map((connection) => (
                   <button
                     key={connection.id}
-                    className={`calendar-connection-row ${connection.id === selectedConnectionId ? 'is-active' : ''}`}
+                    className={`calendar-connection-row ${selectedConnectionIds.includes(connection.id) ? 'is-active' : ''}`}
                     type="button"
-                    onClick={() => onSelectConnection(connection.id)}
+                    onClick={() => onToggleConnection(connection.id)}
                   >
                     <div className="calendar-connection-title-row">
                       <strong>{connection.title}</strong>
@@ -394,42 +476,96 @@ export function CalendarPage({
           <div className="calendar-content">
             <div className="calendar-pane">
               <div className="calendar-pane-header">
-                <div>
-                  {selectedConnection ? (
-                    renamingConnection ? (
-                      <input
-                        className="input"
-                        value={renameDraft}
-                        onChange={(event) => setRenameDraft(event.target.value)}
-                        onBlur={() => {
-                          if (!selectedConnection) return
-                          void onRenameConnection(selectedConnection.id, renameDraft)
+                <div className="calendar-pane-title">
+                  {renamingConnection && singleSelectedConnection ? (
+                    <input
+                      className="input"
+                      value={renameDraft}
+                      onChange={(event) => setRenameDraft(event.target.value)}
+                      onBlur={() => {
+                        void onRenameConnection(singleSelectedConnection.id, renameDraft)
+                        setRenamingConnection(false)
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          void onRenameConnection(singleSelectedConnection.id, renameDraft)
                           setRenamingConnection(false)
-                        }}
-                        onKeyDown={(event) => {
-                          if (!selectedConnection) return
-                          if (event.key === 'Enter') {
-                            void onRenameConnection(selectedConnection.id, renameDraft)
-                            setRenamingConnection(false)
-                          } else if (event.key === 'Escape') {
-                            setRenameDraft(selectedConnection.title)
-                            setRenamingConnection(false)
-                          }
-                        }}
-                        autoFocus
-                      />
-                    ) : (
-                      <h2>{selectedConnection.title}</h2>
-                    )
-                  ) : (
-                    <h2>Calendar</h2>
-                  )}
+                        } else if (event.key === 'Escape') {
+                          setRenameDraft(singleSelectedConnection.title)
+                          setRenamingConnection(false)
+                        }
+                      }}
+                      autoFocus
+                    />
+                  ) : null}
+                </div>
+                <div className="calendar-month-header calendar-month-header-inline">
+                  <button
+                    className="calendar-month-arrow"
+                    type="button"
+                    aria-label="Previous month"
+                    onClick={() => shiftVisibleRange(-1)}
+                  >
+                    ←
+                  </button>
+                  <div className="calendar-month-controls">
+                    <label className="calendar-month-picker">
+                      <select
+                        className="input calendar-month-select"
+                        value={displayedMonth.getMonth()}
+                        aria-label="Month"
+                        onChange={(event) => setVisibleMonthParts(Number(event.target.value), displayedMonth.getFullYear())}
+                      >
+                        {MONTH_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="calendar-year-picker">
+                      <select
+                        className="input calendar-year-select"
+                        value={displayedMonth.getFullYear()}
+                        aria-label="Year"
+                        onChange={(event) => setVisibleMonthParts(displayedMonth.getMonth(), Number(event.target.value))}
+                      >
+                        {yearOptions.map((year) => (
+                          <option key={year} value={year}>
+                            {year}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <button
+                    className="calendar-month-arrow"
+                    type="button"
+                    aria-label="Next month"
+                    onClick={() => shiftVisibleRange(1)}
+                  >
+                    →
+                  </button>
                 </div>
                 <div className="button-row">
-                  <button className="button-secondary" type="button" onClick={() => { setVisibleMonth(startOfMonth(new Date())); setSelectedDay(new Date()) }}>
+                  <div className="calendar-view-toggle" role="tablist" aria-label="Calendar view">
+                    {(['month', 'week', 'day'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        className={`button-secondary calendar-view-toggle-button ${viewMode === mode ? 'is-active' : ''}`}
+                        type="button"
+                        role="tab"
+                        aria-selected={viewMode === mode}
+                        onClick={() => setViewMode(mode)}
+                      >
+                        {mode[0].toUpperCase() + mode.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                  <button className="button-secondary" type="button" onClick={jumpToToday}>
                     Today
                   </button>
-                  {selectedConnection ? (
+                  {selectedConnections.length > 0 ? (
                     <>
                       <button className="icon-button" type="button" aria-label="Refresh calendar" title="Refresh calendar" onClick={() => void onRefresh()}>
                         <RefreshIcon />
@@ -449,7 +585,12 @@ export function CalendarPage({
                             type="button"
                             aria-label="Calendar visibility"
                             title="Calendar visibility"
-                            onClick={() => onOpenShareDialog({ resourceKey: resourceKeyForCalendar(selectedConnection.id), label: selectedConnection.title })}
+                            onClick={() =>
+                              onOpenShareDialog({
+                                resourceKey: resourceKeyForCalendar(singleSelectedConnection.id),
+                                label: singleSelectedConnection.title,
+                              })
+                            }
                           >
                             <VisibilityIcon />
                           </button>
@@ -458,7 +599,7 @@ export function CalendarPage({
                             type="button"
                             aria-label="Delete calendar"
                             title="Delete calendar"
-                            onClick={() => void onDeleteConnection(selectedConnection.id)}
+                            onClick={() => void onDeleteConnection(singleSelectedConnection.id)}
                           >
                             <DeleteIcon />
                           </button>
@@ -469,137 +610,186 @@ export function CalendarPage({
                 </div>
               </div>
 
-              <div className="calendar-month-header">
-                <button
-                  className="calendar-month-arrow"
-                  type="button"
-                  aria-label="Previous month"
-                  onClick={() => setVisibleMonth(startOfMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1)))}
-                >
-                  ←
-                </button>
-                <div className="calendar-month-controls">
-                  <label className="calendar-month-picker">
-                    <select
-                      className="input calendar-month-select"
-                      value={visibleMonth.getMonth()}
-                      aria-label="Month"
-                      onChange={(event) => setVisibleMonthParts(Number(event.target.value), visibleMonth.getFullYear())}
-                    >
-                      {MONTH_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="calendar-year-picker">
-                    <select
-                      className="input calendar-year-select"
-                      value={visibleMonth.getFullYear()}
-                      aria-label="Year"
-                      onChange={(event) => setVisibleMonthParts(visibleMonth.getMonth(), Number(event.target.value))}
-                    >
-                      {yearOptions.map((year) => (
-                        <option key={year} value={year}>
-                          {year}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <button
-                  className="calendar-month-arrow"
-                  type="button"
-                  aria-label="Next month"
-                  onClick={() => setVisibleMonth(startOfMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1)))}
-                >
-                  →
-                </button>
-              </div>
-
-              <div className="calendar-grid-frame">
-                <div className="calendar-grid calendar-grid-weekdays">
-                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label) => (
-                    <div key={label} className="calendar-weekday-cell">
-                      {label}
-                    </div>
-                  ))}
-                </div>
-                <div className="calendar-grid calendar-grid-days">
-                  {monthDays.map((day) => {
-                    const key = day.toISOString().slice(0, 10)
-                    const dayEvents = eventsByDay.get(key) ?? []
-                    const outsideMonth = day.getMonth() !== visibleMonth.getMonth()
-                    return (
-                      <button key={key} type="button" className={`calendar-day-cell ${outsideMonth ? 'is-outside-month' : ''} ${sameDay(day, selectedDay) ? 'is-selected' : ''}`} onClick={() => setSelectedDay(day)}>
-                        <div className="calendar-day-number">{day.getDate()}</div>
-                        <div className="calendar-day-preview-list">
-                          {dayEvents.slice(0, 3).map((event) => (
-                            <div key={event.id} className="calendar-day-preview-item">
-                              {event.title}
-                            </div>
-                          ))}
-                          {dayEvents.length > 3 ? <div className="calendar-day-preview-more">+{dayEvents.length - 3} more</div> : null}
+              {viewMode === 'month' ? (
+                <>
+                  <div className="calendar-grid-frame">
+                    <div className="calendar-grid calendar-grid-weekdays">
+                      {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label) => (
+                        <div key={label} className="calendar-weekday-cell">
+                          {label}
                         </div>
-                      </button>
-                    )
-                  })}
-                </div>
-              </div>
+                      ))}
+                    </div>
+                    <div className="calendar-grid calendar-grid-days calendar-grid-days-month">
+                      {monthDays.map((day) => {
+                        const key = day.toISOString().slice(0, 10)
+                        const dayEvents = eventsByDay.get(key) ?? []
+                        const outsideMonth = day.getMonth() !== visibleMonth.getMonth()
+                        return (
+                          <button key={key} type="button" className={`calendar-day-cell ${outsideMonth ? 'is-outside-month' : ''} ${sameDay(day, selectedDay) ? 'is-selected' : ''}`} onClick={() => setSelectedDay(day)}>
+                            <div className="calendar-day-number">{day.getDate()}</div>
+                            <div className="calendar-day-preview-list">
+                              {dayEvents.slice(0, 3).map((event) => (
+                                <div key={event.id} className="calendar-day-preview-item">
+                                  {event.title}
+                                </div>
+                              ))}
+                              {dayEvents.length > 3 ? <div className="calendar-day-preview-more">+{dayEvents.length - 3} more</div> : null}
+                            </div>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
 
-              <div className="calendar-agenda">
-                <section className="calendar-day-group">
-                  <div className="calendar-pane-header">
-                    <h3>{formatEventDayLabel(selectedDay.toISOString())}</h3>
-                    {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
-                      <button className="button-secondary" type="button" onClick={openCreateEventModal}>
-                        Add event
-                      </button>
+                  <div className="calendar-agenda">
+                    <section className="calendar-day-group">
+                      <div className="calendar-pane-header">
+                        <h3>{formatEventDayLabel(selectedDay.toISOString())}</h3>
+                        {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
+                          <button className="button-secondary" type="button" onClick={openCreateEventModal}>
+                            Add event
+                          </button>
+                        ) : null}
+                      </div>
+                      {selectedDayEvents.length === 0 ? (
+                        <div className="empty-state">
+                          {selectedConnections.length > 0 ? 'No events on this day.' : 'No events yet. Select or connect a calendar to get started.'}
+                        </div>
+                      ) : (
+                        <div className="calendar-event-list">
+                          {selectedDayEvents.map((event) => (
+                            <article
+                              key={event.id}
+                              className={`calendar-event-card ${canEditEvent(event) ? 'is-editable' : ''}`}
+                              onClick={() => {
+                                if (canEditEvent(event)) {
+                                  openEditEventModal(event)
+                                }
+                              }}
+                            >
+                              <div className="calendar-event-time">{formatEventTimeRange(event)}</div>
+                              <div className="calendar-event-main">
+                                <strong>{event.title}</strong>
+                                {event.location ? <span className="muted">{event.location}</span> : null}
+                                {event.description ? <span className="muted">{event.description}</span> : null}
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      )}
+                    </section>
+
+                    {upcomingGroups.length > 0 ? (
+                      <section className="calendar-day-group">
+                        <h3>Upcoming</h3>
+                        <div className="calendar-event-list">
+                          {upcomingGroups.map((group) => (
+                            <article key={group.day} className="calendar-upcoming-card">
+                              <strong>{formatEventDayLabel(group.day)}</strong>
+                              <span className="muted">{group.items.length} event{group.items.length === 1 ? '' : 's'}</span>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
                     ) : null}
                   </div>
-                  {selectedDayEvents.length === 0 ? (
-                    <div className="empty-state">
-                      {selectedConnection ? 'No events on this day.' : 'No events yet. Create a Home Suite Home calendar or connect an external one.'}
-                    </div>
-                  ) : (
-                    <div className="calendar-event-list">
-                      {selectedDayEvents.map((event) => (
-                        <article
-                          key={event.id}
-                          className={`calendar-event-card ${isSelectedLocalCalendar && !event.id.startsWith('task:') ? 'is-editable' : ''}`}
-                          onClick={() => {
-                            if (isSelectedLocalCalendar && !event.id.startsWith('task:')) {
-                              openEditEventModal(event)
-                            }
-                          }}
-                        >
-                          <div className="calendar-event-time">{formatEventTimeRange(event)}</div>
-                          <div className="calendar-event-main">
-                            <strong>{event.title}</strong>
-                            {event.location ? <span className="muted">{event.location}</span> : null}
-                            {event.description ? <span className="muted">{event.description}</span> : null}
-                          </div>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </section>
-
-                {groupedEvents.length > 0 ? (
+                </>
+              ) : viewMode === 'week' ? (
+                <div className="calendar-agenda">
                   <section className="calendar-day-group">
-                    <h3>Upcoming</h3>
-                    <div className="calendar-event-list">
-                      {groupedEvents.slice(0, 8).map((group) => (
-                        <article key={group.day} className="calendar-upcoming-card">
-                          <strong>{formatEventDayLabel(group.day)}</strong>
-                          <span className="muted">{group.items.length} event{group.items.length === 1 ? '' : 's'}</span>
-                        </article>
-                      ))}
+                    <div className="calendar-pane-header">
+                      <h3>{visibleWeekRangeLabel}</h3>
+                      {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
+                        <button className="button-secondary" type="button" onClick={openCreateEventModal}>
+                          Add event
+                        </button>
+                      ) : null}
+                    </div>
+                    <div className="calendar-week-grid">
+                      {visibleWeekDays.map((day) => {
+                        const key = day.toISOString().slice(0, 10)
+                        const dayEvents = eventsByDay.get(key) ?? []
+                        return (
+                          <section
+                            key={key}
+                            className={`calendar-week-column ${sameDay(day, selectedDay) ? 'is-selected' : ''}`}
+                          >
+                            <button type="button" className="calendar-week-heading" onClick={() => setSelectedDay(day)}>
+                              <strong>{formatWeekdayLabel(day)}</strong>
+                              <span>{formatMonthDayLabel(day)}</span>
+                            </button>
+                            {dayEvents.length === 0 ? (
+                              <div className="empty-state">No events</div>
+                            ) : (
+                              <div className="calendar-event-list">
+                                {dayEvents.map((event) => (
+                                  <article
+                                    key={event.id}
+                                    className={`calendar-event-card ${canEditEvent(event) ? 'is-editable' : ''}`}
+                                    onClick={() => {
+                                      setSelectedDay(day)
+                                      if (canEditEvent(event)) {
+                                        openEditEventModal(event)
+                                      }
+                                    }}
+                                  >
+                                    <div className="calendar-event-time">{formatEventTimeRange(event)}</div>
+                                    <div className="calendar-event-main">
+                                      <strong>{event.title}</strong>
+                                      {event.location ? <span className="muted">{event.location}</span> : null}
+                                      {event.description ? <span className="muted">{event.description}</span> : null}
+                                    </div>
+                                  </article>
+                                ))}
+                              </div>
+                            )}
+                          </section>
+                        )
+                      })}
                     </div>
                   </section>
-                ) : null}
-              </div>
+                </div>
+              ) : (
+                <div className="calendar-agenda">
+                  <section className="calendar-day-group">
+                    <div className="calendar-pane-header">
+                      <h3>{formatFullDayLabel(selectedDay)}</h3>
+                      {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
+                        <button className="button-secondary" type="button" onClick={openCreateEventModal}>
+                          Add event
+                        </button>
+                      ) : null}
+                    </div>
+                    {selectedDayEvents.length === 0 ? (
+                      <div className="empty-state">
+                        {selectedConnections.length > 0 ? 'No events on this day.' : 'No events yet. Select or connect a calendar to get started.'}
+                      </div>
+                    ) : (
+                      <div className="calendar-event-list calendar-event-list-day">
+                        {selectedDayEvents.map((event) => (
+                          <article
+                            key={event.id}
+                            className={`calendar-event-card ${canEditEvent(event) ? 'is-editable' : ''}`}
+                            onClick={() => {
+                              if (canEditEvent(event)) {
+                                openEditEventModal(event)
+                              }
+                            }}
+                          >
+                            <div className="calendar-event-time">{formatEventTimeRange(event)}</div>
+                            <div className="calendar-event-main">
+                              <strong>{event.title}</strong>
+                              {event.location ? <span className="muted">{event.location}</span> : null}
+                              {event.description ? <span className="muted">{event.description}</span> : null}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -302,9 +302,8 @@ function App() {
   const [memos, setMemos] = useState<VoiceMemo[]>([])
   const [selectedVoiceMemoId, setSelectedVoiceMemoId] = useState<string | null>(null)
   const [calendarConnections, setCalendarConnections] = useState<CalendarConnection[]>([])
-  const [selectedCalendarConnectionId, setSelectedCalendarConnectionId] = useState<string | null>(null)
+  const [selectedCalendarConnectionIds, setSelectedCalendarConnectionIds] = useState<string[]>([])
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
-  const [calendarLoading, setCalendarLoading] = useState(false)
   const [tasks, setTasks] = useState<TaskItem[]>([])
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [rooms, setRooms] = useState<Room[]>([])
@@ -957,15 +956,14 @@ function App() {
     return nextRooms
   }
 
-  async function refreshCalendarConnections(options?: { preferredSelectedConnectionId?: string | null }) {
+  async function refreshCalendarConnections(options?: { preferredSelectedConnectionIds?: string[] | null }) {
     const nextConnections = await api.listCalendarConnections()
     setCalendarConnections(nextConnections)
-    setSelectedCalendarConnectionId((current) => {
-      const preferred = options?.preferredSelectedConnectionId ?? current
-      if (preferred && nextConnections.some((connection) => connection.id === preferred)) {
-        return preferred
-      }
-      return nextConnections[0]?.id ?? null
+    setSelectedCalendarConnectionIds((current) => {
+      const preferred = options?.preferredSelectedConnectionIds ?? current
+      const valid = (preferred ?? []).filter((id) => nextConnections.some((connection) => connection.id === id))
+      if (valid.length > 0) return valid
+      return nextConnections[0] ? [nextConnections[0].id] : []
     })
     return nextConnections
   }
@@ -983,11 +981,23 @@ function App() {
     return nextTasks
   }
 
-  async function refreshCalendarEvents(connectionId: string) {
+  async function refreshCalendarEvents(connectionIds: string[]) {
+    if (connectionIds.length === 0) {
+      setCalendarEvents([])
+      return []
+    }
     const start = new Date()
     const end = new Date(start)
     end.setDate(end.getDate() + 30)
-    const nextEvents = await api.listCalendarEvents(connectionId, start.toISOString(), end.toISOString())
+    const grouped = await Promise.all(
+      connectionIds.map((connectionId) => api.listCalendarEvents(connectionId, start.toISOString(), end.toISOString())),
+    )
+    const nextEvents = grouped
+      .flat()
+      .sort((left, right) => {
+        const byStart = left.start_at.localeCompare(right.start_at)
+        return byStart !== 0 ? byStart : left.title.localeCompare(right.title)
+      })
     setCalendarEvents(nextEvents)
     return nextEvents
   }
@@ -3104,12 +3114,11 @@ function App() {
 
     const redirectUrl = `${window.location.origin}/calendar`
     window.sessionStorage.removeItem('sweet.calendar.google.state')
-    setCalendarLoading(true)
     void api
       .connectGoogleCalendar(code, redirectUrl)
       .then(async (connection) => {
-        await refreshCalendarConnections({ preferredSelectedConnectionId: connection.id })
-        setSelectedCalendarConnectionId(connection.id)
+        await refreshCalendarConnections({ preferredSelectedConnectionIds: [connection.id] })
+        setSelectedCalendarConnectionIds([connection.id])
         showActionNotice(`Connected ${connection.title}`)
       })
       .catch((error) => {
@@ -3117,34 +3126,30 @@ function App() {
         showActionNotice(error instanceof Error ? error.message : 'Could not connect Google calendar.')
       })
       .finally(() => {
-        setCalendarLoading(false)
         window.history.replaceState({}, '', '/calendar')
         setLocationSearch('')
       })
   }, [locationSearch, route, session?.token])
 
   useEffect(() => {
-    if (authMode !== 'ready' || !session || !selectedCalendarConnectionId) {
+    if (authMode !== 'ready' || !session || selectedCalendarConnectionIds.length === 0) {
       setCalendarEvents([])
       return
     }
-    setCalendarLoading(true)
-    void refreshCalendarEvents(selectedCalendarConnectionId)
+    void refreshCalendarEvents(selectedCalendarConnectionIds)
       .catch((error) => {
         console.error(error)
         setCalendarEvents([])
         showActionNotice(error instanceof Error ? error.message : 'Could not load calendar events.')
       })
-      .finally(() => setCalendarLoading(false))
-  }, [authMode, selectedCalendarConnectionId, session?.token])
+  }, [authMode, selectedCalendarConnectionIds, session?.token])
 
   useEffect(() => {
     if (session) return
     setGoogleCalendarConfig(null)
     setCalendarConnections([])
-    setSelectedCalendarConnectionId(null)
+    setSelectedCalendarConnectionIds([])
     setCalendarEvents([])
-    setCalendarLoading(false)
     setTasks([])
     setSelectedTaskId(null)
     setSyncCursors({ generated_at: new Date(0).toISOString() })
@@ -3209,11 +3214,11 @@ function App() {
           current && snapshot.voice_memos.some((memo) => memo.id === current) ? current : (snapshot.voice_memos[0]?.id ?? null),
         )
         setSelectedRoomId((current) => current && snapshot.rooms.some((room) => room.id === current) ? current : (snapshot.rooms[0]?.id ?? null))
-        setSelectedCalendarConnectionId((current) =>
-          current && snapshot.calendar_connections.some((connection) => connection.id === current)
-            ? current
-            : (snapshot.calendar_connections[0]?.id ?? null),
-        )
+        setSelectedCalendarConnectionIds((current) => {
+          const valid = current.filter((id) => snapshot.calendar_connections.some((connection) => connection.id === id))
+          if (valid.length > 0) return valid
+          return snapshot.calendar_connections[0] ? [snapshot.calendar_connections[0].id] : []
+        })
         setSelectedTaskId((current) =>
           current && snapshot.tasks.some((task) => task.id === current) ? current : (snapshot.tasks[0]?.id ?? null),
         )
@@ -3489,13 +3494,13 @@ function App() {
         return
       case 'rename_calendar':
       case 'delete_calendar':
-        setSelectedCalendarConnectionId(operation.id)
+        setSelectedCalendarConnectionIds([operation.id])
         await navigate('/calendar')
         return
       case 'create_calendar_event':
       case 'update_calendar_event':
       case 'delete_calendar_event':
-        setSelectedCalendarConnectionId(operation.connection_id)
+        setSelectedCalendarConnectionIds([operation.connection_id])
         await navigate('/calendar')
         return
       case 'create_message':
@@ -4888,14 +4893,22 @@ function App() {
     confirmVoiceDelete: adminSettings?.confirm_file_delete ?? true,
   }
 
+  const primarySelectedCalendarConnectionId = selectedCalendarConnectionIds[0] ?? null
   const calendarPageProps = {
     currentUserId: session?.user.id ?? null,
     googleConfig: googleCalendarConfig,
     connections: calendarConnections,
-    selectedConnectionId: selectedCalendarConnectionId,
+    selectedConnectionIds: selectedCalendarConnectionIds,
     events: calendarEvents,
-    loading: calendarLoading,
-    onSelectConnection: setSelectedCalendarConnectionId,
+    onToggleConnection: (id: string) =>
+      setSelectedCalendarConnectionIds((current) => {
+        const exists = current.includes(id)
+        if (exists) {
+          const next = current.filter((entry) => entry !== id)
+          return next.length > 0 ? next : current
+        }
+        return [...current, id]
+      }),
     onStartGoogleConnect: () => {
       if (!googleCalendarConfig?.enabled || !googleCalendarConfig.client_id) {
         showActionNotice('Google Calendar is not configured by an admin.')
@@ -4916,18 +4929,18 @@ function App() {
     },
     onCreateIcsConnection: async (title: string, url: string) => {
       const connection = await api.createIcsCalendarConnection(title, url)
-      await refreshCalendarConnections({ preferredSelectedConnectionId: connection.id })
-      setSelectedCalendarConnectionId(connection.id)
+      await refreshCalendarConnections({ preferredSelectedConnectionIds: [connection.id] })
+      setSelectedCalendarConnectionIds([connection.id])
       showActionNotice(`Added ${connection.title}`)
     },
     onCreateLocalConnection: async (title: string) => {
       const connection = await createLocalCalendarConnectionLocalFirst(title)
       if (getConnectivityState()) {
-        await refreshCalendarConnections({ preferredSelectedConnectionId: connection.id })
+        await refreshCalendarConnections({ preferredSelectedConnectionIds: [connection.id] })
       } else {
         setCalendarConnections((current) => [connection, ...current])
       }
-      setSelectedCalendarConnectionId(connection.id)
+      setSelectedCalendarConnectionIds([connection.id])
       showActionNotice(`Added ${connection.title}`)
     },
     onRenameConnection: async (id: string, title: string) => {
@@ -4939,29 +4952,24 @@ function App() {
       await deleteCalendarConnectionLocalFirst(id)
       if (getConnectivityState()) {
         await refreshCalendarConnections({
-          preferredSelectedConnectionId:
-            selectedCalendarConnectionId === id ? null : selectedCalendarConnectionId,
+          preferredSelectedConnectionIds: selectedCalendarConnectionIds.filter((entry) => entry !== id),
         })
-        if (selectedCalendarConnectionId === id) {
+        if (selectedCalendarConnectionIds.includes(id)) {
           setCalendarEvents([])
         }
       } else {
         setCalendarConnections((current) => current.filter((entry) => entry.id !== id))
         setCalendarEvents((current) => current.filter((event) => event.connection_id !== id))
-        if (selectedCalendarConnectionId === id) {
-          setSelectedCalendarConnectionId(calendarConnections.find((entry) => entry.id !== id)?.id ?? null)
-        }
+        setSelectedCalendarConnectionIds((current) => {
+          const next = current.filter((entry) => entry !== id)
+          return next.length > 0 ? next : (calendarConnections.find((entry) => entry.id !== id)?.id ? [calendarConnections.find((entry) => entry.id !== id)!.id] : [])
+        })
       }
       showActionNotice('Removed calendar')
     },
     onRefresh: async () => {
-      if (!selectedCalendarConnectionId) return
-      setCalendarLoading(true)
-      try {
-        await refreshCalendarEvents(selectedCalendarConnectionId)
-      } finally {
-        setCalendarLoading(false)
-      }
+      if (selectedCalendarConnectionIds.length === 0) return
+      await refreshCalendarEvents(selectedCalendarConnectionIds)
     },
     onCreateEvent: async (payload: {
       title: string
@@ -4971,10 +4979,10 @@ function App() {
       end_at: string
       all_day: boolean
     }) => {
-      if (!selectedCalendarConnectionId) return
-      const created = await createCalendarEventLocalFirst(selectedCalendarConnectionId, payload)
+      if (!primarySelectedCalendarConnectionId) return
+      const created = await createCalendarEventLocalFirst(primarySelectedCalendarConnectionId, payload)
       if (getConnectivityState()) {
-        await refreshCalendarEvents(selectedCalendarConnectionId)
+        await refreshCalendarEvents(selectedCalendarConnectionIds)
       } else {
         setCalendarEvents((current) => [...current, created].sort((left, right) => left.start_at.localeCompare(right.start_at)))
       }
@@ -4991,20 +4999,21 @@ function App() {
         all_day: boolean
       },
     ) => {
-      if (!selectedCalendarConnectionId) return
-      const updated = await updateCalendarEventLocalFirst(selectedCalendarConnectionId, eventId, payload)
+      if (!primarySelectedCalendarConnectionId) return
+      const updated = await updateCalendarEventLocalFirst(primarySelectedCalendarConnectionId, eventId, payload)
       if (getConnectivityState()) {
-        await refreshCalendarEvents(selectedCalendarConnectionId)
+        await refreshCalendarEvents(selectedCalendarConnectionIds)
       } else {
         setCalendarEvents((current) => current.map((event) => (event.id === updated.id ? updated : event)))
       }
       showActionNotice(`Updated ${payload.title}`)
     },
     onDeleteEvent: async (eventId: string) => {
-      if (!selectedCalendarConnectionId) return
-      await deleteCalendarEventLocalFirst(selectedCalendarConnectionId, eventId)
+      const existingEvent = calendarEvents.find((event) => event.id === eventId)
+      if (!existingEvent) return
+      await deleteCalendarEventLocalFirst(existingEvent.connection_id, eventId)
       if (getConnectivityState()) {
-        await refreshCalendarEvents(selectedCalendarConnectionId)
+        await refreshCalendarEvents(selectedCalendarConnectionIds)
       } else {
         setCalendarEvents((current) => current.filter((event) => event.id !== eventId))
       }
@@ -5031,8 +5040,8 @@ function App() {
       setSelectedTaskId(created.id)
       if (getConnectivityState()) {
         await refreshTasks({ preferredSelectedTaskId: created.id })
-        if (payload.calendar_connection_id && payload.calendar_connection_id === selectedCalendarConnectionId) {
-          await refreshCalendarEvents(payload.calendar_connection_id)
+        if (payload.calendar_connection_id && selectedCalendarConnectionIds.includes(payload.calendar_connection_id)) {
+          await refreshCalendarEvents(selectedCalendarConnectionIds)
         }
       } else {
         setTasks((current) => [created, ...current])
@@ -5062,9 +5071,9 @@ function App() {
       const refreshIds = new Set<string>()
       if (previous?.calendar_connection_id) refreshIds.add(previous.calendar_connection_id)
       if (payload.calendar_connection_id) refreshIds.add(payload.calendar_connection_id)
-      if (selectedCalendarConnectionId && refreshIds.has(selectedCalendarConnectionId)) {
+      if (selectedCalendarConnectionIds.some((id) => refreshIds.has(id))) {
         if (getConnectivityState()) {
-          await refreshCalendarEvents(selectedCalendarConnectionId)
+          await refreshCalendarEvents(selectedCalendarConnectionIds)
         } else {
           setCalendarEvents((current) => current)
         }
@@ -5081,9 +5090,9 @@ function App() {
         setTasks((current) => current.filter((task) => task.id !== id))
         setSelectedTaskId((current) => (current === id ? tasks.find((task) => task.id !== id)?.id ?? null : current))
       }
-      if (selectedCalendarConnectionId && previous?.calendar_connection_id === selectedCalendarConnectionId) {
+      if (previous?.calendar_connection_id && selectedCalendarConnectionIds.includes(previous.calendar_connection_id)) {
         if (getConnectivityState()) {
-          await refreshCalendarEvents(selectedCalendarConnectionId)
+          await refreshCalendarEvents(selectedCalendarConnectionIds)
         }
       }
       showActionNotice('Deleted task')
