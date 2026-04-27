@@ -198,6 +198,22 @@ impl BlobStorage {
         Ok(nodes)
     }
 
+    pub async fn reset_managed_root(&self, root_name: &str) -> AppResult<()> {
+        let root = self.root.join(root_name);
+        if fs::try_exists(&root)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?
+        {
+            fs::remove_dir_all(&root)
+                .await
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+        fs::create_dir_all(&root)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        Ok(())
+    }
+
     pub fn resolve_managed_path(&self, relative_path: &str) -> AppResult<PathBuf> {
         let relative = sanitize_managed_path(relative_path)?;
         Ok(self.resolve(&relative))
