@@ -17,8 +17,8 @@ In this example:
 - `/usr/local/bin/update-home-suite-home` runs:
 
 ```sh
-docker-compose -f /opt/home-suite-home-deploy/docker-compose.yml pull server web
-docker-compose -f /opt/home-suite-home-deploy/docker-compose.yml up -d server web
+docker compose -f /opt/home-suite-home-deploy/docker-compose.yml pull server web
+docker compose -f /opt/home-suite-home-deploy/docker-compose.yml up -d server web
 ```
 
 That means the app can pull the latest published `server` and `web` images and restart only those services.
@@ -32,6 +32,7 @@ That means the app can pull the latest published `server` and `web` images and r
 ```env
 APP_BASE_URL=https://home-suite-home.example.com
 WEB_BASE_URL=https://home-suite-home.example.com
+DRAWIO_PUBLIC_URL=https://home-suite-home.example.com:4175
 PUBLIC_HOSTNAME=home-suite-home.example.com
 JWT_SECRET=replace-me
 BOOTSTRAP_EMAIL=admin@example.com
@@ -53,7 +54,7 @@ chmod +x update-home-suite-home.sh
 5. Start the stack:
 
 ```sh
-docker-compose up -d
+docker compose up -d
 ```
 
 ## Recommended reverse proxy shape
@@ -63,29 +64,60 @@ Use one public origin for the browser app and proxy the private host ports from 
 - `/` -> `127.0.0.1:${HSH_WEB_HOST_PORT:-14173}`
 - `/api/*` -> `127.0.0.1:${HSH_SERVER_HOST_PORT:-18093}`
 - `/ws/*` -> `127.0.0.1:${HSH_SERVER_HOST_PORT:-18093}`
-- `/drawio*` -> `127.0.0.1:${HSH_DRAWIO_HOST_PORT:-18083}` with the `/drawio` prefix stripped before proxying upstream
 
-With this shape, the published web image does not need a machine-specific API base URL. It uses the same public origin by default and talks to the backend through `/api` and `/ws`.
+Expose draw.io on its own public URL instead of trying to proxy it under `/drawio`. The official `jgraph/drawio` image does not behave reliably under a simple subpath reverse proxy.
+
+With this shape, the published web image does not need a machine-specific API base URL. It uses the same public origin by default and talks to the backend through `/api` and `/ws`, while draw.io is discovered at runtime from `DRAWIO_PUBLIC_URL`.
 
 Example Caddy shape:
 
 ```caddy
-home-suite-home.example.com {
-    handle_path /api/* {
+home-suite-home.example.com:4174 {
+    tls {
+        get_certificate tailscale
+    }
+
+    handle /api/* {
         reverse_proxy 127.0.0.1:18093
     }
 
-    handle_path /ws/* {
+    handle /ws/* {
         reverse_proxy 127.0.0.1:18093
-    }
-
-    handle_path /drawio* {
-        reverse_proxy 127.0.0.1:18083
     }
 
     handle {
         reverse_proxy 127.0.0.1:14173
     }
+}
+
+home-suite-home.example.com:4175 {
+    tls {
+        get_certificate tailscale
+    }
+
+    reverse_proxy 127.0.0.1:18083
+}
+```
+
+If you are not using Tailscale TLS and instead terminate TLS on the standard HTTPS port, the same split still applies:
+
+```caddy
+home-suite-home.example.com {
+    handle /api/* {
+        reverse_proxy 127.0.0.1:18093
+    }
+
+    handle /ws/* {
+        reverse_proxy 127.0.0.1:18093
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:14173
+    }
+}
+
+drawio.home-suite-home.example.com {
+    reverse_proxy 127.0.0.1:18083
 }
 ```
 

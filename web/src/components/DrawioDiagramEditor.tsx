@@ -1,4 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { isNativePlatform } from '../lib/platform'
+import { api } from '../lib/api'
 
 export type DrawioDiagramEditorHandle = {
   requestSave: () => void
@@ -49,6 +51,12 @@ function resolveRuntimeBaseUrl(configuredUrl: string | undefined, fallbackPort: 
 }
 
 export function getDrawioBaseUrl() {
+  if (api.drawioBase) {
+    return api.drawioBase
+  }
+  if (isNativePlatform() && api.apiBase) {
+    return `${api.apiBase}/drawio`
+  }
   return resolveRuntimeBaseUrl(import.meta.env.VITE_DRAWIO_URL, 18083)
 }
 

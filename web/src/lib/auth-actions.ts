@@ -1,7 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from './api'
 import type { RoutePath } from './app-config'
-import { sessionStore } from './platform'
+import { isNativePlatform, sessionStore } from './platform'
 import { bootstrapWorkspace, loadCachedWorkspaceSnapshot } from './sync-engine'
 import type { AdminSettings, Diagram, FileNode, OidcConfig, RtcConfig, SessionResponse, SetupAdminRequest, SetupStatusResponse, VoiceMemo, Note, UserProfile, Message, Room } from './types'
 
@@ -9,13 +9,15 @@ type AdminUserSummary = import('./types').AdminUserSummary
 type AdminStorageOverview = import('./types').AdminStorageOverview
 type ChangePasswordRequest = import('./types').ChangePasswordRequest
 
+type AuthMode = 'boot' | 'connect' | 'setup' | 'login' | 'change-password' | 'ready'
+
 type CreateAuthActionsContext = {
   adminSettings: AdminSettings | null
   session: SessionResponse | null
   setStatus: Dispatch<SetStateAction<string>>
   setOidc: Dispatch<SetStateAction<OidcConfig | null>>
   setSetupStatus: Dispatch<SetStateAction<SetupStatusResponse | null>>
-  setAuthMode: Dispatch<SetStateAction<'boot' | 'setup' | 'login' | 'change-password' | 'ready'>>
+  setAuthMode: Dispatch<SetStateAction<AuthMode>>
   setRoute: Dispatch<SetStateAction<RoutePath>>
   setSession: Dispatch<SetStateAction<SessionResponse | null>>
   setAdminSettings: Dispatch<SetStateAction<AdminSettings | null>>
@@ -92,12 +94,21 @@ export function createAuthActions(context: CreateAuthActionsContext) {
   async function bootstrap() {
     try {
       context.setStatus('Connecting to API')
+      if (isNativePlatform()) {
+        const configuredServer = await api.getServerBaseUrl()
+        if (!configuredServer) {
+          context.setAuthMode('connect')
+          context.setStatus('Enter your Home Suite Home server URL')
+          return
+        }
+      }
       const callbackParams = new URLSearchParams(window.location.search)
       const callbackCode = callbackParams.get('code')
       const callbackState = callbackParams.get('state') ?? undefined
       const [oidcConfig, setup] = await Promise.all([api.oidcConfig(), api.setupStatus()])
       context.setOidc(oidcConfig)
       context.setSetupStatus(setup)
+      api.setDrawioBaseUrl(setup.drawio_public_url)
       if (!setup.admin_exists) {
         context.setAuthMode('setup')
         context.setStatus('Create the first admin account')
@@ -178,7 +189,10 @@ export function createAuthActions(context: CreateAuthActionsContext) {
 
   async function updateCurrentUserCredentials(payload: { username: string; email: string }) {
     if (!context.session) return null
-    const currentVisibleEmail = context.session.user.email.endsWith('@local.sweet') ? '' : context.session.user.email
+    const currentVisibleEmail =
+      context.session.user.email.endsWith('@local.sweet') || context.session.user.email.endsWith('@local.home-suite-home')
+        ? ''
+        : context.session.user.email
     const usernameChanged = payload.username.trim() !== context.session.user.username
     const emailChanged = payload.email.trim() !== currentVisibleEmail
     const updated = await api.updateCurrentUserCredentials(payload)

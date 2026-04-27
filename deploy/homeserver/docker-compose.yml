@@ -42,6 +42,7 @@ services:
       APP_PORT: 8080
       APP_BASE_URL: ${APP_BASE_URL}
       WEB_BASE_URL: ${WEB_BASE_URL}
+      DRAWIO_PUBLIC_URL: ${DRAWIO_PUBLIC_URL}
       APP_VERSION: ${HSH_RELEASE_LABEL:-latest}
       APP_UPDATE_TARGET: ${APP_UPDATE_TARGET:-homeserver docker stack}
       APP_UPDATE_COMMAND: /usr/local/bin/update-home-suite-home

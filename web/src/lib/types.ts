@@ -39,6 +39,7 @@ export interface SetupStatusResponse {
   admin_exists: boolean
   user_count: number
   sso_configured: boolean
+  drawio_public_url: string
 }
 
 export interface SetupAdminRequest {

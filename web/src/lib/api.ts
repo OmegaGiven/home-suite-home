@@ -31,7 +31,7 @@ import type {
   UpdateAccountCredentialsRequest,
   UserProfile,
 } from './types'
-import { sessionStore } from './platform'
+import { isNativePlatform, serverBaseStore, sessionStore } from './platform'
 
 function resolveRuntimeBaseUrl(configuredUrl: string | undefined) {
   if (typeof window === 'undefined') {
@@ -63,29 +63,47 @@ function resolveRuntimeBaseUrl(configuredUrl: string | undefined) {
   }
 }
 
-function buildUrl(path: string) {
-  return API_BASE ? `${API_BASE}${path}` : path
+let runtimeApiBase = resolveRuntimeBaseUrl(import.meta.env.VITE_API_BASE_URL)
+let runtimeDrawioBase = resolveRuntimeBaseUrl(import.meta.env.VITE_DRAWIO_URL)
+
+function normalizeConfiguredBase(value: string | null | undefined) {
+  return value?.trim().replace(/\/+$/, '') || ''
 }
 
-function buildRealtimeBase() {
-  if (typeof window === 'undefined') {
-    return API_BASE.replace(/^http/i, 'ws')
+async function resolveApiBase() {
+  if (runtimeApiBase) return runtimeApiBase
+  if (isNativePlatform()) {
+    const stored = await serverBaseStore.get()
+    runtimeApiBase = normalizeConfiguredBase(stored)
   }
-  if (!API_BASE) {
+  return runtimeApiBase
+}
+
+function buildUrl(base: string, path: string) {
+  return base ? `${base}${path}` : path
+}
+
+function buildRealtimeBase(base: string) {
+  if (typeof window === 'undefined') {
+    return base.replace(/^http/i, 'ws')
+  }
+  if (!base) {
     return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
   }
-  return API_BASE.replace(/^http/i, 'ws')
+  return base.replace(/^http/i, 'ws')
 }
 
-const API_BASE = resolveRuntimeBaseUrl(import.meta.env.VITE_API_BASE_URL)
-
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const base = await resolveApiBase()
+  if (!base && isNativePlatform()) {
+    throw new Error('Server not configured')
+  }
   const session = await sessionStore.get()
   const headers = new Headers(init?.headers)
   if (session?.token) {
     headers.set('Authorization', `Bearer ${session.token}`)
   }
-  const response = await fetch(buildUrl(path), {
+  const response = await fetch(buildUrl(base, path), {
     ...init,
     headers,
   })
@@ -104,9 +122,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  apiBase: API_BASE,
-  realtimeUrl(path = '/ws/realtime') {
-    return `${buildRealtimeBase()}${path}`
+  get apiBase() {
+    return runtimeApiBase
+  },
+  get drawioBase() {
+    return runtimeDrawioBase
+  },
+  async setServerBaseUrl(url: string) {
+    runtimeApiBase = normalizeConfiguredBase(url)
+    await serverBaseStore.set(runtimeApiBase)
+  },
+  setDrawioBaseUrl(url: string | null | undefined) {
+    runtimeDrawioBase = normalizeConfiguredBase(url)
+  },
+  async clearServerBaseUrl() {
+    runtimeApiBase = ''
+    runtimeDrawioBase = ''
+    await serverBaseStore.clear()
+  },
+  async getServerBaseUrl() {
+    const base = await resolveApiBase()
+    return base || null
+  },
+  async realtimeUrl(path = '/ws/realtime') {
+    const base = await resolveApiBase()
+    if (!base && isNativePlatform()) {
+      throw new Error('Server not configured')
+    }
+    return `${buildRealtimeBase(base)}${path}`
   },
   login(email: string, password: string) {
     return request<SessionResponse>('/api/v1/auth/login', {
@@ -229,11 +272,13 @@ export const api = {
     return request<TranscriptionJob>(`/api/v1/voice-memos/${id}/job`)
   },
   voiceMemoAudioUrl(id: string) {
-    return buildUrl(`/api/v1/voice-memos/${id}/audio`)
+    const base = runtimeApiBase || resolveRuntimeBaseUrl(import.meta.env.VITE_API_BASE_URL)
+    return buildUrl(base, `/api/v1/voice-memos/${id}/audio`)
   },
   userAvatarUrl(userId: string, avatarPath?: string | null) {
     const version = avatarPath ? `?v=${encodeURIComponent(avatarPath)}` : ''
-    return buildUrl(`/api/v1/users/${encodeURIComponent(userId)}/avatar${version}`)
+    const base = runtimeApiBase || resolveRuntimeBaseUrl(import.meta.env.VITE_API_BASE_URL)
+    return buildUrl(base, `/api/v1/users/${encodeURIComponent(userId)}/avatar${version}`)
   },
   uploadCurrentUserAvatar(file: Blob, filename: string) {
     const body = new FormData()
@@ -502,7 +547,11 @@ export const api = {
     })
   },
   async deleteFile(path: string) {
-    const response = await fetch(buildUrl('/api/v1/files/delete'), {
+    const base = await resolveApiBase()
+    if (!base && isNativePlatform()) {
+      throw new Error('Server not configured')
+    }
+    const response = await fetch(buildUrl(base, '/api/v1/files/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path }),
@@ -513,10 +562,15 @@ export const api = {
     }
   },
   fileDownloadUrl(path: string) {
-    return buildUrl(`/api/v1/files/download?path=${encodeURIComponent(path)}`)
+    const base = runtimeApiBase || resolveRuntimeBaseUrl(import.meta.env.VITE_API_BASE_URL)
+    return buildUrl(base, `/api/v1/files/download?path=${encodeURIComponent(path)}`)
   },
   async fileText(path: string) {
-    const response = await fetch(buildUrl(`/api/v1/files/download?path=${encodeURIComponent(path)}`))
+    const base = await resolveApiBase()
+    if (!base && isNativePlatform()) {
+      throw new Error('Server not configured')
+    }
+    const response = await fetch(buildUrl(base, `/api/v1/files/download?path=${encodeURIComponent(path)}`))
     if (!response.ok) {
       const body = await response.text()
       throw new Error(body || `Request failed: ${response.status}`)

@@ -117,6 +117,7 @@ pub struct SetupStatusResponse {
     pub admin_exists: bool,
     pub user_count: usize,
     pub sso_configured: bool,
+    pub drawio_public_url: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]

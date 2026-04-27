@@ -124,7 +124,9 @@ impl AppState {
 
     pub async fn new(config: Config, storage: BlobStorage) -> AppResult<Self> {
         let persistence = PersistenceBackend::initialize(&config).await?;
-        let mut initial_state = if let Some(bytes) = persistence.load_snapshot().await? {
+        let loaded_snapshot = persistence.load_snapshot().await?;
+        let seeded_from_scratch = loaded_snapshot.is_none();
+        let mut initial_state = if let Some(bytes) = loaded_snapshot {
             serde_json::from_slice::<StateData>(&bytes)
                 .map_err(|err| AppError::Internal(err.to_string()))?
         } else {
@@ -210,6 +212,37 @@ impl AppState {
                 normalize_user_roles(stored_user.profile.role.clone(), &stored_user.profile.roles);
             stored_user.profile.role = primary_user_role(&stored_user.profile.roles);
         }
+        let mut seeded_default_calendar = false;
+        if initial_state.calendar_connections.is_empty() {
+            let owner = initial_state
+                .users
+                .values()
+                .next()
+                .map(|stored| stored.profile.clone())
+                .unwrap_or_else(|| initial_state.user.clone());
+            let connection_id = Uuid::new_v4();
+            let connection = CalendarConnection {
+                id: connection_id,
+                owner_id: owner.id,
+                owner_display_name: owner.display_name.clone(),
+                title: "Home".into(),
+                provider: crate::models::CalendarProvider::Sweet,
+                external_id: String::new(),
+                calendar_id: format!("sweet:{}", connection_id),
+                account_label: "Home Suite Home calendar".into(),
+                access_token: None,
+                refresh_token: None,
+                token_expires_at: None,
+                ics_url: None,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            };
+            initial_state
+                .calendar_connections
+                .insert(connection.id, connection.clone());
+            initial_state.calendar_events.entry(connection.id).or_default();
+            seeded_default_calendar = true;
+        }
         {
             let member_policy = initial_state
                 .admin_settings
@@ -241,6 +274,10 @@ impl AppState {
             inner: Arc::new(RwLock::new(initial_state)),
             system_update: Arc::new(RwLock::new(system_update)),
         };
+        if (seeded_from_scratch || seeded_default_calendar) && app.persistence.uses_postgres() {
+            let snapshot = app.inner.read().await.clone();
+            app.persist_snapshot(snapshot).await?;
+        }
         app.sync_note_files().await?;
         app.sync_diagram_files().await?;
         Ok(app)
@@ -383,7 +420,7 @@ impl AppState {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| username.clone());
-        let resolved_email = email.unwrap_or_else(|| format!("{username}@local.sweet"));
+        let resolved_email = email.unwrap_or_else(|| format!("{username}@local.home-suite-home"));
 
         let mut state = self.inner.write().await;
         if let Some(existing) = state
@@ -460,6 +497,7 @@ impl AppState {
             sso_configured: oidc.enabled
                 && !oidc.issuer.trim().is_empty()
                 && !oidc.client_id.trim().is_empty(),
+            drawio_public_url: self.config.drawio_public_url.clone(),
         }
     }
 
@@ -1143,7 +1181,7 @@ impl AppState {
             provider: CalendarProvider::Sweet,
             external_id: String::new(),
             calendar_id: format!("sweet:{}", connection_id),
-            account_label: "Sweet calendar".into(),
+            account_label: "Home Suite Home calendar".into(),
             access_token: None,
             refresh_token: None,
             token_expires_at: None,
@@ -1687,7 +1725,7 @@ impl AppState {
             return Err(AppError::BadRequest("email is required".into()));
         }
         let email = if requested_email.is_empty() {
-            format!("{}@local.sweet", username.to_lowercase())
+            format!("{}@local.home-suite-home", username.to_lowercase())
         } else {
             requested_email
         };
@@ -1804,7 +1842,7 @@ impl AppState {
             return Err(AppError::BadRequest("email is required".into()));
         }
         let normalized_email = if requested_email.is_empty() {
-            format!("{}@local.sweet", requested_username.to_lowercase())
+            format!("{}@local.home-suite-home", requested_username.to_lowercase())
         } else {
             requested_email
         };
@@ -3109,6 +3147,7 @@ impl AppState {
     }
 
     async fn sync_note_files(&self) -> AppResult<()> {
+        self.storage.reset_managed_root("notes").await?;
         let notes = self
             .inner
             .read()
@@ -3126,6 +3165,7 @@ impl AppState {
     }
 
     async fn sync_diagram_files(&self) -> AppResult<()> {
+        self.storage.reset_managed_root("diagrams").await?;
         let diagrams = self
             .inner
             .read()
@@ -4729,9 +4769,9 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
 
     let welcome_note = Note {
         id: Uuid::new_v4(),
-        title: "Welcome to Sweet".into(),
+        title: "Welcome to Home Suite Home".into(),
         folder: "Getting Started".into(),
-        markdown: "# Welcome to Sweet\n\nThis homelab workspace is seeded with:\n\n- live Markdown notes\n- draw.io-compatible diagram storage\n- voice memo ingestion and transcript jobs\n- chat rooms and call signaling\n- durable JSON state snapshots across restarts\n\nEdit this note and save it from the browser.".into(),
+        markdown: "# Welcome to Home Suite Home\n\nThis homelab workspace is seeded with:\n\n- live Markdown notes\n- draw.io-compatible diagram storage\n- voice memo ingestion and transcript jobs\n- chat rooms and call signaling\n- durable JSON state snapshots across restarts\n\nEdit this note and save it from the browser.".into(),
         rendered_html: String::new(),
         revision: 1,
         created_at: Utc::now(),
@@ -4743,7 +4783,7 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
     let starter_diagram = Diagram {
         id: Uuid::new_v4(),
         title: "Homelab Flow".into(),
-        xml: "<mxfile><diagram name=\"Page-1\"><mxGraphModel><root><mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/><mxCell id=\"2\" value=\"Sweet\" style=\"rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"240\" y=\"90\" width=\"120\" height=\"60\" as=\"geometry\"/></mxCell><mxCell id=\"3\" value=\"Authentik\" style=\"rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"60\" y=\"90\" width=\"120\" height=\"60\" as=\"geometry\"/></mxCell><mxCell id=\"4\" value=\"Snapshots\" style=\"shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"420\" y=\"90\" width=\"90\" height=\"80\" as=\"geometry\"/></mxCell><mxCell id=\"5\" value=\"OIDC\" edge=\"1\" parent=\"1\" source=\"2\" target=\"3\"><mxGeometry relative=\"1\" as=\"geometry\"/></mxCell><mxCell id=\"6\" value=\"state\" edge=\"1\" parent=\"1\" source=\"2\" target=\"4\"><mxGeometry relative=\"1\" as=\"geometry\"/></mxCell></root></mxGraphModel></diagram></mxfile>".into(),
+        xml: "<mxfile><diagram name=\"Page-1\"><mxGraphModel><root><mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/><mxCell id=\"2\" value=\"Home Suite Home\" style=\"rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"220\" y=\"90\" width=\"160\" height=\"60\" as=\"geometry\"/></mxCell><mxCell id=\"3\" value=\"Authentik\" style=\"rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"40\" y=\"90\" width=\"120\" height=\"60\" as=\"geometry\"/></mxCell><mxCell id=\"4\" value=\"Snapshots\" style=\"shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"430\" y=\"90\" width=\"90\" height=\"80\" as=\"geometry\"/></mxCell><mxCell id=\"5\" value=\"OIDC\" edge=\"1\" parent=\"1\" source=\"2\" target=\"3\"><mxGeometry relative=\"1\" as=\"geometry\"/></mxCell><mxCell id=\"6\" value=\"state\" edge=\"1\" parent=\"1\" source=\"2\" target=\"4\"><mxGeometry relative=\"1\" as=\"geometry\"/></mxCell></root></mxGraphModel></diagram></mxfile>".into(),
         revision: 1,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -4755,9 +4795,27 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         id: Uuid::new_v4(),
         room_id: general_room.id,
         author: user.clone(),
-        body: "Sweet is up. Use this room for internal chat and signaling tests.".into(),
+        body: "Home Suite Home is up. Use this room for internal chat and signaling tests.".into(),
         created_at: Utc::now(),
         reactions: Vec::new(),
+    };
+
+    let default_calendar_id = Uuid::new_v4();
+    let default_calendar = CalendarConnection {
+        id: default_calendar_id,
+        owner_id: user.id,
+        owner_display_name: user.display_name.clone(),
+        title: "Home".into(),
+        provider: crate::models::CalendarProvider::Sweet,
+        external_id: String::new(),
+        calendar_id: format!("sweet:{}", default_calendar_id),
+        account_label: "Home Suite Home calendar".into(),
+        access_token: None,
+        refresh_token: None,
+        token_expires_at: None,
+        ics_url: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
     };
 
     Ok(StateData {
@@ -4813,8 +4871,8 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         jobs: HashMap::new(),
         rooms: HashMap::from([(general_room.id, general_room)]),
         messages: HashMap::from([(welcome_message.room_id, vec![welcome_message])]),
-        calendar_connections: HashMap::new(),
-        calendar_events: HashMap::new(),
+        calendar_connections: HashMap::from([(default_calendar.id, default_calendar.clone())]),
+        calendar_events: HashMap::from([(default_calendar.id, Vec::new())]),
         tasks: HashMap::new(),
         resource_shares: HashMap::new(),
         sync_tombstones: Vec::new(),
@@ -4972,7 +5030,7 @@ mod tests {
 
     async fn test_state() -> AppState {
         let mut config = Config::from_env();
-        config.storage_root = std::env::temp_dir().join(format!("sweet-test-{}", Uuid::new_v4()));
+        config.storage_root = std::env::temp_dir().join(format!("home-suite-home-test-{}", Uuid::new_v4()));
         let storage = BlobStorage::new(config.storage_root.clone())
             .await
             .expect("create blob storage");

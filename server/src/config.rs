@@ -7,6 +7,7 @@ pub struct Config {
     pub port: u16,
     pub base_url: String,
     pub web_base_url: String,
+    pub drawio_public_url: String,
     pub database_url: String,
     pub jwt_secret: String,
     pub bootstrap_email: String,
@@ -39,6 +40,8 @@ impl Config {
             base_url: env::var("APP_BASE_URL").unwrap_or_else(|_| "http://localhost:8080".into()),
             web_base_url: env::var("WEB_BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:4173".into()),
+            drawio_public_url: env::var("DRAWIO_PUBLIC_URL")
+                .unwrap_or_else(|_| "http://localhost:18083".into()),
             database_url: env::var("DATABASE_URL").unwrap_or_default(),
             jwt_secret: env::var("JWT_SECRET").unwrap_or_else(|_| "change-me".into()),
             bootstrap_email: env::var("BOOTSTRAP_EMAIL")
@@ -56,8 +59,8 @@ impl Config {
                 .split(',')
                 .map(|value| value.trim().to_string())
                 .collect(),
-            turn_username: env::var("TURN_USERNAME").unwrap_or_else(|_| "sweet".into()),
-            turn_credential: env::var("TURN_CREDENTIAL").unwrap_or_else(|_| "sweetturn".into()),
+            turn_username: env::var("TURN_USERNAME").unwrap_or_else(|_| "hsh".into()),
+            turn_credential: env::var("TURN_CREDENTIAL").unwrap_or_else(|_| "hshturn".into()),
             transcription_model: env::var("TRANSCRIPTION_MODEL")
                 .unwrap_or_else(|_| "tiny.en".into()),
             transcription_model_path: env::var("TRANSCRIPTION_MODEL_PATH")
