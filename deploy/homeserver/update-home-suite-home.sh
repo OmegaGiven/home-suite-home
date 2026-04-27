@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-STACK_DIR="${HSH_STACK_DIR:-/opt/home-suite-home-deploy}"
+STACK_DIR="${HSH_STACK_DIR:-/home-suite-home}"
 COMPOSE_FILE="${HSH_COMPOSE_FILE:-$STACK_DIR/docker-compose.yml}"
 
 cd "$STACK_DIR"

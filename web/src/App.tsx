@@ -164,6 +164,13 @@ function createEntityId() {
   return `00000000-0000-4000-8000-${Date.now().toString(16).slice(-12).padStart(12, '0')}`
 }
 
+function normalizeServerConnectionUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+  return withScheme.replace(/\/+$/, '')
+}
+
 function slugForNoteTitle(title: string) {
   const slug = title
     .split('')
@@ -2877,7 +2884,7 @@ function App() {
           } else if (mergedSelectedPatch) {
             setNoteDraft(mergedSelectedPatch.markdown)
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
+            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current && !editorHasLocalFocus) {
               noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedPatch.markdown)
             }
             setStatus(
@@ -2939,7 +2946,7 @@ function App() {
           } else if (mergedSelectedDraft) {
             setNoteDraft(mergedSelectedDraft.markdown)
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
+            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current && !editorHasLocalFocus) {
               noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedDraft.markdown)
             }
             setStatus(
@@ -5185,11 +5192,16 @@ function App() {
           ssoConfigured={setupStatus?.sso_configured ?? false}
           serverUrl={serverUrl}
           onSaveServerUrl={async (url) => {
-            const normalized = url.trim().replace(/\/+$/, '')
+            const normalized = normalizeServerConnectionUrl(url)
+            if (!normalized) {
+              setStatus('Enter your Home Suite Home server URL')
+              setAuthMode('connect')
+              return
+            }
             await api.setServerBaseUrl(normalized)
             setServerUrl(normalized)
             setAuthMode('boot')
-            setStatus('Connecting to API')
+            setStatus(`Connecting to ${normalized}`)
             await bootstrap()
           }}
           onEditServerUrl={authMode !== 'connect' && isNativePlatform() ? () => setAuthMode('connect') : undefined}

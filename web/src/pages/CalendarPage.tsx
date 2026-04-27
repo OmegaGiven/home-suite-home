@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { DeleteIcon, RefreshIcon, RenameIcon, VisibilityIcon } from '../components/LibraryActionIcons'
 import type { CalendarConnection, CalendarEvent, GoogleCalendarConfig, ResourceVisibility } from '../lib/types'
 
 type Props = {
@@ -423,26 +424,15 @@ export function CalendarPage({
                   ) : (
                     <h2>Calendar</h2>
                   )}
-                  <p className="muted">
-                    {selectedConnection
-                      ? `${selectedConnection.provider === 'google' ? 'Google Calendar' : selectedConnection.provider === 'ics' ? 'Apple/iCloud feed' : 'Home Suite Home calendar'} · ${selectedConnection.account_label}`
-                      : ''}
-                  </p>
                 </div>
                 <div className="button-row">
-                  <button className="button-secondary" type="button" onClick={() => setVisibleMonth(startOfMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1)))}>
-                    Prev
-                  </button>
                   <button className="button-secondary" type="button" onClick={() => { setVisibleMonth(startOfMonth(new Date())); setSelectedDay(new Date()) }}>
                     Today
                   </button>
-                  <button className="button-secondary" type="button" onClick={() => setVisibleMonth(startOfMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1)))}>
-                    Next
-                  </button>
                   {selectedConnection ? (
                     <>
-                      <button className="button-secondary" type="button" onClick={() => void onRefresh()}>
-                        Refresh
+                      <button className="icon-button" type="button" aria-label="Refresh calendar" title="Refresh calendar" onClick={() => void onRefresh()}>
+                        <RefreshIcon />
                       </button>
                       {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
                         <button className="button" type="button" onClick={openCreateEventModal}>
@@ -451,14 +441,26 @@ export function CalendarPage({
                       ) : null}
                       {isSelectedOwnedByCurrentUser ? (
                         <>
-                          <button className="button-secondary" type="button" onClick={() => setRenamingConnection(true)}>
-                            Rename
+                          <button className="icon-button" type="button" aria-label="Rename calendar" title="Rename calendar" onClick={() => setRenamingConnection(true)}>
+                            <RenameIcon />
                           </button>
-                          <button className="button-secondary" type="button" onClick={() => onOpenShareDialog({ resourceKey: resourceKeyForCalendar(selectedConnection.id), label: selectedConnection.title })}>
-                            Visibility
+                          <button
+                            className="icon-button"
+                            type="button"
+                            aria-label="Calendar visibility"
+                            title="Calendar visibility"
+                            onClick={() => onOpenShareDialog({ resourceKey: resourceKeyForCalendar(selectedConnection.id), label: selectedConnection.title })}
+                          >
+                            <VisibilityIcon />
                           </button>
-                          <button className="button-secondary danger-button" type="button" onClick={() => void onDeleteConnection(selectedConnection.id)}>
-                            Delete
+                          <button
+                            className="icon-button danger-button"
+                            type="button"
+                            aria-label="Delete calendar"
+                            title="Delete calendar"
+                            onClick={() => void onDeleteConnection(selectedConnection.id)}
+                          >
+                            <DeleteIcon />
                           </button>
                         </>
                       ) : null}
@@ -478,10 +480,10 @@ export function CalendarPage({
                 </button>
                 <div className="calendar-month-controls">
                   <label className="calendar-month-picker">
-                    <span className="sr-only">Select month</span>
                     <select
                       className="input calendar-month-select"
                       value={visibleMonth.getMonth()}
+                      aria-label="Month"
                       onChange={(event) => setVisibleMonthParts(Number(event.target.value), visibleMonth.getFullYear())}
                     >
                       {MONTH_OPTIONS.map((option) => (
@@ -492,10 +494,10 @@ export function CalendarPage({
                     </select>
                   </label>
                   <label className="calendar-year-picker">
-                    <span className="sr-only">Select year</span>
                     <select
                       className="input calendar-year-select"
                       value={visibleMonth.getFullYear()}
+                      aria-label="Year"
                       onChange={(event) => setVisibleMonthParts(visibleMonth.getMonth(), Number(event.target.value))}
                     >
                       {yearOptions.map((year) => (

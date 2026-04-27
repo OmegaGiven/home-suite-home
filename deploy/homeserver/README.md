@@ -13,12 +13,12 @@ The `Deployment > Update now` button in Home Suite Home calls the server's admin
 In this example:
 
 - the server container mounts the host Docker socket
-- the deployment directory is mounted at `/opt/home-suite-home-deploy`
+- the deployment directory is mounted at `/home-suite-home`
 - `/usr/local/bin/update-home-suite-home` runs:
 
 ```sh
-docker compose -f /opt/home-suite-home-deploy/docker-compose.yml pull server web
-docker compose -f /opt/home-suite-home-deploy/docker-compose.yml up -d server web
+docker compose -f /home-suite-home/docker-compose.yml pull server web
+docker compose -f /home-suite-home/docker-compose.yml up -d server web
 ```
 
 That means the app can pull the latest published `server` and `web` images and restart only those services.

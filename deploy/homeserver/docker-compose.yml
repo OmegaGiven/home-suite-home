@@ -64,7 +64,7 @@ services:
     volumes:
       - server-storage:/app/storage
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./:/opt/home-suite-home-deploy
+      - ./:/home-suite-home
       - ./update-home-suite-home.sh:/usr/local/bin/update-home-suite-home:ro
     ports:
       - "${HSH_SERVER_HOST_PORT:-18093}:8080"

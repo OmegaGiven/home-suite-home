@@ -88,6 +88,74 @@ export function RenameIcon(props: IconProps) {
   )
 }
 
+export function VisibilityIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true" {...props}>
+      <path
+        d="M2.75 12s3.35-5.5 9.25-5.5 9.25 5.5 9.25 5.5-3.35 5.5-9.25 5.5S2.75 12 2.75 12Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="2.9" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  )
+}
+
+export function RefreshIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true" {...props}>
+      <path
+        d="M19.25 7.75V4.75h-3"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18.85 12a6.85 6.85 0 1 1-2-4.85l2.4-2.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+export function DeleteIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true" {...props}>
+      <path
+        d="M5.75 7.25h12.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M9.25 7.25v-1.5A1.75 1.75 0 0 1 11 4h2a1.75 1.75 0 0 1 1.75 1.75v1.5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7.25 7.25 8 19h8l.75-11.75"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M10 10.25v5.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M14 10.25v5.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 export function MicrophoneIcon(props: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true" {...props}>

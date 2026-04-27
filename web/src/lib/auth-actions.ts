@@ -160,6 +160,9 @@ export function createAuthActions(context: CreateAuthActionsContext) {
         context.setStatus('Offline mode using cached workspace')
         return
       }
+      if (isNativePlatform()) {
+        context.setAuthMode('connect')
+      }
       context.setStatus(error instanceof Error ? error.message : 'Failed to connect')
     }
   }
