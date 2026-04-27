@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react'
+import { getNativePlatform, isNativePlatform, openExternalUrl } from '../lib/platform'
 import type { ChangePasswordRequest, SetupAdminRequest } from '../lib/types'
+
+type ApkReleaseInfo = {
+  title: string
+  publishedAt: string
+  downloadUrl: string
+  releaseUrl: string
+  assetName: string
+}
 
 type Props = {
   mode: 'connect' | 'setup' | 'login' | 'change-password'
@@ -15,6 +24,9 @@ type Props = {
 
 export function AuthPage({ mode, status, ssoConfigured, serverUrl, onSaveServerUrl, onEditServerUrl, onLogin, onSetupAdmin, onChangePassword }: Props) {
   const [serverDraft, setServerDraft] = useState(serverUrl)
+  const [apkReleaseInfo, setApkReleaseInfo] = useState<ApkReleaseInfo | null>(null)
+  const [apkReleaseLoading, setApkReleaseLoading] = useState(false)
+  const [apkReleaseError, setApkReleaseError] = useState<string | null>(null)
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [changePassword, setChangePassword] = useState<ChangePasswordRequest>({
@@ -34,6 +46,46 @@ export function AuthPage({ mode, status, ssoConfigured, serverUrl, onSaveServerU
   useEffect(() => {
     setServerDraft(serverUrl)
   }, [serverUrl])
+
+  const isAndroidNative = isNativePlatform() && getNativePlatform() === 'android'
+
+  async function loadApkReleaseInfo() {
+    setApkReleaseLoading(true)
+    setApkReleaseError(null)
+    try {
+      const response = await fetch('https://api.github.com/repos/OmegaGiven/home-suite-home/releases/tags/android-latest')
+      if (!response.ok) {
+        throw new Error(`GitHub release lookup failed (${response.status})`)
+      }
+      const payload = (await response.json()) as {
+        name?: string
+        html_url?: string
+        published_at?: string
+        assets?: Array<{ name?: string; browser_download_url?: string }>
+      }
+      const apkAsset = payload.assets?.find((asset) => asset.name?.toLowerCase().endsWith('.apk') && asset.browser_download_url)
+      if (!apkAsset?.browser_download_url) {
+        throw new Error('No APK asset is published yet.')
+      }
+      setApkReleaseInfo({
+        title: payload.name?.trim() || 'Latest Android build',
+        publishedAt: payload.published_at || '',
+        downloadUrl: apkAsset.browser_download_url,
+        releaseUrl: payload.html_url || apkAsset.browser_download_url,
+        assetName: apkAsset.name || 'sweet-android-latest.apk',
+      })
+    } catch (error) {
+      setApkReleaseInfo(null)
+      setApkReleaseError(error instanceof Error ? error.message : 'Could not check for Android updates')
+    } finally {
+      setApkReleaseLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!isAndroidNative) return
+    void loadApkReleaseInfo()
+  }, [isAndroidNative])
 
   return (
     <section className="auth-shell">
@@ -112,6 +164,47 @@ export function AuthPage({ mode, status, ssoConfigured, serverUrl, onSaveServerU
           <button className="button-secondary" type="button" onClick={onEditServerUrl}>
             Change Server
           </button>
+        ) : null}
+        {isAndroidNative ? (
+          <div className="settings-card">
+            <h3>Android app updates</h3>
+            <p className="muted">
+              If this app is too old to connect cleanly, download the latest APK directly from GitHub Releases.
+            </p>
+            {apkReleaseInfo ? (
+              <div className="settings-list" style={{ marginBottom: 12 }}>
+                <div className="settings-list-row">
+                  <span>Release</span>
+                  <strong>{apkReleaseInfo.title}</strong>
+                </div>
+                <div className="settings-list-row">
+                  <span>Package</span>
+                  <strong>{apkReleaseInfo.assetName}</strong>
+                </div>
+                <div className="settings-list-row">
+                  <span>Published</span>
+                  <strong>{apkReleaseInfo.publishedAt ? new Date(apkReleaseInfo.publishedAt).toLocaleString() : 'Unknown'}</strong>
+                </div>
+              </div>
+            ) : null}
+            {apkReleaseError ? <div className="muted" style={{ color: '#ff8b8b', marginBottom: 12 }}>{apkReleaseError}</div> : null}
+            <div className="button-row">
+              <button className="button-secondary" type="button" disabled={apkReleaseLoading} onClick={() => void loadApkReleaseInfo()}>
+                {apkReleaseLoading ? 'Checking…' : 'Check update'}
+              </button>
+              <button
+                className="button"
+                type="button"
+                disabled={!apkReleaseInfo}
+                onClick={() => {
+                  if (!apkReleaseInfo) return
+                  void openExternalUrl(apkReleaseInfo.downloadUrl)
+                }}
+              >
+                Update to latest
+              </button>
+            </div>
+          </div>
         ) : null}
         <div className="muted">{status}</div>
         {ssoConfigured ? <div className="muted">SSO is configured and can be linked to accounts in a later pass.</div> : null}

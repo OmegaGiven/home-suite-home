@@ -10,6 +10,9 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+permissions:
+  contents: write
+
 jobs:
   build-android:
     runs-on: ubuntu-latest
@@ -54,3 +57,41 @@ jobs:
         with:
           name: sweet-android-debug-apk
           path: web/android/app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Publish latest Android APK prerelease
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TAG="android-latest"
+          TITLE="Android latest"
+          NOTES="Latest Android APK built from main.\n\nCommit: ${GITHUB_SHA}"
+          ASSET_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          ASSET_NAME="sweet-android-latest.apk"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSET_PATH}#${ASSET_NAME}" --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES" --prerelease
+          else
+            gh release create "$TAG" "${ASSET_PATH}#${ASSET_NAME}" --title "$TITLE" --notes "$NOTES" --prerelease
+          fi
+
+      - name: Publish tagged APK release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          TAG="${GITHUB_REF_NAME}"
+          TITLE="Android ${GITHUB_REF_NAME}"
+          NOTES="Android APK release for ${GITHUB_REF_NAME}."
+          ASSET_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          ASSET_NAME="sweet-${GITHUB_REF_NAME}.apk"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSET_PATH}#${ASSET_NAME}" --clobber
+            gh release edit "$TAG" --title "$TITLE" --notes "$NOTES"
+          else
+            gh release create "$TAG" "${ASSET_PATH}#${ASSET_NAME}" --title "$TITLE" --notes "$NOTES"
+          fi

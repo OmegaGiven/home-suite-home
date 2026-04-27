@@ -6,10 +6,16 @@ type PreferencesPlugin = {
   remove(options: { key: string }): Promise<void>
 }
 
+type BrowserPlugin = {
+  open(options: { url: string }): Promise<void>
+}
+
 type CapacitorRuntime = {
   isNativePlatform?: () => boolean
+  getPlatform?: () => string
   Plugins?: {
     Preferences?: PreferencesPlugin
+    Browser?: BrowserPlugin
   }
 }
 
@@ -30,6 +36,21 @@ function getPreferencesPlugin(): PreferencesPlugin | null {
 export function isNativePlatform() {
   if (typeof window === 'undefined') return false
   return window.Capacitor?.isNativePlatform?.() ?? false
+}
+
+export function getNativePlatform() {
+  if (typeof window === 'undefined') return 'web'
+  return window.Capacitor?.getPlatform?.() ?? 'web'
+}
+
+export async function openExternalUrl(url: string) {
+  if (typeof window === 'undefined') return
+  const browser = window.Capacitor?.Plugins?.Browser
+  if (browser?.open) {
+    await browser.open({ url })
+    return
+  }
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 export const sessionStore = {
