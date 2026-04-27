@@ -9,9 +9,10 @@ use crate::{
     config::Config,
     error::{AppError, AppResult},
     models::{
-        AdminSettings, Diagram, JobStatus, Message, Note, ResourceShare, ResourceVisibility, Room,
-        RoomKind, StoredUser, TranscriptSegment, TranscriptionJob, UserProfile, UserToolScope,
-        VoiceMemo,
+        AdminSettings, CalendarConnection, CalendarEvent, CalendarProvider, Diagram, JobStatus,
+        Message, MessageReaction, Note, ResourceShare, ResourceVisibility, Room, RoomKind,
+        StoredUser, SyncEntityKind, SyncTombstone, TaskItem, TaskStatus, TranscriptSegment,
+        TranscriptionJob, UserProfile, UserToolScope, VoiceMemo,
     },
     state::StateData,
 };
@@ -115,24 +116,78 @@ impl PersistenceBackend {
                             create table if not exists rooms (
                                 id text primary key,
                                 name text not null,
+                                folder text not null default '',
                                 kind text not null,
                                 created_at text not null,
                                 participant_ids_json text not null default '[]'
                             );
+                            alter table rooms add column if not exists folder text not null default '';
                             alter table rooms add column if not exists participant_ids_json text not null default '[]';
                             create table if not exists messages (
                                 id text primary key,
                                 room_id text not null,
                                 author_id text not null,
                                 body text not null,
-                                created_at text not null
+                                created_at text not null,
+                                reactions_json text not null default '[]'
                             );
+                            alter table messages add column if not exists reactions_json text not null default '[]';
                             create table if not exists resource_shares (
                                 resource_key text primary key,
                                 visibility text not null,
                                 user_ids_json text not null default '[]',
                                 updated_at text not null,
                                 updated_by text not null
+                            );
+                            create table if not exists calendar_connections (
+                                id text primary key,
+                                owner_id text not null,
+                                owner_display_name text not null default '',
+                                title text not null,
+                                provider text not null,
+                                external_id text not null,
+                                calendar_id text not null,
+                                account_label text not null default '',
+                                access_token text,
+                                refresh_token text,
+                                token_expires_at text,
+                                ics_url text,
+                                created_at text not null,
+                                updated_at text not null
+                            );
+                            create table if not exists calendar_events (
+                                id text primary key,
+                                connection_id text not null,
+                                title text not null,
+                                description text not null default '',
+                                location text not null default '',
+                                start_at text not null,
+                                end_at text not null,
+                                all_day boolean not null default false,
+                                source_url text not null default '',
+                                organizer text not null default '',
+                                updated_at text
+                            );
+                            create table if not exists tasks (
+                                id text primary key,
+                                owner_id text not null,
+                                owner_display_name text not null default '',
+                                title text not null,
+                                description text not null default '',
+                                status text not null,
+                                start_at text,
+                                end_at text,
+                                all_day boolean not null default false,
+                                calendar_connection_id text,
+                                created_at text not null,
+                                updated_at text not null,
+                                completed_at text
+                            );
+                            create table if not exists sync_tombstones (
+                                entity text not null,
+                                id text not null,
+                                deleted_at text not null,
+                                primary key (entity, id)
                             );",
                         )
                         .await
@@ -475,14 +530,14 @@ impl PersistenceBackend {
                 let mut rooms = HashMap::new();
                 for row in client
                     .query(
-                        "select id, name, kind, created_at, participant_ids_json from rooms",
+                        "select id, name, folder, kind, created_at, participant_ids_json from rooms",
                         &[],
                     )
                     .await
                     .map_err(|err| AppError::Internal(err.to_string()))?
                 {
                     let participant_ids =
-                        serde_json::from_str::<Vec<String>>(&row.get::<_, String>(4))
+                        serde_json::from_str::<Vec<String>>(&row.get::<_, String>(5))
                             .map_err(|err| AppError::Internal(err.to_string()))?
                             .into_iter()
                             .map(|value| parse_uuid(value.as_str()))
@@ -490,8 +545,9 @@ impl PersistenceBackend {
                     let room = Room {
                         id: parse_uuid(row.get::<_, String>(0).as_str())?,
                         name: row.get(1),
-                        kind: parse_room_kind(row.get::<_, String>(2).as_str())?,
-                        created_at: parse_datetime(row.get::<_, String>(3).as_str())?,
+                        folder: row.get(2),
+                        kind: parse_room_kind(row.get::<_, String>(3).as_str())?,
+                        created_at: parse_datetime(row.get::<_, String>(4).as_str())?,
                         participant_ids,
                         participant_labels: Vec::new(),
                     };
@@ -516,10 +572,11 @@ impl PersistenceBackend {
                 .map_err(|err| AppError::Internal(err.to_string()))?;
                 client
                     .execute(
-                        "insert into rooms (id, name, kind, created_at, participant_ids_json) values ($1,$2,$3,$4,$5)",
+                        "insert into rooms (id, name, folder, kind, created_at, participant_ids_json) values ($1,$2,$3,$4,$5,$6)",
                         &[
                             &room.id.to_string(),
                             &room.name,
+                            &room.folder,
                             &room_kind_to_str(&room.kind),
                             &room.created_at.to_rfc3339(),
                             &participant_ids_json,
@@ -546,8 +603,8 @@ impl PersistenceBackend {
                 .map_err(|err| AppError::Internal(err.to_string()))?;
                 client
                     .execute(
-                        "update rooms set name = $2, participant_ids_json = $3 where id = $1",
-                        &[&room.id.to_string(), &room.name, &participant_ids_json],
+                        "update rooms set name = $2, folder = $3, participant_ids_json = $4 where id = $1",
+                        &[&room.id.to_string(), &room.name, &room.folder, &participant_ids_json],
                     )
                     .await
                     .map_err(|err| AppError::Internal(err.to_string()))?;
@@ -584,7 +641,7 @@ impl PersistenceBackend {
                 let mut messages = Vec::new();
                 for row in client
                     .query(
-                        "select id, room_id, author_id, body, created_at from messages where room_id = $1 order by created_at asc",
+                        "select id, room_id, author_id, body, created_at, reactions_json from messages where room_id = $1 order by created_at asc",
                         &[&room_id.to_string()],
                     )
                     .await
@@ -611,6 +668,10 @@ impl PersistenceBackend {
                         author: author_profile,
                         body: row.get(3),
                         created_at: parse_datetime(row.get::<_, String>(4).as_str())?,
+                        reactions: serde_json::from_str::<Vec<MessageReaction>>(
+                            row.get::<_, String>(5).as_str(),
+                        )
+                        .unwrap_or_default(),
                     });
                 }
                 Ok(Some(messages))
@@ -632,17 +693,42 @@ impl PersistenceBackend {
                 if room_exists.is_none() {
                     return Err(AppError::NotFound);
                 }
+                let reactions_json = serde_json::to_string(&message.reactions)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
                 client
                     .execute(
-                        "insert into messages (id, room_id, author_id, body, created_at)
-                         values ($1,$2,$3,$4,$5)",
+                        "insert into messages (id, room_id, author_id, body, created_at, reactions_json)
+                         values ($1,$2,$3,$4,$5,$6)",
                         &[
                             &message.id.to_string(),
                             &message.room_id.to_string(),
                             &message.author.id.to_string(),
                             &message.body,
                             &message.created_at.to_rfc3339(),
+                            &reactions_json,
                         ],
+                    )
+                    .await
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
+                Ok(true)
+            }
+        }
+    }
+
+    pub async fn update_message_reactions(
+        &self,
+        message_id: Uuid,
+        reactions: &[MessageReaction],
+    ) -> AppResult<bool> {
+        match self {
+            Self::File { .. } => Ok(false),
+            Self::Postgres { client, .. } => {
+                let reactions_json = serde_json::to_string(reactions)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
+                client
+                    .execute(
+                        "update messages set reactions_json = $2 where id = $1",
+                        &[&message_id.to_string(), &reactions_json],
                     )
                     .await
                     .map_err(|err| AppError::Internal(err.to_string()))?;
@@ -657,8 +743,12 @@ async fn sync_relational_state(
     snapshot: &StateData,
 ) -> AppResult<()> {
     for statement in [
+        "delete from sync_tombstones",
+        "delete from tasks",
+        "delete from calendar_events",
         "delete from messages",
         "delete from rooms",
+        "delete from calendar_connections",
         "delete from resource_shares",
         "delete from transcription_jobs",
         "delete from voice_memos",
@@ -799,10 +889,11 @@ async fn sync_relational_state(
         .map_err(|err| AppError::Internal(err.to_string()))?;
         client
             .execute(
-                "insert into rooms (id, name, kind, created_at, participant_ids_json) values ($1,$2,$3,$4,$5)",
+                "insert into rooms (id, name, folder, kind, created_at, participant_ids_json) values ($1,$2,$3,$4,$5,$6)",
                 &[
                     &room.id.to_string(),
                     &room.name,
+                    &room.folder,
                     &room_kind_to_str(&room.kind),
                     &room.created_at.to_rfc3339(),
                     &participant_ids_json,
@@ -814,16 +905,19 @@ async fn sync_relational_state(
 
     for room_messages in snapshot.messages.values() {
         for message in room_messages {
+            let reactions_json = serde_json::to_string(&message.reactions)
+                .map_err(|err| AppError::Internal(err.to_string()))?;
             client
                 .execute(
-                    "insert into messages (id, room_id, author_id, body, created_at)
-                     values ($1,$2,$3,$4,$5)",
+                    "insert into messages (id, room_id, author_id, body, created_at, reactions_json)
+                     values ($1,$2,$3,$4,$5,$6)",
                     &[
                         &message.id.to_string(),
                         &message.room_id.to_string(),
                         &message.author.id.to_string(),
                         &message.body,
                         &message.created_at.to_rfc3339(),
+                        &reactions_json,
                     ],
                 )
                 .await
@@ -850,6 +944,99 @@ async fn sync_relational_state(
                     &user_ids_json,
                     &share.updated_at.to_rfc3339(),
                     &share.updated_by.to_string(),
+                ],
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+    }
+
+    for connection in snapshot.calendar_connections.values() {
+        client
+            .execute(
+                "insert into calendar_connections
+                 (id, owner_id, owner_display_name, title, provider, external_id, calendar_id, account_label, access_token, refresh_token, token_expires_at, ics_url, created_at, updated_at)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
+                &[
+                    &connection.id.to_string(),
+                    &connection.owner_id.to_string(),
+                    &connection.owner_display_name,
+                    &connection.title,
+                    &calendar_provider_to_str(&connection.provider),
+                    &connection.external_id,
+                    &connection.calendar_id,
+                    &connection.account_label,
+                    &connection.access_token,
+                    &connection.refresh_token,
+                    &connection.token_expires_at.map(|value| value.to_rfc3339()),
+                    &connection.ics_url,
+                    &connection.created_at.to_rfc3339(),
+                    &connection.updated_at.to_rfc3339(),
+                ],
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+    }
+
+    for events in snapshot.calendar_events.values() {
+        for event in events {
+            client
+                .execute(
+                    "insert into calendar_events
+                     (id, connection_id, title, description, location, start_at, end_at, all_day, source_url, organizer, updated_at)
+                     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+                    &[
+                        &event.id,
+                        &event.connection_id.to_string(),
+                        &event.title,
+                        &event.description,
+                        &event.location,
+                        &event.start_at.to_rfc3339(),
+                        &event.end_at.to_rfc3339(),
+                        &event.all_day,
+                        &event.source_url,
+                        &event.organizer,
+                        &event.updated_at.map(|value| value.to_rfc3339()),
+                    ],
+                )
+                .await
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+    }
+
+    for task in snapshot.tasks.values() {
+        client
+            .execute(
+                "insert into tasks
+                 (id, owner_id, owner_display_name, title, description, status, start_at, end_at, all_day, calendar_connection_id, created_at, updated_at, completed_at)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                &[
+                    &task.id.to_string(),
+                    &task.owner_id.to_string(),
+                    &task.owner_display_name,
+                    &task.title,
+                    &task.description,
+                    &task_status_to_str(&task.status),
+                    &task.start_at.map(|value| value.to_rfc3339()),
+                    &task.end_at.map(|value| value.to_rfc3339()),
+                    &task.all_day,
+                    &task.calendar_connection_id.map(|value| value.to_string()),
+                    &task.created_at.to_rfc3339(),
+                    &task.updated_at.to_rfc3339(),
+                    &task.completed_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+    }
+
+    for tombstone in &snapshot.sync_tombstones {
+        client
+            .execute(
+                "insert into sync_tombstones (entity, id, deleted_at) values ($1,$2,$3)",
+                &[
+                    &sync_entity_kind_to_str(&tombstone.entity),
+                    &tombstone.id,
+                    &tombstone.deleted_at.to_rfc3339(),
                 ],
             )
             .await
@@ -1018,13 +1205,13 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     let mut rooms = HashMap::new();
     for row in client
         .query(
-            "select id, name, kind, created_at, participant_ids_json from rooms",
+            "select id, name, folder, kind, created_at, participant_ids_json from rooms",
             &[],
         )
         .await
         .map_err(|err| AppError::Internal(err.to_string()))?
     {
-        let participant_ids = serde_json::from_str::<Vec<String>>(&row.get::<_, String>(4))
+        let participant_ids = serde_json::from_str::<Vec<String>>(&row.get::<_, String>(5))
             .map_err(|err| AppError::Internal(err.to_string()))?
             .into_iter()
             .map(|value| parse_uuid(value.as_str()))
@@ -1032,8 +1219,9 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         let room = Room {
             id: parse_uuid(row.get::<_, String>(0).as_str())?,
             name: row.get(1),
-            kind: parse_room_kind(row.get::<_, String>(2).as_str())?,
-            created_at: parse_datetime(row.get::<_, String>(3).as_str())?,
+            folder: row.get(2),
+            kind: parse_room_kind(row.get::<_, String>(3).as_str())?,
+            created_at: parse_datetime(row.get::<_, String>(4).as_str())?,
             participant_ids,
             participant_labels: Vec::new(),
         };
@@ -1043,7 +1231,7 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     let mut messages: HashMap<Uuid, Vec<Message>> = HashMap::new();
     for row in client
         .query(
-            "select id, room_id, author_id, body, created_at from messages order by created_at asc",
+            "select id, room_id, author_id, body, created_at, reactions_json from messages order by created_at asc",
             &[],
         )
         .await
@@ -1070,6 +1258,10 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             author: author_profile,
             body: row.get(3),
             created_at: parse_datetime(row.get::<_, String>(4).as_str())?,
+            reactions: serde_json::from_str::<Vec<MessageReaction>>(
+                row.get::<_, String>(5).as_str(),
+            )
+            .unwrap_or_default(),
         };
         messages.entry(message.room_id).or_default().push(message);
     }
@@ -1098,6 +1290,120 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         resource_shares.insert(share.resource_key.clone(), share);
     }
 
+    let mut calendar_connections = HashMap::new();
+    for row in client
+        .query(
+            "select id, owner_id, owner_display_name, title, provider, external_id, calendar_id, account_label, access_token, refresh_token, token_expires_at, ics_url, created_at, updated_at from calendar_connections",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        let connection = CalendarConnection {
+            id: parse_uuid(row.get::<_, String>(0).as_str())?,
+            owner_id: parse_uuid(row.get::<_, String>(1).as_str())?,
+            owner_display_name: row.get(2),
+            title: row.get(3),
+            provider: parse_calendar_provider(row.get::<_, String>(4).as_str())?,
+            external_id: row.get(5),
+            calendar_id: row.get(6),
+            account_label: row.get(7),
+            access_token: row.get(8),
+            refresh_token: row.get(9),
+            token_expires_at: row
+                .get::<_, Option<String>>(10)
+                .map(|value| parse_datetime(value.as_str()))
+                .transpose()?,
+            ics_url: row.get(11),
+            created_at: parse_datetime(row.get::<_, String>(12).as_str())?,
+            updated_at: parse_datetime(row.get::<_, String>(13).as_str())?,
+        };
+        calendar_connections.insert(connection.id, connection);
+    }
+
+    let mut calendar_events: HashMap<Uuid, Vec<CalendarEvent>> = HashMap::new();
+    for row in client
+        .query(
+            "select id, connection_id, title, description, location, start_at, end_at, all_day, source_url, organizer, updated_at from calendar_events order by start_at asc",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        let event = CalendarEvent {
+            id: row.get(0),
+            connection_id: parse_uuid(row.get::<_, String>(1).as_str())?,
+            title: row.get(2),
+            description: row.get(3),
+            location: row.get(4),
+            start_at: parse_datetime(row.get::<_, String>(5).as_str())?,
+            end_at: parse_datetime(row.get::<_, String>(6).as_str())?,
+            all_day: row.get(7),
+            source_url: row.get(8),
+            organizer: row.get(9),
+            updated_at: row
+                .get::<_, Option<String>>(10)
+                .map(|value| parse_datetime(value.as_str()))
+                .transpose()?,
+        };
+        calendar_events.entry(event.connection_id).or_default().push(event);
+    }
+
+    let mut tasks = HashMap::new();
+    for row in client
+        .query(
+            "select id, owner_id, owner_display_name, title, description, status, start_at, end_at, all_day, calendar_connection_id, created_at, updated_at, completed_at from tasks",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        let task = TaskItem {
+            id: parse_uuid(row.get::<_, String>(0).as_str())?,
+            owner_id: parse_uuid(row.get::<_, String>(1).as_str())?,
+            owner_display_name: row.get(2),
+            title: row.get(3),
+            description: row.get(4),
+            status: parse_task_status(row.get::<_, String>(5).as_str())?,
+            start_at: row
+                .get::<_, Option<String>>(6)
+                .map(|value| parse_datetime(value.as_str()))
+                .transpose()?,
+            end_at: row
+                .get::<_, Option<String>>(7)
+                .map(|value| parse_datetime(value.as_str()))
+                .transpose()?,
+            all_day: row.get(8),
+            calendar_connection_id: row
+                .get::<_, Option<String>>(9)
+                .map(|value| parse_uuid(value.as_str()))
+                .transpose()?,
+            created_at: parse_datetime(row.get::<_, String>(10).as_str())?,
+            updated_at: parse_datetime(row.get::<_, String>(11).as_str())?,
+            completed_at: row
+                .get::<_, Option<String>>(12)
+                .map(|value| parse_datetime(value.as_str()))
+                .transpose()?,
+        };
+        tasks.insert(task.id, task);
+    }
+
+    let mut sync_tombstones = Vec::new();
+    for row in client
+        .query(
+            "select entity, id, deleted_at from sync_tombstones",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        sync_tombstones.push(SyncTombstone {
+            entity: parse_sync_entity_kind(row.get::<_, String>(0).as_str())?,
+            id: row.get(1),
+            deleted_at: parse_datetime(row.get::<_, String>(2).as_str())?,
+        });
+    }
+
     Ok(Some(StateData {
         users,
         admin_settings: AdminSettings::default(),
@@ -1109,7 +1415,11 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         jobs,
         rooms,
         messages,
+        calendar_connections,
+        calendar_events,
+        tasks,
         resource_shares,
+        sync_tombstones,
         pending_credential_changes: HashMap::new(),
     }))
 }
@@ -1154,6 +1464,39 @@ fn parse_room_kind(value: &str) -> AppResult<RoomKind> {
     }
 }
 
+fn parse_calendar_provider(value: &str) -> AppResult<CalendarProvider> {
+    match value {
+        "google" => Ok(CalendarProvider::Google),
+        "ics" => Ok(CalendarProvider::Ics),
+        "sweet" => Ok(CalendarProvider::Sweet),
+        _ => Err(AppError::Internal(format!("invalid calendar provider: {value}"))),
+    }
+}
+
+fn parse_task_status(value: &str) -> AppResult<TaskStatus> {
+    match value {
+        "open" => Ok(TaskStatus::Open),
+        "completed" => Ok(TaskStatus::Completed),
+        _ => Err(AppError::Internal(format!("invalid task status: {value}"))),
+    }
+}
+
+fn parse_sync_entity_kind(value: &str) -> AppResult<SyncEntityKind> {
+    match value {
+        "notes" => Ok(SyncEntityKind::Notes),
+        "diagrams" => Ok(SyncEntityKind::Diagrams),
+        "voice_memos" => Ok(SyncEntityKind::VoiceMemos),
+        "rooms" => Ok(SyncEntityKind::Rooms),
+        "messages" => Ok(SyncEntityKind::Messages),
+        "calendar_connections" => Ok(SyncEntityKind::CalendarConnections),
+        "calendar_events" => Ok(SyncEntityKind::CalendarEvents),
+        "tasks" => Ok(SyncEntityKind::Tasks),
+        "file_tree" => Ok(SyncEntityKind::FileTree),
+        "resource_shares" => Ok(SyncEntityKind::ResourceShares),
+        _ => Err(AppError::Internal(format!("invalid sync entity kind: {value}"))),
+    }
+}
+
 fn parse_job_status(value: &str) -> AppResult<JobStatus> {
     match value {
         "pending" => Ok(JobStatus::Pending),
@@ -1168,6 +1511,36 @@ fn room_kind_to_str(kind: &RoomKind) -> &'static str {
     match kind {
         RoomKind::Channel => "channel",
         RoomKind::Direct => "direct",
+    }
+}
+
+fn calendar_provider_to_str(provider: &CalendarProvider) -> &'static str {
+    match provider {
+        CalendarProvider::Google => "google",
+        CalendarProvider::Ics => "ics",
+        CalendarProvider::Sweet => "sweet",
+    }
+}
+
+fn task_status_to_str(status: &TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Open => "open",
+        TaskStatus::Completed => "completed",
+    }
+}
+
+fn sync_entity_kind_to_str(kind: &SyncEntityKind) -> &'static str {
+    match kind {
+        SyncEntityKind::Notes => "notes",
+        SyncEntityKind::Diagrams => "diagrams",
+        SyncEntityKind::VoiceMemos => "voice_memos",
+        SyncEntityKind::Rooms => "rooms",
+        SyncEntityKind::Messages => "messages",
+        SyncEntityKind::CalendarConnections => "calendar_connections",
+        SyncEntityKind::CalendarEvents => "calendar_events",
+        SyncEntityKind::Tasks => "tasks",
+        SyncEntityKind::FileTree => "file_tree",
+        SyncEntityKind::ResourceShares => "resource_shares",
     }
 }
 

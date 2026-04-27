@@ -1,5 +1,4 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
-import { api } from './api'
 import { createBrowserSpeechRecognition, type BrowserSpeechRecognition } from './shortcuts'
 import { defaultVoiceMemoTitle } from './ui-helpers'
 import type { TranscriptionJob, VoiceMemo } from './types'
@@ -19,7 +18,10 @@ type CreateVoiceActionsContext = {
   setVoiceInputLevel: Dispatch<SetStateAction<number>>
   setMemos: Dispatch<SetStateAction<VoiceMemo[]>>
   setSelectedVoiceMemoId: Dispatch<SetStateAction<string | null>>
-  refreshFilesTree: () => Promise<void>
+  uploadVoiceMemoRecord: (title: string, file: Blob, browserTranscript?: string) => Promise<VoiceMemo>
+  listVoiceMemos: () => Promise<VoiceMemo[]>
+  getVoiceJob: (memoId: string) => Promise<TranscriptionJob>
+  retryVoiceJob: (memoId: string) => Promise<TranscriptionJob>
   showActionNotice: (message: string) => void
 }
 
@@ -120,12 +122,14 @@ export function createVoiceActions(context: CreateVoiceActionsContext) {
     recorder.onstop = async () => {
       const blob = new Blob(context.audioChunksRef.current, { type: 'audio/webm' })
       const transcript = context.speechTranscriptRef.current.trim()
-      await api.uploadVoiceMemo(defaultVoiceMemoTitle(), blob, transcript || undefined)
-      const nextMemos = await api.listVoiceMemos()
-      context.setMemos(nextMemos)
+      const memo = await context.uploadVoiceMemoRecord(defaultVoiceMemoTitle(), blob, transcript || undefined)
+      context.setMemos((current) => {
+        const withoutExisting = current.filter((entry) => entry.id !== memo.id)
+        return [memo, ...withoutExisting].sort((left, right) => right.created_at.localeCompare(left.created_at))
+      })
+      context.setSelectedVoiceMemoId(memo.id)
       context.speechTranscriptRef.current = ''
       stopRecordingLevelTracking()
-      await context.refreshFilesTree()
     }
     recorder.start()
     context.mediaRecorderRef.current = recorder
@@ -139,22 +143,22 @@ export function createVoiceActions(context: CreateVoiceActionsContext) {
   }
 
   async function pollTranscript(memo: VoiceMemo) {
-    const job: TranscriptionJob = await api.getVoiceJob(memo.id)
+    const job: TranscriptionJob = await context.getVoiceJob(memo.id)
     if (job.status === 'failed') {
-      await api.retryVoiceJob(memo.id)
+      await context.retryVoiceJob(memo.id)
     }
-    const nextMemos = await api.listVoiceMemos()
+    const nextMemos = await context.listVoiceMemos()
     context.setMemos(nextMemos)
   }
 
   async function uploadAudioFile(file: File) {
     const title = defaultVoiceMemoTitle()
-    const memo = await api.uploadVoiceMemo(title, file)
-    const nextMemos = await api.listVoiceMemos()
-    context.setMemos(nextMemos)
+    const memo = await context.uploadVoiceMemoRecord(title, file)
+    context.setMemos((current) => {
+      const withoutExisting = current.filter((entry) => entry.id !== memo.id)
+      return [memo, ...withoutExisting].sort((left, right) => right.created_at.localeCompare(left.created_at))
+    })
     context.setSelectedVoiceMemoId(memo.id)
-    await context.refreshFilesTree()
-    context.showActionNotice(`Uploaded audio: ${title}`)
   }
 
   return {

@@ -15,7 +15,7 @@ import {
   transformBlockToOrderedListItem,
   transformBlockToTaskListItem,
 } from './markdown-editor'
-import { insertTextAtSelection, type NoteInsertKind } from './ui-helpers'
+import { insertTextAtSelection, type NoteInsertKind, type NoteToolbarAction } from './ui-helpers'
 import type { NoteContextMenuState, NoteContextSubmenu } from './app-config'
 import type { Note } from './types'
 
@@ -78,6 +78,15 @@ export function createNoteEditorActions(context: CreateNoteEditorActionsContext)
     root.appendChild(paragraph)
     moveCaretToEnd(paragraph)
     return paragraph
+  }
+
+  function prepareEditorSelection() {
+    const root = context.noteEditorRef.current
+    if (!root) return null
+    root.focus()
+    ensureEditorBlocks(root)
+    restoreNoteContextRange()
+    return root
   }
 
   function replaceNoteBlock(block: HTMLElement, nextTag: keyof HTMLElementTagNameMap) {
@@ -193,6 +202,70 @@ export function createNoteEditorActions(context: CreateNoteEditorActionsContext)
       parent.insertBefore(paragraph, table.nextSibling)
       moveCaretToEnd(focusTarget)
       syncNoteDraftFromEditor()
+    }
+  }
+
+  function runToolbarAction(action: NoteToolbarAction) {
+    if (context.noteEditorMode !== 'rich') return
+    const root = prepareEditorSelection()
+    if (!root) return
+
+    if (action === 'undo' || action === 'redo') {
+      document.execCommand(action)
+      syncNoteDraftFromEditor()
+      return
+    }
+
+    if (action === 'bold' || action === 'italic' || action === 'underline') {
+      document.execCommand(action)
+      syncNoteDraftFromEditor()
+      return
+    }
+
+    if (action === 'link') {
+      const selection = window.getSelection()
+      const selectedText = selection?.toString().trim() ?? ''
+      const url = window.prompt('Enter link URL', 'https://')
+      if (!url?.trim()) return
+      if (selectedText) {
+        document.execCommand('createLink', false, url.trim())
+      } else {
+        insertTextAtSelection(`[link](${url.trim()})`)
+      }
+      syncNoteDraftFromEditor()
+      return
+    }
+
+    if (action === 'heading-1') {
+      insertNoteElement('heading-1')
+      return
+    }
+    if (action === 'heading-2') {
+      insertNoteElement('heading-2')
+      return
+    }
+    if (action === 'heading-3') {
+      insertNoteElement('heading-3')
+      return
+    }
+    if (action === 'divider') {
+      insertNoteElement('divider')
+      return
+    }
+    if (action === 'bullet-list') {
+      insertNoteElement('bullet-list')
+      return
+    }
+    if (action === 'code-block') {
+      insertNoteElement('code-block')
+      return
+    }
+    if (action === 'table') {
+      insertNoteElement('table')
+      return
+    }
+    if (action === 'quote') {
+      insertNoteElement('quote')
     }
   }
 
@@ -409,6 +482,7 @@ export function createNoteEditorActions(context: CreateNoteEditorActionsContext)
     addTableColumnFromContext,
     copyNoteSelection,
     pasteIntoNoteFromClipboard,
+    runToolbarAction,
     openNoteContextMenu,
     handleNoteEditorKeyDown,
     handleNoteEditorInput,

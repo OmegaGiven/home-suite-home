@@ -1,3 +1,5 @@
+import { useRef } from 'react'
+import { api } from '../../lib/api'
 import { parentDirectoryLabel } from '../../lib/file-display'
 import type { FileNode, ResourceVisibility } from '../../lib/types'
 import { fileTypeLabel, formatFileSize, formatFileTimestamp } from '../../lib/ui-helpers'
@@ -74,6 +76,42 @@ function RenameIcon() {
   )
 }
 
+function OpenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="file-action-icon" aria-hidden="true">
+      <path d="M14 5h5v5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M10 14 19 5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M19 13v4a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function ExpandIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="file-action-icon" aria-hidden="true">
+      <path d="M9 3H3v6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15 3h6v6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 21H3v-6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15 21h6v-6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function isImageFile(path: string) {
+  return /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i.test(path)
+}
+
+function isVideoFile(path: string) {
+  return /\.(mp4|webm|mov|m4v|ogv)$/i.test(path)
+}
+
 export function FilesPreviewPane({
   filePreviewOpen,
   activeFileNode,
@@ -91,6 +129,14 @@ export function FilesPreviewPane({
   onRequestDeletePaths,
   canDeleteFilePath,
 }: Props) {
+  const previewMediaRef = useRef<HTMLDivElement | null>(null)
+  const isPreviewableImage = activeFileNode?.kind === 'file' && isImageFile(activeFileNode.path)
+  const isPreviewableVideo = activeFileNode?.kind === 'file' && isVideoFile(activeFileNode.path)
+  const previewUrl =
+    activeFileNode?.kind === 'file' && (isPreviewableImage || isPreviewableVideo)
+      ? api.fileDownloadUrl(activeFileNode.path)
+      : null
+
   return (
     <aside className={`file-preview-pane ${filePreviewOpen ? '' : 'hidden'}`}>
       {activeFileNode ? (
@@ -105,20 +151,14 @@ export function FilesPreviewPane({
               </strong>
             </div>
           </div>
-          <div className="preview-meta">
-            <div><span className="muted">Type</span><strong>{activeFileNode.kind === 'directory' ? 'Directory' : fileTypeLabel(activeFileNode.name)}</strong></div>
-            <div><span className="muted">Size</span><strong>{activeFileNode.kind === 'directory' ? '—' : formatFileSize(activeFileNode.size_bytes)}</strong></div>
-            <div><span className="muted">Modified</span><strong>{formatFileTimestamp(activeFileNode.updated_at)}</strong></div>
-            <div><span className="muted">Created</span><strong>{formatFileTimestamp(activeFileNode.created_at)}</strong></div>
-            <div><span className="muted">Marked</span><strong>{markedFilePaths.includes(activeFileNode.path) ? 'Yes' : 'No'}</strong></div>
-          </div>
           <div className="button-row preview-actions">
             <button
-              className="button-secondary file-open-link"
+              className="button-secondary file-open-link file-action-icon-button"
               onClick={() => (activeFileNode.kind === 'file' ? onOpenFileNode(activeFileNode) : onSetActiveFilePath(activeFileNode.path))}
-              style={{ display: 'inline-flex', textDecoration: 'none', width: 'fit-content' }}
+              aria-label="Open"
+              title="Open"
             >
-              Open
+              <OpenIcon />
             </button>
             <button
               className="button-secondary file-open-link file-action-icon-button"
@@ -165,6 +205,47 @@ export function FilesPreviewPane({
               <DeleteIcon />
             </button>
           </div>
+          <div className="preview-meta">
+            <div><span className="muted">Type</span><strong>{activeFileNode.kind === 'directory' ? 'Directory' : fileTypeLabel(activeFileNode.name)}</strong></div>
+            <div><span className="muted">Size</span><strong>{activeFileNode.kind === 'directory' ? '—' : formatFileSize(activeFileNode.size_bytes)}</strong></div>
+            <div><span className="muted">Modified</span><strong>{formatFileTimestamp(activeFileNode.updated_at)}</strong></div>
+            <div><span className="muted">Created</span><strong>{formatFileTimestamp(activeFileNode.created_at)}</strong></div>
+            <div><span className="muted">Marked</span><strong>{markedFilePaths.includes(activeFileNode.path) ? 'Yes' : 'No'}</strong></div>
+          </div>
+          {previewUrl ? (
+            <div className="file-preview-media-shell" ref={previewMediaRef}>
+              <button
+                className="button-secondary file-open-link file-action-icon-button file-preview-media-expand"
+                type="button"
+                aria-label="Expand preview"
+                title="Expand preview"
+                onClick={() => {
+                  const target = previewMediaRef.current
+                  if (!target) return
+                  void target.requestFullscreen?.()
+                }}
+              >
+                <ExpandIcon />
+              </button>
+              {isPreviewableImage ? (
+                <img
+                  src={previewUrl}
+                  alt={displayNameForFileNode(activeFileNode)}
+                  className="file-preview-media file-preview-image"
+                  loading="lazy"
+                />
+              ) : null}
+              {isPreviewableVideo ? (
+                <video
+                  src={previewUrl}
+                  className="file-preview-media file-preview-video"
+                  controls
+                  playsInline
+                  preload="metadata"
+                />
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="empty-state">Select a file or directory.</div>

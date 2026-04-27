@@ -22,6 +22,8 @@ FROM debian:bookworm-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    docker-compose \
+    docker.io \
     ffmpeg \
     libgomp1 \
  && rm -rf /var/lib/apt/lists/*

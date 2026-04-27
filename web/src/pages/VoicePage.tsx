@@ -1,61 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { LibraryActionBar } from '../components/LibraryActionBar'
+import { MicrophoneIcon, NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { ConfirmModal } from '../components/ConfirmModal'
-import { FileTreeNode } from '../components/FileTreeNode'
+import { FileTreeHeader, FileTreeNodes, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
 import { FolderPromptModal } from '../components/FolderPromptModal'
 import { LibraryShell } from '../components/LibraryShell'
 import { api } from '../lib/api'
 import type { FileNode, VoiceMemo } from '../lib/types'
-import { formatDurationSeconds, formatFileSize, voiceMemoDisplayTitle } from '../lib/ui-helpers'
-
-function NewFolderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M3.75 7.25A2.25 2.25 0 0 1 6 5h4.15l1.55 1.7H18A2.25 2.25 0 0 1 20.25 9v7.75A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M15.75 10.25v5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M13 13h5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function RenameIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M4.75 19.25h4.1l9.35-9.35-4.1-4.1-9.35 9.35v4.1Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinejoin="round"
-      />
-      <path
-        d="m12.95 6.95 4.1 4.1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
+import { aggregateFileNodeSize, ancestorDirectoryPaths, filterFileNode, formatDurationSeconds, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState, type FileTreeSortState, voiceMemoDisplayTitle } from '../lib/ui-helpers'
 
 type Props = {
   voiceTree: FileNode | null
@@ -64,6 +16,7 @@ type Props = {
   activeVoiceSplitter: boolean
   memos: VoiceMemo[]
   selectedVoiceMemo: VoiceMemo | null
+  selectedVoicePath: string | null
   selectedVoiceMemoSizeBytes: number | null
   currentVoiceFolderPath: string
   recording: boolean
@@ -81,6 +34,7 @@ type Props = {
   onOpenRecorder: () => void
   onUploadAudioFile: (file: File) => void
   onPollTranscript: (memo: VoiceMemo) => void
+  onRenameVoiceMemo: (memoId: string, title: string) => Promise<void>
   onDeleteVoiceMemo: (memoId: string) => Promise<void>
   confirmVoiceDelete: boolean
 }
@@ -92,6 +46,7 @@ export function VoicePage({
   activeVoiceSplitter,
   memos,
   selectedVoiceMemo,
+  selectedVoicePath,
   selectedVoiceMemoSizeBytes,
   currentVoiceFolderPath,
   recording,
@@ -109,16 +64,27 @@ export function VoicePage({
   onOpenRecorder,
   onUploadAudioFile,
   onPollTranscript,
+  onRenameVoiceMemo,
   onDeleteVoiceMemo,
   confirmVoiceDelete,
 }: Props) {
-  const uploadInputRef = useRef<HTMLInputElement | null>(null)
   const [deleteMemoOpen, setDeleteMemoOpen] = useState(false)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [renameFolderOpen, setRenameFolderOpen] = useState(false)
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
+  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
+  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
+  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
+    type: true,
+    size: true,
+    modified: true,
+    created: true,
+  })
   const [newFolderName, setNewFolderName] = useState('')
   const [renameFolderName, setRenameFolderName] = useState(currentVoiceFolderPath.split('/').pop() ?? '')
   const [selectedMemoDurationSeconds, setSelectedMemoDurationSeconds] = useState<number | null>(null)
+  const [memoTitleDraft, setMemoTitleDraft] = useState('')
   const memoLabelByPath = useMemo(
     () =>
       new Map(
@@ -129,13 +95,43 @@ export function VoicePage({
       ),
     [memos],
   )
+  const filteredVoiceTree = useMemo(
+    () => filterFileNode(voiceTree, sidebarSearchQuery, (node) => memoLabelByPath.get(node.path) ?? node.name),
+    [voiceTree, sidebarSearchQuery, memoLabelByPath],
+  )
+  const highlightedPaths = useMemo(
+    () => ancestorDirectoryPaths(currentVoiceFolderPath).filter((path) => path !== 'voice'),
+    [currentVoiceFolderPath],
+  )
+  const visibleVoiceNodes = useMemo(
+    () => (filteredVoiceTree?.path === 'voice' ? filteredVoiceTree.children : filteredVoiceTree ? [filteredVoiceTree] : []),
+    [filteredVoiceTree],
+  )
+  const sortedVisibleVoiceNodes = useMemo(
+    () => sortFileTree(visibleVoiceNodes, sortState, (node) => memoLabelByPath.get(node.path) ?? node.name),
+    [visibleVoiceNodes, sortState, memoLabelByPath],
+  )
 
   useEffect(() => {
     setSelectedMemoDurationSeconds(null)
   }, [selectedVoiceMemo?.id])
 
+  useEffect(() => {
+    setMemoTitleDraft(selectedVoiceMemo?.title ?? '')
+  }, [selectedVoiceMemo?.id, selectedVoiceMemo?.title])
+
+  async function commitMemoTitle() {
+    if (!selectedVoiceMemo) return
+    const trimmed = memoTitleDraft.trim()
+    if (!trimmed || trimmed === selectedVoiceMemo.title) {
+      setMemoTitleDraft(selectedVoiceMemo.title)
+      return
+    }
+    await onRenameVoiceMemo(selectedVoiceMemo.id, trimmed)
+  }
+
   return (
-    <section className="panel">
+    <>
       <FolderPromptModal
         open={createFolderOpen}
         title="Create folder"
@@ -181,123 +177,68 @@ export function VoicePage({
         onToggleDrawer={onToggleVoiceDrawer}
         sidebar={
           <>
-            <div className="file-sidebar-header-row">
-              <div className="button-row files-actions">
-                <button
-                  className="button-secondary notes-new-button"
-                  type="button"
-                  aria-label="New folder"
-                  title="New folder"
-                  onClick={() => setCreateFolderOpen(true)}
-                >
-                  <NewFolderIcon />
-                </button>
-                <button
-                  className="button-secondary notes-new-button"
-                  type="button"
-                  aria-label="Rename folder"
-                  title="Rename folder"
-                  disabled={currentVoiceFolderPath === 'voice'}
-                  onClick={() => {
+            <LibraryActionBar
+              searchOpen={sidebarSearchOpen}
+              searchQuery={sidebarSearchQuery}
+              searchPlaceholder="Search voice"
+              onOpenSearch={() => setSidebarSearchOpen(true)}
+              onCloseSearch={() => {
+                setSidebarSearchOpen(false)
+                setSidebarSearchQuery('')
+              }}
+              onChangeSearchQuery={setSidebarSearchQuery}
+              metaFilterOpen={metaFilterOpen}
+              rowMetaVisibility={rowMetaVisibility}
+              onToggleMetaFilterOpen={() => setMetaFilterOpen((current) => !current)}
+              onToggleMetaVisibility={(column) =>
+                setRowMetaVisibility((current) => ({ ...current, [column]: !current[column] }))
+              }
+              rootDropPath="voice"
+              draggingPath={draggingPath}
+              dropTargetPath={dropTargetPath}
+              onDropTargetChange={onDropTargetChange}
+              onDropRoot={onDrop}
+              commonActions={[
+                { key: 'folder', label: 'New folder', icon: <NewFolderIcon />, onClick: () => setCreateFolderOpen(true) },
+                {
+                  key: 'rename',
+                  label: 'Rename folder',
+                  icon: <RenameIcon />,
+                  disabled: currentVoiceFolderPath === 'voice',
+                  onClick: () => {
                     setRenameFolderName(currentVoiceFolderPath.split('/').pop() ?? '')
                     setRenameFolderOpen(true)
-                  }}
-                >
-                  <RenameIcon />
-                </button>
-                <button
-                  className="button voice-record-launcher"
-                  onClick={onOpenRecorder}
-                  aria-label={recording ? 'Open recording window' : 'Start recording'}
-                  title={recording ? 'Open recording window' : 'Start recording'}
-                  type="button"
-                >
-                  <span className="voice-record-launcher-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" className="voice-record-mic-svg" aria-hidden="true">
-                      <path
-                        d="M12 15.2a3.8 3.8 0 0 1-3.8-3.8V6.9a3.8 3.8 0 1 1 7.6 0v4.5a3.8 3.8 0 0 1-3.8 3.8Z"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.9"
-                        strokeLinejoin="round"
-                      />
-                      <path
-                        d="M6.7 10.9v.6a5.3 5.3 0 0 0 10.6 0v-.6"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.9"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M12 16.8v3.1"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.9"
-                        strokeLinecap="round"
-                      />
-                      <path
-                        d="M9 19.9h6"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.9"
-                        strokeLinecap="round"
-                      />
-                    </svg>
-                  </span>
-                </button>
-                <button
-                  className="button-secondary voice-upload-button"
-                  type="button"
-                  onClick={() => uploadInputRef.current?.click()}
-                  aria-label="Upload audio"
-                  title="Upload audio"
-                >
-                  <svg viewBox="0 0 24 24" className="voice-upload-svg" aria-hidden="true">
-                    <path
-                      d="M12 4.75v10.5"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.9"
-                      strokeLinecap="round"
-                    />
-                    <path
-                      d="M8.6 8.35 12 4.75l3.4 3.6"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.9"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <path
-                      d="M6 15.75v1.5c0 .83.67 1.5 1.5 1.5h9c.83 0 1.5-.67 1.5-1.5v-1.5"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.9"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </button>
-                <input
-                  ref={uploadInputRef}
-                  type="file"
-                  accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm"
-                  style={{ display: 'none' }}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) onUploadAudioFile(file)
-                    event.currentTarget.value = ''
-                  }}
-                />
-              </div>
-            </div>
+                  },
+                },
+                {
+                  key: 'upload',
+                  kind: 'upload',
+                  label: 'Upload audio',
+                  icon: <UploadIcon />,
+                  accept: 'audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.webm',
+                  onFileSelected: onUploadAudioFile,
+                },
+              ]}
+              pageActions={[{
+                key: 'record',
+                label: recording ? 'Open recording window' : 'Start recording',
+                icon: <MicrophoneIcon />,
+                onClick: onOpenRecorder,
+              }]}
+            />
             <div className="folder-tree file-tree notes-folder-tree voice-folder-tree">
-              {voiceTree ? (
-                <FileTreeNode
-                  node={voiceTree}
+              <FileTreeHeader
+                rowMetaVisibility={rowMetaVisibility}
+                sortState={sortState}
+                onSort={(key) => setSortState((current) => toggleFileTreeSortState(current, key))}
+              />
+              {sortedVisibleVoiceNodes.length > 0 ? (
+                <FileTreeNodes
+                  nodes={sortedVisibleVoiceNodes}
                   getDisplayName={(node) => memoLabelByPath.get(node.path) ?? node.name}
-                  selectedPath={selectedVoiceMemo?.audio_path ?? voiceTree.path}
-                  activePath={selectedVoiceMemo?.audio_path ?? null}
+                  selectedPath={selectedVoicePath ?? ''}
+                  activePath={selectedVoicePath ?? null}
+                  highlightedPaths={highlightedPaths}
                   markedPaths={[]}
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
@@ -307,9 +248,16 @@ export function VoicePage({
                   onDropTargetChange={onDropTargetChange}
                   onDrop={onDrop}
                   canDragNode={(node) => node.path !== 'voice' && (node.path === 'voice' || node.path.startsWith('voice/'))}
+                  getRowMeta={(node) => ({
+                    type: node.kind === 'directory' ? 'Folder' : 'Audio',
+                    size: formatFileSize(node.kind === 'directory' ? aggregateFileNodeSize(node) : node.size_bytes),
+                    modified: formatFileTimestamp(node.updated_at),
+                    created: formatFileTimestamp(node.created_at),
+                  })}
+                  rowMetaVisibility={rowMetaVisibility}
                 />
               ) : (
-                <div className="empty-state">No voice files yet.</div>
+                <div className="empty-state">{sidebarSearchQuery.trim() ? 'No matching voice files.' : 'No voice files yet.'}</div>
               )}
             </div>
           </>
@@ -324,13 +272,32 @@ export function VoicePage({
             <div className="memo-grid">
               <div className="memo-card">
                 <div className="voice-memo-card-header">
-                  <strong>{voiceMemoDisplayTitle(selectedVoiceMemo.created_at, selectedVoiceMemo.title || 'Memo')}</strong>
+                  <input
+                    className="input note-title-input notes-title-input"
+                    value={memoTitleDraft}
+                    placeholder={voiceMemoDisplayTitle(selectedVoiceMemo.created_at, 'Memo')}
+                    onChange={(event) => setMemoTitleDraft(event.target.value)}
+                    onBlur={() => {
+                      void commitMemoTitle()
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault()
+                        void commitMemoTitle()
+                      }
+                      if (event.key === 'Escape') {
+                        event.preventDefault()
+                        setMemoTitleDraft(selectedVoiceMemo.title)
+                      }
+                    }}
+                  />
                   <div className="voice-header-actions">
                     <button
                       className="button-secondary voice-upload-button"
                       type="button"
                       aria-label="Refresh transcript"
                       title="Refresh transcript"
+                      disabled={selectedVoiceMemo.local_only}
                       onClick={() => onPollTranscript(selectedVoiceMemo)}
                     >
                       <span className="voice-transcript-refresh-icon" aria-hidden="true">
@@ -389,7 +356,7 @@ export function VoicePage({
                 </div>
                 <audio
                   controls
-                  src={api.voiceMemoAudioUrl(selectedVoiceMemo.id)}
+                  src={selectedVoiceMemo.local_only ? undefined : api.voiceMemoAudioUrl(selectedVoiceMemo.id)}
                   style={{ width: '100%', marginTop: 12 }}
                   onLoadedMetadata={(event) => {
                     const duration = event.currentTarget.duration
@@ -399,7 +366,9 @@ export function VoicePage({
                 <div className="memo-transcript-block">
                   <div className="memo-transcript-label">Transcript</div>
                   <div className="memo-transcript-text">
-                    {selectedVoiceMemo.failure_reason
+                    {selectedVoiceMemo.local_only
+                      ? 'Queued for upload and sync when the connection returns.'
+                      : selectedVoiceMemo.failure_reason
                       ? `Transcription failed: ${selectedVoiceMemo.failure_reason}`
                       : selectedVoiceMemo.transcript?.trim() || 'Transcript pending'}
                   </div>
@@ -437,6 +406,6 @@ export function VoicePage({
           <p className="muted">{selectedVoiceMemo.title || 'Untitled memo'}</p>
         </ConfirmModal>
       ) : null}
-    </section>
+    </>
   )
 }

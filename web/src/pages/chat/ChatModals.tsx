@@ -20,9 +20,11 @@ type Props = {
   setDirectParticipantIds: (updater: (current: string[]) => string[]) => void
   directParticipantQuery: string
   setDirectParticipantQuery: (value: string) => void
+  directFolderDraft: string
+  setDirectFolderDraft: (value: string) => void
   selectedDirectParticipants: UserProfile[]
   filteredDirectParticipants: UserProfile[]
-  onCreateDirectRoom: (participantIds: string[]) => void
+  onCreateDirectRoom: (participantIds: string[], folder?: string) => void
   createThreadOpen: boolean
   setCreateThreadOpen: (value: boolean) => void
   threadNameDraft: string
@@ -31,9 +33,11 @@ type Props = {
   setThreadParticipantIds: (updater: (current: string[]) => string[]) => void
   threadParticipantQuery: string
   setThreadParticipantQuery: (value: string) => void
+  threadFolderDraft: string
+  setThreadFolderDraft: (value: string) => void
   selectedThreadParticipants: UserProfile[]
   filteredThreadParticipants: UserProfile[]
-  onCreateRoom: (name: string, participantIds: string[]) => Promise<void>
+  onCreateRoom: (name: string, participantIds: string[], folder?: string) => Promise<void>
   deleteRoomOpen: boolean
   setDeleteRoomOpen: (value: boolean) => void
   onDeleteRoom: (roomId: string) => Promise<void>
@@ -57,6 +61,8 @@ export function ChatModals({
   setDirectParticipantIds,
   directParticipantQuery,
   setDirectParticipantQuery,
+  directFolderDraft,
+  setDirectFolderDraft,
   selectedDirectParticipants,
   filteredDirectParticipants,
   onCreateDirectRoom,
@@ -68,6 +74,8 @@ export function ChatModals({
   setThreadParticipantIds,
   threadParticipantQuery,
   setThreadParticipantQuery,
+  threadFolderDraft,
+  setThreadFolderDraft,
   selectedThreadParticipants,
   filteredThreadParticipants,
   onCreateRoom,
@@ -165,7 +173,10 @@ export function ChatModals({
         </div>
       ) : null}
       {createDirectOpen ? (
-        <div className="modal-backdrop" onClick={() => setCreateDirectOpen(false)}>
+        <div className="modal-backdrop" onClick={() => {
+          setDirectFolderDraft('')
+          setCreateDirectOpen(false)
+        }}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <h3>New message</h3>
             <input
@@ -218,7 +229,10 @@ export function ChatModals({
               )}
             </div>
             <div className="button-row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
-              <button className="button-secondary" type="button" onClick={() => setCreateDirectOpen(false)}>
+              <button className="button-secondary" type="button" onClick={() => {
+                setDirectFolderDraft('')
+                setCreateDirectOpen(false)
+              }}>
                 Cancel
               </button>
               <button
@@ -226,8 +240,9 @@ export function ChatModals({
                 type="button"
                 disabled={directParticipantIds.length === 0}
                 onClick={() => {
-                  onCreateDirectRoom(directParticipantIds)
+                  onCreateDirectRoom(directParticipantIds, directFolderDraft)
                   setDirectParticipantIds(() => [])
+                  setDirectFolderDraft('')
                   setCreateDirectOpen(false)
                 }}
               >
@@ -238,7 +253,10 @@ export function ChatModals({
         </div>
       ) : null}
       {createThreadOpen ? (
-        <div className="modal-backdrop" onClick={() => setCreateThreadOpen(false)}>
+        <div className="modal-backdrop" onClick={() => {
+          setThreadFolderDraft('')
+          setCreateThreadOpen(false)
+        }}>
           <div className="modal-card" onClick={(event) => event.stopPropagation()}>
             <h3>Create thread</h3>
             <input
@@ -297,7 +315,10 @@ export function ChatModals({
               )}
             </div>
             <div className="button-row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
-              <button className="button-secondary" type="button" onClick={() => setCreateThreadOpen(false)}>
+              <button className="button-secondary" type="button" onClick={() => {
+                setThreadFolderDraft('')
+                setCreateThreadOpen(false)
+              }}>
                 Cancel
               </button>
               <button
@@ -305,10 +326,11 @@ export function ChatModals({
                 type="button"
                 disabled={!threadNameDraft.trim()}
                 onClick={async () => {
-                  await onCreateRoom(threadNameDraft.trim(), threadParticipantIds)
+                  await onCreateRoom(threadNameDraft.trim(), threadParticipantIds, threadFolderDraft)
                   setThreadNameDraft('')
                   setThreadParticipantIds(() => [])
                   setThreadParticipantQuery('')
+                  setThreadFolderDraft('')
                   setCreateThreadOpen(false)
                 }}
               >

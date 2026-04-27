@@ -46,9 +46,14 @@ export function createFileNavigationActions(context: CreateFileNavigationActions
   }
 
   function selectVoicePath(path: string) {
+    context.setSelectedFilePath(path)
     const memo = context.memos.find((item) => item.audio_path === path)
     if (memo) {
       context.setSelectedVoiceMemoId(memo.id)
+      context.setActiveFilePath(path)
+    } else {
+      context.setSelectedVoiceMemoId(null)
+      context.setActiveFilePath(null)
     }
   }
 

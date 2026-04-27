@@ -23,6 +23,9 @@ pub struct Config {
     pub transcription_device: String,
     pub whisper_command: Option<String>,
     pub ffmpeg_command: Option<String>,
+    pub app_version: String,
+    pub update_command: Option<String>,
+    pub update_target: String,
 }
 
 impl Config {
@@ -69,6 +72,13 @@ impl Config {
             ffmpeg_command: env::var("FFMPEG_COMMAND")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            app_version: env::var("APP_VERSION")
+                .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
+            update_command: env::var("APP_UPDATE_COMMAND")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            update_target: env::var("APP_UPDATE_TARGET")
+                .unwrap_or_else(|_| "homeserver docker deployment".into()),
         }
     }
 

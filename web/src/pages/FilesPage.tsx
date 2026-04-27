@@ -1,8 +1,11 @@
-import type { CSSProperties, ChangeEvent, DragEvent, ReactNode, RefObject } from 'react'
-import { FileTreeNode } from '../components/FileTreeNode'
+import { useMemo, useState, type CSSProperties, type ChangeEvent, type DragEvent, type ReactNode, type RefObject } from 'react'
+import { LibraryActionBar } from '../components/LibraryActionBar'
+import { NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
+import { FileTreeHeader, FileTreeNode, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
 import { LibraryShell } from '../components/LibraryShell'
+import { PaneSplitter } from '../components/PaneSplitter'
 import type { FileNode, ResourceVisibility } from '../lib/types'
-import { FilesBrowserPane } from './files/FilesBrowserPane'
+import { aggregateFileNodeSize, ancestorDirectoryPaths, fileTypeLabel, filterFileTree, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState, type FileTreeSortState } from '../lib/ui-helpers'
 import { FilesModals } from './files/FilesModals'
 import { FilesPreviewPane } from './files/FilesPreviewPane'
 
@@ -101,15 +104,12 @@ export function FilesPage({
   convertingFilePath,
   fileHelpOpen,
   fileManagerRef,
-  fileSearchInputRef,
-  fileColumnViewRef,
   renameInputRef,
   deleteConfirmButtonRef,
   deleteCancelButtonRef,
   activeSplitter,
   filePreviewOpen,
   filePaneWidths,
-  filePaneHeights,
   filesTree,
   displayNameForFileNode,
   selectedFilePath,
@@ -117,16 +117,6 @@ export function FilesPage({
   markedFilePaths,
   draggingFilePath,
   dropTargetPath,
-  currentDirectoryPath,
-  trimmedFileSearchQuery,
-  fileSearchOpen,
-  fileSearchQuery,
-  fileColumnViewOpen,
-  fileColumnVisibility,
-  showFileTable,
-  fileGridTemplateColumns,
-  visibleFileColumns,
-  displayedFileNodes,
   onSetCreatingDriveFolder,
   onSetNewDriveFolderName,
   onCreateDriveFolderFromSelection,
@@ -145,16 +135,8 @@ export function FilesPage({
   handleDirectoryDrop,
   onSetActiveSplitter,
   onToggleFilePreviewPane,
-  onOpenSearch,
-  onCloseSearch,
-  onChangeSearchQuery,
-  goToParentDirectory,
-  onToggleFileColumnView,
-  onToggleFileColumnVisibility,
   onBeginCreateFolder,
   onHandleDriveUpload,
-  beginFileColumnResize,
-  renderFileColumnCell,
   onSetActiveFilePath,
   onOpenFileNode,
   canDeleteFilePath,
@@ -166,8 +148,31 @@ export function FilesPage({
   onDownloadManagedPath,
   onBeginRenameCurrentFile,
 }: Props) {
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
+  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
+  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
+  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
+    type: true,
+    size: true,
+    modified: true,
+    created: true,
+  })
+  const filteredFilesTree = useMemo(
+    () => filterFileTree(filesTree, sidebarSearchQuery, displayNameForFileNode),
+    [filesTree, sidebarSearchQuery, displayNameForFileNode],
+  )
+  const sortedFilesTree = useMemo(
+    () => sortFileTree(filteredFilesTree, sortState, displayNameForFileNode),
+    [filteredFilesTree, sortState, displayNameForFileNode],
+  )
+  const highlightedPaths = useMemo(
+    () => ancestorDirectoryPaths(selectedFilePath),
+    [selectedFilePath],
+  )
+
   return (
-    <section className="panel">
+    <>
       <FilesModals
         creatingDriveFolder={creatingDriveFolder}
         newDriveFolderName={newDriveFolderName}
@@ -197,27 +202,72 @@ export function FilesPage({
         managerClassName={`file-manager ${activeSplitter ? 'resizing' : ''} ${filePreviewOpen ? '' : 'preview-collapsed'}`}
         drawerOpen
         activeSplitter={activeSplitter === 'left'}
-        paneSize={{ width: filePaneWidths.left, height: filePaneHeights.top }}
+        paneSize={{ width: filePaneWidths.left, height: 0 }}
         style={
           {
             ['--files-left-width' as string]: `${filePaneWidths.left}px`,
             ['--files-right-width' as string]: `${filePaneWidths.right}px`,
-            ['--files-top-height' as string]: `${filePaneHeights.top}px`,
-            ['--files-middle-height' as string]: `${filePaneHeights.middle}px`,
           } as CSSProperties
         }
         sidebarClassName="file-sidebar"
         splitterClassName="pane-splitter"
+        showSplitter={false}
         onStartResize={() => onSetActiveSplitter('left')}
         sidebar={
-          <div className="folder-tree file-tree">
-            {filesTree.map((node) => (
+          <>
+            <LibraryActionBar
+              searchOpen={sidebarSearchOpen}
+              searchQuery={sidebarSearchQuery}
+              searchPlaceholder="Search files"
+              onOpenSearch={() => setSidebarSearchOpen(true)}
+              onCloseSearch={() => {
+                setSidebarSearchOpen(false)
+                setSidebarSearchQuery('')
+              }}
+              onChangeSearchQuery={setSidebarSearchQuery}
+              metaFilterOpen={metaFilterOpen}
+              rowMetaVisibility={rowMetaVisibility}
+              onToggleMetaFilterOpen={() => setMetaFilterOpen((current) => !current)}
+              onToggleMetaVisibility={(column) =>
+                setRowMetaVisibility((current) => ({ ...current, [column]: !current[column] }))
+              }
+              commonActions={[
+                { key: 'folder', label: 'New folder', icon: <NewFolderIcon />, onClick: onBeginCreateFolder },
+                {
+                  key: 'rename',
+                  label: 'Rename',
+                  icon: <RenameIcon />,
+                  disabled: !canRenameFilePath(activeFileNode?.path),
+                  onClick: onBeginRenameCurrentFile,
+                },
+                {
+                  key: 'upload',
+                  kind: 'upload',
+                  label: 'Upload',
+                  icon: <UploadIcon />,
+                  onFileSelected: (file) => {
+                    const event = {
+                      target: { files: [file] },
+                    } as unknown as ChangeEvent<HTMLInputElement>
+                    onHandleDriveUpload(event)
+                  },
+                },
+              ]}
+            />
+            <div className="folder-tree file-tree">
+            <FileTreeHeader
+              rowMetaVisibility={rowMetaVisibility}
+              sortState={sortState}
+              onSort={(key) => setSortState((current) => toggleFileTreeSortState(current, key))}
+            />
+            {sortedFilesTree.length > 0 ? sortedFilesTree.map((node) => (
               <FileTreeNode
                 key={node.path}
                 node={node}
                 getDisplayName={displayNameForFileNode}
                 selectedPath={selectedFilePath}
                 activePath={activeFileNode?.path ?? null}
+                highlightedPaths={highlightedPaths}
                 markedPaths={markedFilePaths}
                 draggingPath={draggingFilePath}
                 dropTargetPath={dropTargetPath}
@@ -226,55 +276,29 @@ export function FilesPage({
                 onDragEnd={onFileDragEnd}
                 onDropTargetChange={onDropTargetChange}
                 onDrop={handleDirectoryDrop}
+                getRowMeta={(node) => ({
+                  type: node.kind === 'directory' ? 'Folder' : fileTypeLabel(node.name),
+                  size: formatFileSize(node.kind === 'directory' ? aggregateFileNodeSize(node) : node.size_bytes),
+                  modified: formatFileTimestamp(node.updated_at),
+                  created: formatFileTimestamp(node.created_at),
+                })}
+                rowMetaVisibility={rowMetaVisibility}
               />
-            ))}
+            )) : (
+              <div className="empty-state">{sidebarSearchQuery.trim() ? 'No matching files.' : 'No files yet.'}</div>
+            )}
           </div>
+          </>
         }
         content={
           <>
-            <FilesBrowserPane
-              fileSearchInputRef={fileSearchInputRef}
-              fileColumnViewRef={fileColumnViewRef}
-              currentDirectoryPath={currentDirectoryPath}
-              trimmedFileSearchQuery={trimmedFileSearchQuery}
-              fileSearchOpen={fileSearchOpen}
-              fileSearchQuery={fileSearchQuery}
-              fileColumnViewOpen={fileColumnViewOpen}
-              fileColumnVisibility={fileColumnVisibility}
-              showFileTable={showFileTable}
-              fileGridTemplateColumns={fileGridTemplateColumns}
-              visibleFileColumns={visibleFileColumns}
-              displayedFileNodes={displayedFileNodes}
-              dropTargetPath={dropTargetPath}
-              activeFilePath={activeFileNode?.path ?? null}
-              markedFilePaths={markedFilePaths}
-              draggingFilePath={draggingFilePath}
-              onOpenSearch={onOpenSearch}
-              onCloseSearch={onCloseSearch}
-              onChangeSearchQuery={onChangeSearchQuery}
-              goToParentDirectory={goToParentDirectory}
-              onToggleFileColumnView={onToggleFileColumnView}
-              onToggleFileColumnVisibility={onToggleFileColumnVisibility}
-              onBeginCreateFolder={onBeginCreateFolder}
-              onHandleDriveUpload={onHandleDriveUpload}
-              beginFileColumnResize={beginFileColumnResize}
-              renderFileColumnCell={renderFileColumnCell}
-              beginFileDrag={beginFileDrag}
-              onFileDragEnd={onFileDragEnd}
-              onDropTargetChange={onDropTargetChange}
-              handleDirectoryDrop={handleDirectoryDrop}
-              onSetActiveFilePath={onSetActiveFilePath}
-              onOpenFileNode={onOpenFileNode}
-            />
-            <div
-              className={`pane-splitter ${activeSplitter === 'right' ? 'active' : ''} ${filePreviewOpen ? '' : 'collapsed'}`}
-              role="separator"
-              aria-orientation="vertical"
-              aria-expanded={filePreviewOpen}
-              onMouseDown={() => {
-                if (!filePreviewOpen) return
-                onSetActiveSplitter('right')
-              }}
+            <PaneSplitter
+              className="pane-splitter"
+              active={activeSplitter === 'right'}
+              collapsed={!filePreviewOpen}
+              drawerOpen={filePreviewOpen}
+              ariaExpanded={filePreviewOpen}
+              onStartResize={() => onSetActiveSplitter('right')}
               onDoubleClick={onToggleFilePreviewPane}
             />
             <FilesPreviewPane
@@ -297,6 +321,6 @@ export function FilesPage({
           </>
         }
       />
-    </section>
+    </>
   )
 }

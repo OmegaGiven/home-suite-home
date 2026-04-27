@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_APPEARANCE, DEFAULT_NAV_ORDER, DEFAULT_SHORTCUTS, FONT_OPTIONS, type AppearanceSettings, type NavItemPath, type ShortcutSettings } from '../lib/app-config'
 import { UserAvatar } from '../components/UserAvatar'
 import { OverflowCategoryNav } from '../components/OverflowCategoryNav'
-import type { OidcConfig, RtcConfig, SessionResponse } from '../lib/types'
+import { UploadIcon } from '../components/LibraryActionIcons'
+import type { SessionResponse } from '../lib/types'
 import { normalizeShortcutBinding } from '../lib/shortcuts'
 
 type NavItem = {
@@ -17,17 +18,15 @@ type Props = {
   shortcuts: ShortcutSettings
   orderedNavItems: NavItem[]
   session: SessionResponse | null
-  status: string
-  oidc: OidcConfig | null
-  rtcConfig: RtcConfig | null
-  clientId: string
   canCustomizeAppearance: boolean
+  allowDirectCredentialChanges: boolean
   onSetAppearance: React.Dispatch<React.SetStateAction<AppearanceSettings>>
   onSetShortcuts: React.Dispatch<React.SetStateAction<ShortcutSettings>>
   onSetNavOrder: React.Dispatch<React.SetStateAction<NavItemPath[]>>
   onUploadAvatar: (file: File) => Promise<void>
   onUpdateCredentials: (payload: { username: string; email: string }) => Promise<string | null>
   onChangePassword: (payload: { current_password: string; new_password: string; new_password_confirm: string }) => Promise<void>
+  onLogout: () => void
 }
 
 const CATEGORY_LABELS: Array<{ key: SettingsCategory; label: string }> = [
@@ -41,53 +40,50 @@ export function SettingsPage({
   shortcuts,
   orderedNavItems,
   session,
-  status,
-  oidc,
-  rtcConfig,
-  clientId,
   canCustomizeAppearance,
+  allowDirectCredentialChanges,
   onSetAppearance,
   onSetShortcuts,
   onSetNavOrder,
   onUploadAvatar,
   onUpdateCredentials,
   onChangePassword,
+  onLogout,
 }: Props) {
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>('account')
   const [avatarUploading, setAvatarUploading] = useState(false)
   const [avatarError, setAvatarError] = useState<string | null>(null)
   const [usernameDraft, setUsernameDraft] = useState(session?.user.username ?? '')
   const [emailDraft, setEmailDraft] = useState(session?.user.email ?? '')
-  const [credentialsSaving, setCredentialsSaving] = useState(false)
   const [credentialsMessage, setCredentialsMessage] = useState<string | null>(null)
-  const [credentialsError, setCredentialsError] = useState<string | null>(null)
+  const [usernameModalOpen, setUsernameModalOpen] = useState(false)
+  const [usernameSaving, setUsernameSaving] = useState(false)
+  const [usernameError, setUsernameError] = useState<string | null>(null)
+  const [emailModalOpen, setEmailModalOpen] = useState(false)
+  const [emailSaving, setEmailSaving] = useState(false)
+  const [emailError, setEmailError] = useState<string | null>(null)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordError, setPasswordError] = useState<string | null>(null)
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
+  const backgroundImageInputRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     setUsernameDraft(session?.user.username ?? '')
     setEmailDraft(session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? '')
   }, [session?.user.email, session?.user.username])
 
-  const accountDebug = useMemo(
-    () =>
-      JSON.stringify(
-        {
-          user: session?.user.email,
-          displayName: session?.user.display_name,
-          status,
-          oidcIssuer: oidc?.issuer || 'not configured',
-          rtcTurn: rtcConfig?.turn_urls ?? [],
-        },
-        null,
-        2,
-      ),
-    [oidc?.issuer, rtcConfig?.turn_urls, session?.user.display_name, session?.user.email, status],
-  )
+  async function readFileAsDataUrl(file: File) {
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+      reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'))
+      reader.readAsDataURL(file)
+    })
+  }
 
   return (
     <section className="panel settings-panel">
@@ -101,7 +97,6 @@ export function SettingsPage({
         <div className="settings-content">
           {activeCategory === 'appearance' ? (
             <div className="settings-card">
-              <h3>Appearance</h3>
               <div className="segmented-control">
                 {(['dark', 'light', 'custom'] as const).map((mode) => (
                   <button
@@ -114,11 +109,6 @@ export function SettingsPage({
                   </button>
                 ))}
               </div>
-              <p className="muted">
-                {appearance.mode === 'custom'
-                  ? 'Custom keeps your own accent, margins, and rounding live.'
-                  : `Using the ${appearance.mode} preset with your current margin controls.`}
-              </p>
               <label className="settings-field">
                 <span>Margins: {appearance.pageGutter}px</span>
                 <input
@@ -191,6 +181,21 @@ export function SettingsPage({
                   />
                 </div>
               </label>
+              <label className="settings-toggle">
+                <input
+                  type="checkbox"
+                  disabled={!canCustomizeAppearance}
+                  checked={appearance.disableGradients}
+                  onChange={(event) =>
+                    onSetAppearance((current) => ({
+                      ...current,
+                      disableGradients: event.target.checked,
+                      mode: current.mode === 'custom' ? 'custom' : current.mode,
+                    }))
+                  }
+                />
+                <span>Disable gradients</span>
+              </label>
               {appearance.mode === 'custom' ? (
                 <>
                   <label className="settings-field">
@@ -218,51 +223,201 @@ export function SettingsPage({
                     </div>
                   </label>
                   <label className="settings-field">
-                    <span>Gradient start</span>
+                    <span>Background photo</span>
+                    <div className="button-row">
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        disabled={!canCustomizeAppearance}
+                        onClick={() => backgroundImageInputRef.current?.click()}
+                      >
+                        Upload photo
+                      </button>
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        disabled={!canCustomizeAppearance || !appearance.backgroundImage}
+                        onClick={() =>
+                          onSetAppearance((current) => ({
+                            ...current,
+                            backgroundImage: '',
+                            mode: 'custom',
+                          }))
+                        }
+                      >
+                        Clear photo
+                      </button>
+                    </div>
+                    <input
+                      ref={backgroundImageInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      style={{ display: 'none' }}
+                      onChange={(event) => {
+                        const file = event.target.files?.[0]
+                        event.currentTarget.value = ''
+                        if (!file) return
+                        void readFileAsDataUrl(file).then((dataUrl) =>
+                          onSetAppearance((current) => ({
+                            ...current,
+                            backgroundImage: dataUrl,
+                            mode: 'custom',
+                          })),
+                        )
+                      }}
+                    />
+                    {appearance.backgroundImage ? <span className="muted">Background photo enabled.</span> : null}
+                  </label>
+                  <label className="settings-field">
+                    <span>Gradient top left</span>
                     <div className="color-row">
                       <input
                         className="color-picker"
                         type="color"
                         disabled={!canCustomizeAppearance}
-                        value={appearance.gradientStart}
-                        onChange={(event) => onSetAppearance((current) => ({ ...current, gradientStart: event.target.value, mode: 'custom' }))}
+                        value={appearance.gradientTopLeft}
+                        onChange={(event) => onSetAppearance((current) => ({ ...current, gradientTopLeft: event.target.value, mode: 'custom' }))}
                       />
                       <input
                         className="input"
                         disabled={!canCustomizeAppearance}
-                        value={appearance.gradientStart}
+                        value={appearance.gradientTopLeft}
                         onChange={(event) =>
                           onSetAppearance((current) => ({
                             ...current,
-                            gradientStart: event.target.value || DEFAULT_APPEARANCE.gradientStart,
+                            gradientTopLeft: event.target.value || DEFAULT_APPEARANCE.gradientTopLeft,
                             mode: 'custom',
                           }))
                         }
                       />
+                      <label className="settings-toggle-inline">
+                        <input
+                          type="checkbox"
+                          checked={appearance.gradientTopLeftEnabled}
+                          onChange={(event) =>
+                            onSetAppearance((current) => ({
+                              ...current,
+                              gradientTopLeftEnabled: event.target.checked,
+                              mode: 'custom',
+                            }))
+                          }
+                        />
+                        <span>On</span>
+                      </label>
                     </div>
                   </label>
                   <label className="settings-field">
-                    <span>Gradient end</span>
+                    <span>Gradient top right</span>
                     <div className="color-row">
                       <input
                         className="color-picker"
                         type="color"
                         disabled={!canCustomizeAppearance}
-                        value={appearance.gradientEnd}
-                        onChange={(event) => onSetAppearance((current) => ({ ...current, gradientEnd: event.target.value, mode: 'custom' }))}
+                        value={appearance.gradientTopRight}
+                        onChange={(event) => onSetAppearance((current) => ({ ...current, gradientTopRight: event.target.value, mode: 'custom' }))}
                       />
                       <input
                         className="input"
                         disabled={!canCustomizeAppearance}
-                        value={appearance.gradientEnd}
+                        value={appearance.gradientTopRight}
                         onChange={(event) =>
                           onSetAppearance((current) => ({
                             ...current,
-                            gradientEnd: event.target.value || DEFAULT_APPEARANCE.gradientEnd,
+                            gradientTopRight: event.target.value || DEFAULT_APPEARANCE.gradientTopRight,
                             mode: 'custom',
                           }))
                         }
                       />
+                      <label className="settings-toggle-inline">
+                        <input
+                          type="checkbox"
+                          checked={appearance.gradientTopRightEnabled}
+                          onChange={(event) =>
+                            onSetAppearance((current) => ({
+                              ...current,
+                              gradientTopRightEnabled: event.target.checked,
+                              mode: 'custom',
+                            }))
+                          }
+                        />
+                        <span>On</span>
+                      </label>
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span>Gradient bottom left</span>
+                    <div className="color-row">
+                      <input
+                        className="color-picker"
+                        type="color"
+                        disabled={!canCustomizeAppearance}
+                        value={appearance.gradientBottomLeft}
+                        onChange={(event) => onSetAppearance((current) => ({ ...current, gradientBottomLeft: event.target.value, mode: 'custom' }))}
+                      />
+                      <input
+                        className="input"
+                        disabled={!canCustomizeAppearance}
+                        value={appearance.gradientBottomLeft}
+                        onChange={(event) =>
+                          onSetAppearance((current) => ({
+                            ...current,
+                            gradientBottomLeft: event.target.value || DEFAULT_APPEARANCE.gradientBottomLeft,
+                            mode: 'custom',
+                          }))
+                        }
+                      />
+                      <label className="settings-toggle-inline">
+                        <input
+                          type="checkbox"
+                          checked={appearance.gradientBottomLeftEnabled}
+                          onChange={(event) =>
+                            onSetAppearance((current) => ({
+                              ...current,
+                              gradientBottomLeftEnabled: event.target.checked,
+                              mode: 'custom',
+                            }))
+                          }
+                        />
+                        <span>On</span>
+                      </label>
+                    </div>
+                  </label>
+                  <label className="settings-field">
+                    <span>Gradient bottom right</span>
+                    <div className="color-row">
+                      <input
+                        className="color-picker"
+                        type="color"
+                        disabled={!canCustomizeAppearance}
+                        value={appearance.gradientBottomRight}
+                        onChange={(event) => onSetAppearance((current) => ({ ...current, gradientBottomRight: event.target.value, mode: 'custom' }))}
+                      />
+                      <input
+                        className="input"
+                        disabled={!canCustomizeAppearance}
+                        value={appearance.gradientBottomRight}
+                        onChange={(event) =>
+                          onSetAppearance((current) => ({
+                            ...current,
+                            gradientBottomRight: event.target.value || DEFAULT_APPEARANCE.gradientBottomRight,
+                            mode: 'custom',
+                          }))
+                        }
+                      />
+                      <label className="settings-toggle-inline">
+                        <input
+                          type="checkbox"
+                          checked={appearance.gradientBottomRightEnabled}
+                          onChange={(event) =>
+                            onSetAppearance((current) => ({
+                              ...current,
+                              gradientBottomRightEnabled: event.target.checked,
+                              mode: 'custom',
+                            }))
+                          }
+                        />
+                        <span>On</span>
+                      </label>
                     </div>
                   </label>
                   <label className="settings-field">
@@ -282,13 +437,10 @@ export function SettingsPage({
                       }
                     />
                   </label>
-                  <p className="muted">
-                    Nav, panels, and fields are derived automatically from your background color.
-                  </p>
                 </>
               ) : null}
               <div className="settings-card" style={{ marginTop: 12 }}>
-                <h3>Navigation</h3>
+                <h3>Navigation Order</h3>
                 <div className="settings-list">
                   {orderedNavItems.map((item, index) => (
                     <div className="settings-list-row" key={item.path}>
@@ -340,7 +492,6 @@ export function SettingsPage({
 
           {activeCategory === 'shortcuts' ? (
             <div className="settings-card">
-              <h3>Shortcuts</h3>
               <div className="button-row" style={{ marginBottom: 12 }}>
                 <button className="button-secondary" onClick={() => onSetShortcuts(DEFAULT_SHORTCUTS)}>
                   Reset defaults
@@ -393,122 +544,258 @@ export function SettingsPage({
 
           {activeCategory === 'account' ? (
             <div className="settings-card">
-              <h3>Account</h3>
               {session?.user ? (
                 <div className="account-avatar-panel">
-                  <UserAvatar user={session.user} className="user-avatar-large" />
+                  <div className="account-avatar-frame">
+                    <UserAvatar user={session.user} className="user-avatar-large" />
+                    <button
+                      className="account-avatar-upload-button"
+                      type="button"
+                      aria-label={avatarUploading ? 'Uploading icon' : 'Upload icon'}
+                      title={avatarUploading ? 'Uploading…' : 'Upload icon'}
+                      disabled={avatarUploading}
+                      onClick={() => avatarInputRef.current?.click()}
+                    >
+                      <UploadIcon />
+                    </button>
+                  </div>
                   <div className="account-avatar-copy">
                     <strong>{session.user.display_name || session.user.username}</strong>
                     <span className="muted">@{session.user.username}</span>
                     <span className="muted">{session.user.email}</span>
                   </div>
-                  <div className="button-row">
-                    <button
-                      className="button-secondary"
-                      type="button"
-                      disabled={avatarUploading}
-                      onClick={() => avatarInputRef.current?.click()}
-                    >
-                      {avatarUploading ? 'Uploading…' : 'Upload icon'}
-                    </button>
-                    <input
-                      ref={avatarInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp,image/gif"
-                      style={{ display: 'none' }}
-                      onChange={(event) => {
-                        const file = event.target.files?.[0]
-                        event.currentTarget.value = ''
-                        if (!file) return
-                        setAvatarError(null)
-                        setAvatarUploading(true)
-                        void onUploadAvatar(file)
-                          .catch((error) => {
-                            setAvatarError(error instanceof Error ? error.message : 'Avatar upload failed')
-                          })
-                          .finally(() => setAvatarUploading(false))
-                      }}
-                    />
-                  </div>
+                  <input
+                    ref={avatarInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/gif"
+                    style={{ display: 'none' }}
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      event.currentTarget.value = ''
+                      if (!file) return
+                      setAvatarError(null)
+                      setAvatarUploading(true)
+                      void onUploadAvatar(file)
+                        .catch((error) => {
+                          setAvatarError(error instanceof Error ? error.message : 'Avatar upload failed')
+                        })
+                        .finally(() => setAvatarUploading(false))
+                    }}
+                  />
                 </div>
               ) : null}
               {avatarError ? <div className="muted" style={{ color: '#ff8b8b', marginBottom: 12 }}>{avatarError}</div> : null}
-              <form
+              <div
                 className="auth-form"
                 style={{ marginBottom: 12 }}
-                onSubmit={async (event) => {
-                  event.preventDefault()
-                  setCredentialsError(null)
-                  setCredentialsMessage(null)
-                  setCredentialsSaving(true)
-                  try {
-                    const message = await onUpdateCredentials({ username: usernameDraft, email: emailDraft })
-                    setCredentialsMessage(message ?? 'Account updated')
-                  } catch (error) {
-                    setCredentialsError(error instanceof Error ? error.message : 'Failed to update account')
-                  } finally {
-                    setCredentialsSaving(false)
-                  }
-                }}
               >
-                <input className="input" placeholder="Username" value={usernameDraft} onChange={(event) => setUsernameDraft(event.target.value)} />
-                <input className="input" type="email" placeholder="Email" value={emailDraft} onChange={(event) => setEmailDraft(event.target.value)} />
+                <div className="settings-list-row">
+                  <span>{usernameDraft || 'No username set'}</span>
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick={() => {
+                      setUsernameDraft(session?.user.username ?? '')
+                      setUsernameError(null)
+                      setUsernameModalOpen(true)
+                    }}
+                  >
+                    Change Username
+                  </button>
+                </div>
+                <div className="settings-list-row">
+                  <span>{emailDraft || 'No email set'}</span>
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick={() => {
+                      setEmailDraft(session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? '')
+                      setEmailError(null)
+                      setEmailModalOpen(true)
+                    }}
+                  >
+                    Change Email
+                  </button>
+                </div>
                 <div className="button-row">
-                  <button className="button" type="submit" disabled={credentialsSaving}>
-                    {credentialsSaving ? 'Saving…' : 'Save account'}
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick={() => {
+                      setPasswordError(null)
+                      setPasswordModalOpen(true)
+                    }}
+                  >
+                    Change Password
+                  </button>
+                  <button
+                    className="button-secondary"
+                    type="button"
+                    onClick={onLogout}
+                  >
+                    Logout
                   </button>
                 </div>
                 {credentialsMessage ? <div className="muted">{credentialsMessage}</div> : null}
-                {credentialsError ? <div className="muted" style={{ color: '#ff8b8b' }}>{credentialsError}</div> : null}
-              </form>
-              <form
-                className="auth-form"
-                style={{ marginBottom: 12 }}
-                onSubmit={async (event) => {
-                  event.preventDefault()
-                  setPasswordError(null)
-                  setPasswordSaving(true)
-                  try {
-                    await onChangePassword({
-                      current_password: currentPassword,
-                      new_password: newPassword,
-                      new_password_confirm: confirmPassword,
-                    })
-                    setCurrentPassword('')
-                    setNewPassword('')
-                    setConfirmPassword('')
-                  } catch (error) {
-                    setPasswordError(error instanceof Error ? error.message : 'Failed to update password')
-                  } finally {
-                    setPasswordSaving(false)
-                  }
-                }}
-              >
-                <input className="input" type="password" placeholder="Current password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
-                <input className="input" type="password" placeholder="New password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
-                <input className="input" type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
-                <div className="button-row">
-                  <button
-                    className="button"
-                    type="submit"
-                    disabled={passwordSaving || !currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()}
-                  >
-                    {passwordSaving ? 'Updating…' : 'Change password'}
-                  </button>
-                </div>
-                {passwordError ? <div className="muted" style={{ color: '#ff8b8b' }}>{passwordError}</div> : null}
-              </form>
-              <div className="code-block" style={{ marginBottom: 12 }}>
-                {accountDebug}
               </div>
-              {oidc?.authorization_url ? (
-                <a
-                  className="button-secondary"
-                  href={`${oidc.authorization_url}?client_id=${encodeURIComponent(oidc.client_id)}&response_type=code&redirect_uri=${encodeURIComponent(oidc.redirect_url)}&scope=openid%20profile%20email&state=${encodeURIComponent(clientId)}`}
-                  style={{ display: 'inline-flex', textDecoration: 'none' }}
-                >
-                  Start Authentik SSO
-                </a>
+              {usernameModalOpen ? (
+                <div className="modal-backdrop" onClick={() => !usernameSaving && setUsernameModalOpen(false)}>
+                  <form
+                    className="modal-card"
+                    onClick={(event) => event.stopPropagation()}
+                    onSubmit={async (event) => {
+                      event.preventDefault()
+                      setUsernameError(null)
+                      setCredentialsMessage(null)
+                      setUsernameSaving(true)
+                      try {
+                        const currentVisibleEmail = session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? ''
+                        const message = await onUpdateCredentials({
+                          username: usernameDraft,
+                          email: currentVisibleEmail,
+                        })
+                        setCredentialsMessage(message ?? 'Account updated')
+                        setUsernameModalOpen(false)
+                      } catch (error) {
+                        setUsernameError(error instanceof Error ? error.message : 'Failed to update username')
+                      } finally {
+                        setUsernameSaving(false)
+                      }
+                    }}
+                  >
+                    <h3>Change Username</h3>
+                    <input
+                      className="input"
+                      placeholder="Username"
+                      value={usernameDraft}
+                      onChange={(event) => setUsernameDraft(event.target.value)}
+                    />
+                    {usernameError ? <div className="muted" style={{ color: '#ff8b8b' }}>{usernameError}</div> : null}
+                    <div className="button-row">
+                      <button className="button" type="submit" disabled={usernameSaving || !usernameDraft.trim()}>
+                        {usernameSaving ? (allowDirectCredentialChanges ? 'Confirming…' : 'Requesting…') : allowDirectCredentialChanges ? 'Confirm' : 'Request'}
+                      </button>
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        disabled={usernameSaving}
+                        onClick={() => {
+                          setUsernameModalOpen(false)
+                          setUsernameError(null)
+                          setUsernameDraft(session?.user.username ?? '')
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              ) : null}
+              {passwordModalOpen ? (
+                <div className="modal-backdrop" onClick={() => !passwordSaving && setPasswordModalOpen(false)}>
+                  <form
+                    className="modal-card"
+                    onClick={(event) => event.stopPropagation()}
+                    onSubmit={async (event) => {
+                      event.preventDefault()
+                      setPasswordError(null)
+                      setPasswordSaving(true)
+                      try {
+                        await onChangePassword({
+                          current_password: currentPassword,
+                          new_password: newPassword,
+                          new_password_confirm: confirmPassword,
+                        })
+                        setCurrentPassword('')
+                        setNewPassword('')
+                        setConfirmPassword('')
+                        setPasswordModalOpen(false)
+                      } catch (error) {
+                        setPasswordError(error instanceof Error ? error.message : 'Failed to update password')
+                      } finally {
+                        setPasswordSaving(false)
+                      }
+                    }}
+                  >
+                    <h3>Change Password</h3>
+                    <input className="input" type="password" placeholder="Current password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} />
+                    <input className="input" type="password" placeholder="New password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+                    <input className="input" type="password" placeholder="Confirm new password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+                    {passwordError ? <div className="muted" style={{ color: '#ff8b8b' }}>{passwordError}</div> : null}
+                    <div className="button-row">
+                      <button className="button" type="submit" disabled={passwordSaving || !currentPassword.trim() || !newPassword.trim() || !confirmPassword.trim()}>
+                        {passwordSaving ? 'Updating…' : 'Change password'}
+                      </button>
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        disabled={passwordSaving}
+                        onClick={() => {
+                          setPasswordModalOpen(false)
+                          setPasswordError(null)
+                          setCurrentPassword('')
+                          setNewPassword('')
+                          setConfirmPassword('')
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              ) : null}
+              {emailModalOpen ? (
+                <div className="modal-backdrop" onClick={() => !emailSaving && setEmailModalOpen(false)}>
+                  <form
+                    className="modal-card"
+                    onClick={(event) => event.stopPropagation()}
+                    onSubmit={async (event) => {
+                      event.preventDefault()
+                      setEmailError(null)
+                      setCredentialsMessage(null)
+                      setEmailSaving(true)
+                      try {
+                        const message = await onUpdateCredentials({
+                          username: session?.user.username ?? usernameDraft,
+                          email: emailDraft,
+                        })
+                        setCredentialsMessage(message ?? 'Account updated')
+                        setEmailModalOpen(false)
+                      } catch (error) {
+                        setEmailError(error instanceof Error ? error.message : 'Failed to update email')
+                      } finally {
+                        setEmailSaving(false)
+                      }
+                    }}
+                  >
+                    <h3>Change Email</h3>
+                    <input
+                      className="input"
+                      type="email"
+                      placeholder="Email"
+                      value={emailDraft}
+                      onChange={(event) => setEmailDraft(event.target.value)}
+                    />
+                    {emailError ? <div className="muted" style={{ color: '#ff8b8b' }}>{emailError}</div> : null}
+                    <div className="button-row">
+                      <button className="button" type="submit" disabled={emailSaving || !emailDraft.trim()}>
+                        {emailSaving ? (allowDirectCredentialChanges ? 'Confirming…' : 'Requesting…') : allowDirectCredentialChanges ? 'Confirm' : 'Request'}
+                      </button>
+                      <button
+                        className="button-secondary"
+                        type="button"
+                        disabled={emailSaving}
+                        onClick={() => {
+                          setEmailModalOpen(false)
+                          setEmailError(null)
+                          setEmailDraft(session?.user.email.endsWith('@local.sweet') ? '' : session?.user.email ?? '')
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                </div>
               ) : null}
             </div>
           ) : null}

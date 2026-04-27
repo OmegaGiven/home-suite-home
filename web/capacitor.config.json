@@ -1,0 +1,9 @@
+{
+  "appId": "com.sweet.app",
+  "appName": "Sweet",
+  "webDir": "dist",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "https"
+  }
+}

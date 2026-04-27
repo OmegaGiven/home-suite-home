@@ -117,6 +117,18 @@ export interface AdminStorageOverview {
   detected_available_mb: number
 }
 
+export interface SystemUpdateStatus {
+  current_version: string
+  update_target: string
+  update_enabled: boolean
+  update_in_progress: boolean
+  last_started_at?: string | null
+  last_finished_at?: string | null
+  last_exit_code?: number | null
+  last_message: string
+  last_error?: string | null
+}
+
 export interface AdminSettings {
   allow_member_notes: boolean
   allow_member_files: boolean
@@ -128,14 +140,41 @@ export interface AdminSettings {
   confirm_file_delete: boolean
   allow_user_custom_appearance: boolean
   enforce_org_appearance: boolean
+  oidc: OidcProviderSettings
+  oidc_providers: OidcProviderSettings[]
+  active_oidc_provider_id: string
+  google_calendar_enabled: boolean
+  google_calendar_client_id: string
+  google_calendar_client_secret: string
   role_policies: RolePolicies
   org_font_family: string
   org_accent: string
+  org_background: string
+  org_disable_gradients: boolean
+  org_gradient_top_left: string
+  org_gradient_top_right: string
+  org_gradient_bottom_left: string
+  org_gradient_bottom_right: string
+  org_gradient_strength: number
   org_page_gutter: number
   org_radius: number
   per_user_storage_mb: number
   public_storage_mb: number
   voice_upload_limit_mb: number
+}
+
+export interface OidcProviderSettings {
+  id: string
+  title: string
+  enabled: boolean
+  provider: string
+  issuer: string
+  client_id: string
+  client_secret: string
+  authorization_url: string
+  token_url: string
+  userinfo_url: string
+  scopes: string
 }
 
 export interface Note {
@@ -193,6 +232,9 @@ export interface VoiceMemo {
   updated_at: string
   failure_reason?: string | null
   owner_id: string
+  sync_state?: SyncState
+  local_only?: boolean
+  pending_upload_id?: string | null
 }
 
 export interface TranscriptionJob {
@@ -207,6 +249,7 @@ export type RoomKind = 'channel' | 'direct'
 export interface Room {
   id: string
   name: string
+  folder: string
   kind: RoomKind
   created_at: string
   participant_ids: string[]
@@ -219,13 +262,82 @@ export interface Message {
   author: UserProfile
   body: string
   created_at: string
+  reactions: MessageReaction[]
+}
+
+export interface MessageReaction {
+  emoji: string
+  user_ids: string[]
 }
 
 export interface OidcConfig {
+  enabled: boolean
+  provider: string
   issuer: string
   client_id: string
   authorization_url: string
+  token_url: string
+  userinfo_url: string
+  scopes: string
   redirect_url: string
+}
+
+export interface GoogleCalendarConfig {
+  enabled: boolean
+  client_id: string
+  redirect_url: string
+  scope: string
+}
+
+export type CalendarProvider = 'google' | 'ics' | 'sweet'
+
+export interface CalendarConnection {
+  id: string
+  owner_id: string
+  owner_display_name: string
+  title: string
+  provider: CalendarProvider
+  external_id: string
+  calendar_id: string
+  account_label: string
+  access_token?: string | null
+  refresh_token?: string | null
+  token_expires_at?: string | null
+  ics_url?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CalendarEvent {
+  id: string
+  connection_id: string
+  title: string
+  description: string
+  location: string
+  start_at: string
+  end_at: string
+  all_day: boolean
+  source_url: string
+  organizer: string
+  updated_at?: string | null
+}
+
+export type TaskStatus = 'open' | 'completed'
+
+export interface TaskItem {
+  id: string
+  owner_id: string
+  owner_display_name: string
+  title: string
+  description: string
+  status: TaskStatus
+  start_at?: string | null
+  end_at?: string | null
+  all_day: boolean
+  calendar_connection_id?: string | null
+  created_at: string
+  updated_at: string
+  completed_at?: string | null
 }
 
 export interface RtcConfig {
@@ -237,7 +349,9 @@ export interface RtcConfig {
 export type RealtimeEvent =
   | { type: 'note_patch'; note_id: string; title: string; folder: string; markdown: string; revision: number }
   | { type: 'note_draft'; note_id: string; title: string; folder: string; markdown: string; revision: number; client_id: string; user: string }
+  | { type: 'note_cursor'; note_id: string; user: string; client_id: string; offset: number | null }
   | { type: 'chat_message'; room_id: string; body: string; author: string; author_id: string }
+  | { type: 'chat_message_reactions_updated'; room_id: string; message_id: string }
   | { type: 'chat_rooms_updated' }
   | { type: 'signal'; room_id: string; from: string; payload: unknown }
   | { type: 'note_presence'; note_id: string; user: string }
@@ -252,4 +366,148 @@ export interface FileNode {
   created_at?: string | null
   updated_at?: string | null
   children: FileNode[]
+}
+
+export type SyncEntityKind =
+  | 'notes'
+  | 'diagrams'
+  | 'voice_memos'
+  | 'rooms'
+  | 'messages'
+  | 'calendar_connections'
+  | 'calendar_events'
+  | 'tasks'
+  | 'file_tree'
+  | 'resource_shares'
+
+export type SyncState = 'synced' | 'pending_create' | 'pending_update' | 'pending_delete' | 'conflicted'
+
+export interface SyncCursorSet {
+  generated_at: string
+  notes?: string | null
+  diagrams?: string | null
+  voice_memos?: string | null
+  rooms?: string | null
+  messages?: string | null
+  calendar_connections?: string | null
+  calendar_events?: string | null
+  tasks?: string | null
+  file_tree?: string | null
+  resource_shares?: string | null
+}
+
+export interface SyncTombstone {
+  entity: SyncEntityKind
+  id: string
+  deleted_at: string
+}
+
+export interface SyncConflict {
+  entity: SyncEntityKind
+  id: string
+  reason: string
+  field: string
+  local_value: string
+  remote_value: string
+}
+
+export interface SyncEnvelope {
+  cursors: SyncCursorSet
+  notes: Note[]
+  diagrams: Diagram[]
+  voice_memos: VoiceMemo[]
+  rooms: Room[]
+  messages: Message[]
+  calendar_connections: CalendarConnection[]
+  calendar_events: CalendarEvent[]
+  tasks: TaskItem[]
+  file_tree: FileNode[]
+  resource_shares: ResourceShare[]
+  tombstones: SyncTombstone[]
+}
+
+export type SyncOperation =
+  | { kind: 'create_note'; client_generated_id: string; title: string; folder?: string | null; markdown?: string | null }
+  | { kind: 'update_note'; id: string; title?: string | null; folder?: string | null; markdown?: string | null; revision: number }
+  | { kind: 'delete_note'; id: string }
+  | { kind: 'create_diagram'; client_generated_id: string; title: string; xml?: string | null }
+  | { kind: 'update_diagram'; id: string; title?: string | null; xml: string; revision: number }
+  | { kind: 'create_task'; client_generated_id: string; title: string; description: string; start_at?: string | null; end_at?: string | null; all_day: boolean; calendar_connection_id?: string | null }
+  | { kind: 'update_task'; id: string; title: string; description: string; status: TaskStatus; start_at?: string | null; end_at?: string | null; all_day: boolean; calendar_connection_id?: string | null }
+  | { kind: 'delete_task'; id: string }
+  | { kind: 'create_local_calendar'; client_generated_id: string; title: string }
+  | { kind: 'rename_calendar'; id: string; title: string }
+  | { kind: 'delete_calendar'; id: string }
+  | { kind: 'create_calendar_event'; client_generated_id: string; connection_id: string; title: string; description: string; location: string; start_at: string; end_at: string; all_day: boolean }
+  | { kind: 'update_calendar_event'; connection_id: string; event_id: string; title: string; description: string; location: string; start_at: string; end_at: string; all_day: boolean }
+  | { kind: 'delete_calendar_event'; connection_id: string; event_id: string }
+  | { kind: 'create_message'; client_generated_id: string; room_id: string; body: string }
+  | { kind: 'create_managed_folder'; path: string }
+  | { kind: 'move_managed_path'; source_path: string; destination_dir: string }
+  | { kind: 'rename_managed_path'; path: string; new_name: string }
+  | { kind: 'delete_managed_path'; path: string }
+  | { kind: 'toggle_message_reaction'; room_id: string; message_id: string; emoji: string }
+
+export interface SyncPushResponse {
+  envelope: SyncEnvelope
+  conflicts: SyncConflict[]
+}
+
+export interface OfflineRecordMeta {
+  sync_state: SyncState
+  last_synced_at?: string | null
+  deleted_at?: string | null
+  local_operation_id?: string | null
+}
+
+export interface QueuedSyncOperation {
+  id: string
+  operation: SyncOperation
+  created_at: string
+  attempts: number
+}
+
+export interface QueuedSyncConflict {
+  id: string
+  created_at: string
+  queued_operation: QueuedSyncOperation
+  conflict: SyncConflict
+}
+
+export interface PendingVoiceUploadRecord {
+  id: string
+  title: string
+  filename: string
+  mime_type: string
+  size_bytes: number
+  browser_transcript?: string | null
+  created_at: string
+  blob: Blob
+}
+
+export interface PendingManagedUploadRecord {
+  id: string
+  path: string
+  filename: string
+  mime_type: string
+  size_bytes: number
+  created_at: string
+  blob: Blob
+}
+
+export interface WorkspaceSnapshot {
+  source: 'cache' | 'remote'
+  synced_at: string
+  cursors: SyncCursorSet
+  notes: Note[]
+  diagrams: Diagram[]
+  voice_memos: VoiceMemo[]
+  rooms: Room[]
+  messages: Message[]
+  calendar_connections: CalendarConnection[]
+  calendar_events: CalendarEvent[]
+  tasks: TaskItem[]
+  file_tree: FileNode[]
+  resource_shares: ResourceShare[]
+  tombstones: SyncTombstone[]
 }

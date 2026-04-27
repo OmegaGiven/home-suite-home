@@ -15,8 +15,40 @@ export function editableInlineText(text: string) {
   return escapeHtml(text)
 }
 
+function renderInlineMarkdown(text: string) {
+  if (!text) return '<br>'
+  const tokenPattern =
+    /!\[([^\]]*)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|~~([^~]+)~~|`([^`]+)`|<u>(.*?)<\/u>|\*([^*]+)\*/g
+  let output = ''
+  let lastIndex = 0
+  let match: RegExpExecArray | null = null
+
+  while ((match = tokenPattern.exec(text)) !== null) {
+    output += escapeHtml(text.slice(lastIndex, match.index))
+    if (match[1] !== undefined && match[2] !== undefined) {
+      output += `<img alt="${escapeHtmlAttribute(match[1])}" src="${escapeHtmlAttribute(match[2])}">`
+    } else if (match[3] !== undefined && match[4] !== undefined) {
+      output += `<a href="${escapeHtmlAttribute(match[4])}">${renderInlineMarkdown(match[3])}</a>`
+    } else if (match[5] !== undefined) {
+      output += `<strong>${renderInlineMarkdown(match[5])}</strong>`
+    } else if (match[6] !== undefined) {
+      output += `<s>${renderInlineMarkdown(match[6])}</s>`
+    } else if (match[7] !== undefined) {
+      output += `<code>${escapeHtml(match[7])}</code>`
+    } else if (match[8] !== undefined) {
+      output += `<u>${renderInlineMarkdown(match[8])}</u>`
+    } else if (match[9] !== undefined) {
+      output += `<em>${renderInlineMarkdown(match[9])}</em>`
+    }
+    lastIndex = tokenPattern.lastIndex
+  }
+
+  output += escapeHtml(text.slice(lastIndex))
+  return output || '<br>'
+}
+
 function blockHtml(tag: string, text: string) {
-  return `<${tag}>${editableInlineText(text || '')}</${tag}>`
+  return `<${tag}>${renderInlineMarkdown(text || '')}</${tag}>`
 }
 
 function alignmentStyle(cell: string) {
@@ -49,7 +81,7 @@ function tableHtml(headerLine: string, separatorLine: string, bodyLines: string[
     .map((cell, index) => {
       const align = alignments[index]
       const style = align ? ` style="text-align:${align}"` : ''
-      return `<th${style}>${editableInlineText(cell)}</th>`
+      return `<th${style}>${renderInlineMarkdown(cell)}</th>`
     })
     .join('')
 
@@ -60,7 +92,7 @@ function tableHtml(headerLine: string, separatorLine: string, bodyLines: string[
           .map((cell, index) => {
             const align = alignments[index]
             const style = align ? ` style="text-align:${align}"` : ''
-            return `<td${style}>${editableInlineText(cell)}</td>`
+            return `<td${style}>${renderInlineMarkdown(cell)}</td>`
           })
           .join('')}</tr>`,
     )
@@ -77,7 +109,7 @@ function listHtml(kind: 'ul' | 'ol', items: string[], options?: { start?: number
         const state = options.taskStates[index] ? 'checked' : 'unchecked'
         return taskListItemHtml(item, state === 'checked')
       }
-      return `<li>${editableInlineText(item)}</li>`
+      return `<li>${renderInlineMarkdown(item)}</li>`
     })
     .join('')
   return `<${kind}${attrs}>${body}</${kind}>`
@@ -85,7 +117,7 @@ function listHtml(kind: 'ul' | 'ol', items: string[], options?: { start?: number
 
 function taskListItemHtml(text: string, checked: boolean) {
   const state = checked ? 'checked' : 'unchecked'
-  return `<li data-task="${state}"><span class="task-checkbox" contenteditable="false" data-task-checkbox="true" aria-hidden="true"></span><span class="task-content">${editableInlineText(text)}</span></li>`
+  return `<li data-task="${state}"><span class="task-checkbox" contenteditable="false" data-task-checkbox="true" aria-hidden="true"></span><span class="task-content">${renderInlineMarkdown(text)}</span></li>`
 }
 
 export function markdownToEditableHtml(markdown: string) {

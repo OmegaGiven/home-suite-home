@@ -14,6 +14,76 @@
   color-scheme: dark;
 }
 
+html,
+body {
+  scrollbar-color: color-mix(in srgb, #41b883 62%, #ffffff 10%) transparent;
+  scrollbar-width: thin;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+html::-webkit-scrollbar-track,
+body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html::-webkit-scrollbar-thumb,
+body::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 16%,
+      color-mix(in srgb, #41b883 18%, transparent) 16%,
+      color-mix(in srgb, #41b883 18%, transparent) 84%,
+      transparent 84%,
+      transparent 100%
+    ),
+    radial-gradient(
+      circle at center,
+      color-mix(in srgb, #41b883 72%, #ffffff 16%) 0,
+      color-mix(in srgb, #41b883 72%, #ffffff 16%) 38%,
+      color-mix(in srgb, #41b883 34%, transparent) 39%,
+      color-mix(in srgb, #41b883 34%, transparent) 62%,
+      transparent 63%
+    );
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  min-height: 32px;
+}
+
+html::-webkit-scrollbar-thumb:hover,
+body::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 16%,
+      color-mix(in srgb, #41b883 28%, transparent) 16%,
+      color-mix(in srgb, #41b883 28%, transparent) 84%,
+      transparent 84%,
+      transparent 100%
+    ),
+    radial-gradient(
+      circle at center,
+      color-mix(in srgb, #41b883 84%, #ffffff 18%) 0,
+      color-mix(in srgb, #41b883 84%, #ffffff 18%) 42%,
+      color-mix(in srgb, #41b883 42%, transparent) 43%,
+      color-mix(in srgb, #41b883 42%, transparent) 66%,
+      transparent 67%
+    );
+}
+
+html::-webkit-scrollbar-corner,
+body::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -34,4 +104,3 @@ select {
 #root {
   min-height: 100vh;
 }
-

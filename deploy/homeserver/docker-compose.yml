@@ -1,0 +1,82 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sweet}
+      POSTGRES_USER: ${POSTGRES_USER:-sweet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sweet}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  coturn:
+    image: coturn/coturn:4.6.3
+    restart: unless-stopped
+    command:
+      - -n
+      - --log-file=stdout
+      - --min-port=49160
+      - --max-port=49200
+      - --realm=${TURN_REALM:-sweet.local}
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_STATIC_AUTH_SECRET:-sweetturn}
+      - --listening-port=3478
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "49160-49200:49160-49200/udp"
+
+  drawio:
+    image: jgraph/drawio:latest
+    restart: unless-stopped
+
+  server:
+    image: ${SWEET_SERVER_IMAGE:-ghcr.io/example/sweet-server:latest}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      APP_BASE_URL: ${APP_BASE_URL}
+      WEB_BASE_URL: ${WEB_BASE_URL}
+      APP_VERSION: ${SWEET_RELEASE_LABEL:-latest}
+      APP_UPDATE_TARGET: ${APP_UPDATE_TARGET:-homeserver docker stack}
+      APP_UPDATE_COMMAND: /usr/local/bin/update-sweet
+      STORAGE_ROOT: /app/storage
+      DATABASE_URL: postgres://${POSTGRES_USER:-sweet}:${POSTGRES_PASSWORD:-sweet}@postgres:5432/${POSTGRES_DB:-sweet}
+      TURN_URLS: ${TURN_URLS:-turn:${PUBLIC_HOSTNAME:-localhost}:3478?transport=udp}
+      TURN_USERNAME: ${TURN_USERNAME:-sweet}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-sweetturn}
+      WHISPER_COMMAND: /usr/local/bin/whisper-cli
+      FFMPEG_COMMAND: /usr/bin/ffmpeg
+      TRANSCRIPTION_MODEL: tiny.en
+      TRANSCRIPTION_MODEL_PATH: /opt/whisper/models/ggml-tiny.en.bin
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      BOOTSTRAP_EMAIL: ${BOOTSTRAP_EMAIL:-admin@example.com}
+      BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:-changeme123}
+    depends_on:
+      - postgres
+      - coturn
+    volumes:
+      - server-storage:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/opt/sweet-deploy
+      - ./update-sweet.sh:/usr/local/bin/update-sweet:ro
+    ports:
+      - "8080:8080"
+
+  web:
+    image: ${SWEET_WEB_IMAGE:-ghcr.io/example/sweet-web:latest}
+    restart: unless-stopped
+    depends_on:
+      - server
+      - drawio
+    environment:
+      PORT: 4173
+    ports:
+      - "4173:4173"
+
+volumes:
+  postgres-data:
+  server-storage:

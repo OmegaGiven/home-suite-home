@@ -1,6 +1,8 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from './api'
 import type { RoutePath } from './app-config'
+import { sessionStore } from './platform'
+import { bootstrapWorkspace, loadCachedWorkspaceSnapshot } from './sync-engine'
 import type { AdminSettings, Diagram, FileNode, OidcConfig, RtcConfig, SessionResponse, SetupAdminRequest, SetupStatusResponse, VoiceMemo, Note, UserProfile, Message, Room } from './types'
 
 type AdminUserSummary = import('./types').AdminUserSummary
@@ -29,12 +31,15 @@ type CreateAuthActionsContext = {
   setSelectedDiagramId: Dispatch<SetStateAction<string | null>>
   setMemos: Dispatch<SetStateAction<VoiceMemo[]>>
   setSelectedVoiceMemoId: Dispatch<SetStateAction<string | null>>
+  setCalendarConnections: Dispatch<SetStateAction<import('./types').CalendarConnection[]>>
+  setTasks: Dispatch<SetStateAction<import('./types').TaskItem[]>>
   setRooms: Dispatch<SetStateAction<Room[]>>
   setRoomUnreadCounts: Dispatch<SetStateAction<Record<string, number>>>
   setComsParticipants: Dispatch<SetStateAction<UserProfile[]>>
   setSelectedRoomId: Dispatch<SetStateAction<string | null>>
   setMessages: Dispatch<SetStateAction<Message[]>>
   setRtcConfig: Dispatch<SetStateAction<RtcConfig | null>>
+  setSyncCursors: Dispatch<SetStateAction<import('./types').SyncCursorSet>>
   rememberPersistedNotes: (nextNotes: Note[]) => void
   normalizeFolderPath: (path: string) => string
   mergeFolderPaths: (current: string[], incoming: string[]) => string[]
@@ -44,25 +49,10 @@ type CreateAuthActionsContext = {
 
 export function createAuthActions(context: CreateAuthActionsContext) {
   async function hydrateWorkspace(sessionData: SessionResponse) {
-    window.localStorage.setItem('sweet.session', JSON.stringify(sessionData))
+    await sessionStore.set(sessionData)
     context.setSession(sessionData)
-    const [
-      nextNotes,
-      nextFiles,
-      nextDiagrams,
-      nextMemos,
-      nextRooms,
-      nextComsParticipants,
-      nextRtc,
-      nextAdminSettings,
-      nextUsers,
-      nextAdminStorageOverview,
-    ] = await Promise.all([
-      api.listNotes(),
-      api.listFilesTree(),
-      api.listDiagrams(),
-      api.listVoiceMemos(),
-      api.listRooms(),
+    const workspace = await bootstrapWorkspace(true)
+    const [nextComsParticipants, nextRtc, nextAdminSettings, nextUsers, nextAdminStorageOverview] = await Promise.all([
       api.listComsParticipants(),
       api.callConfig(),
       api.getAdminSettings(),
@@ -73,25 +63,30 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     context.setAdminSettings(nextAdminSettings)
     context.setAdminUsers(nextUsers)
     context.setAdminStorageOverview(nextAdminStorageOverview)
-    context.rememberPersistedNotes(nextNotes)
-    context.setNotes(nextNotes)
-    context.setFilesTree(nextFiles)
+    context.setSyncCursors(workspace.cursors)
+    context.rememberPersistedNotes(workspace.notes)
+    context.setNotes(workspace.notes)
+    context.setFilesTree(workspace.file_tree)
     context.setSelectedFilePath('')
-    context.setSelectedNoteId(nextNotes[0]?.id ?? null)
-    context.setSelectedFolderPath(context.normalizeFolderPath(nextNotes[0]?.folder ?? 'Inbox'))
-    context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
-    context.setDiagrams(nextDiagrams)
-    context.setSelectedDiagramId(nextDiagrams[0]?.id ?? null)
-    context.setMemos(nextMemos)
-    context.setSelectedVoiceMemoId(nextMemos[0]?.id ?? null)
-    context.setRooms(nextRooms)
+    context.setSelectedNoteId(workspace.notes[0]?.id ?? null)
+    context.setSelectedFolderPath(context.normalizeFolderPath(workspace.notes[0]?.folder ?? 'Inbox'))
+    context.setCustomFolders((current) =>
+      context.mergeFolderPaths(current, workspace.notes.map((note) => note.folder || 'Inbox')),
+    )
+    context.setDiagrams(workspace.diagrams)
+    context.setSelectedDiagramId(workspace.diagrams[0]?.id ?? null)
+    context.setMemos(workspace.voice_memos)
+    context.setSelectedVoiceMemoId(workspace.voice_memos[0]?.id ?? null)
+    context.setCalendarConnections(workspace.calendar_connections)
+    context.setTasks(workspace.tasks)
+    context.setRooms(workspace.rooms)
     context.setRoomUnreadCounts({})
     context.setComsParticipants(nextComsParticipants)
-    context.setSelectedRoomId(nextRooms[0]?.id ?? null)
+    context.setSelectedRoomId(workspace.rooms[0]?.id ?? null)
     context.setMessages([])
     context.setRtcConfig(nextRtc)
     context.setAuthMode(sessionData.user.must_change_password ? 'change-password' : 'ready')
-    context.setStatus('Workspace ready')
+    context.setStatus(workspace.source === 'cache' ? 'Workspace ready (offline cache)' : 'Workspace ready')
   }
 
   async function bootstrap() {
@@ -113,14 +108,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
       if (window.location.pathname === '/auth/oidc/callback' && callbackCode) {
         sessionData = await api.oidcCallback(callbackCode, callbackState)
       } else {
-        const stored = window.localStorage.getItem('sweet.session')
-        if (stored) {
-          try {
-            sessionData = JSON.parse(stored) as SessionResponse
-          } catch {
-            window.localStorage.removeItem('sweet.session')
-          }
-        }
+        sessionData = await sessionStore.get()
       }
 
       if (!sessionData) {
@@ -135,6 +123,32 @@ export function createAuthActions(context: CreateAuthActionsContext) {
         context.setRoute('/notes')
       }
     } catch (error) {
+      const cachedSession = await sessionStore.get()
+      const cachedWorkspace = await loadCachedWorkspaceSnapshot()
+      if (cachedSession && cachedWorkspace) {
+        context.setSession(cachedSession)
+        context.setSyncCursors(cachedWorkspace.cursors)
+        context.rememberPersistedNotes(cachedWorkspace.notes)
+        context.setNotes(cachedWorkspace.notes)
+        context.setFilesTree(cachedWorkspace.file_tree)
+        context.setSelectedNoteId(cachedWorkspace.notes[0]?.id ?? null)
+        context.setSelectedFolderPath(context.normalizeFolderPath(cachedWorkspace.notes[0]?.folder ?? 'Inbox'))
+        context.setCustomFolders((current) =>
+          context.mergeFolderPaths(current, cachedWorkspace.notes.map((note) => note.folder || 'Inbox')),
+        )
+        context.setDiagrams(cachedWorkspace.diagrams)
+        context.setSelectedDiagramId(cachedWorkspace.diagrams[0]?.id ?? null)
+        context.setMemos(cachedWorkspace.voice_memos)
+        context.setSelectedVoiceMemoId(cachedWorkspace.voice_memos[0]?.id ?? null)
+        context.setCalendarConnections(cachedWorkspace.calendar_connections)
+        context.setTasks(cachedWorkspace.tasks)
+        context.setRooms(cachedWorkspace.rooms)
+        context.setSelectedRoomId(cachedWorkspace.rooms[0]?.id ?? null)
+        context.setMessages([])
+        context.setAuthMode(cachedSession.user.must_change_password ? 'change-password' : 'ready')
+        context.setStatus('Offline mode using cached workspace')
+        return
+      }
       context.setStatus(error instanceof Error ? error.message : 'Failed to connect')
     }
   }
@@ -187,10 +201,38 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     new_password_confirm: string
   }) {
     const sessionData = await api.changeCurrentUserPassword(payload)
-    window.localStorage.setItem('sweet.session', JSON.stringify(sessionData))
+    await sessionStore.set(sessionData)
     context.setSession(sessionData)
     context.applyUpdatedUserProfile(sessionData.user)
     context.showActionNotice('Password changed')
+  }
+
+  function logout() {
+    void sessionStore.clear()
+    context.setSession(null)
+    context.setAdminSettings(null)
+    context.setAdminUsers([])
+    context.setAdminStorageOverview(null)
+    context.setNotes([])
+    context.setFilesTree([])
+    context.setSelectedFilePath('')
+    context.setSelectedNoteId(null)
+    context.setSelectedFolderPath(context.normalizeFolderPath('Inbox'))
+    context.setCustomFolders([])
+    context.setDiagrams([])
+    context.setSelectedDiagramId(null)
+    context.setMemos([])
+    context.setSelectedVoiceMemoId(null)
+    context.setRooms([])
+    context.setRoomUnreadCounts({})
+    context.setComsParticipants([])
+    context.setSelectedRoomId(null)
+    context.setMessages([])
+    context.setRtcConfig(null)
+    context.setAuthMode('login')
+    context.setRoute('/notes')
+    context.setStatus('Signed out')
+    context.showActionNotice('Logged out')
   }
 
   return {
@@ -202,5 +244,6 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     uploadCurrentUserAvatar,
     updateCurrentUserCredentials,
     changeCurrentUserPassword,
+    logout,
   }
 }

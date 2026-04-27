@@ -20,11 +20,17 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AdminResetPasswordRequest, AdminSettings, AdminStorageOverview,
-        ChangeCurrentUserPasswordRequest, ChangePasswordRequest, CreateDiagramRequest,
-        CreateFolderRequest, CreateMessageRequest, CreateNoteRequest, CreateRoomRequest,
-        CreateUserRequest, DeleteFileRequest, HealthResponse, LoginRequest, MoveFileRequest,
-        OidcConfigResponse, RealtimeEvent, RenameFileRequest, RtcConfig, SetupAdminRequest,
-        UpdateAccountCredentialsRequest, UpdateDiagramRequest, UpdateNoteRequest,
+        ChangeCurrentUserPasswordRequest, ChangePasswordRequest, ConnectGoogleCalendarRequest,
+        CreateCalendarEventRequest, CreateDiagramRequest, CreateFolderRequest,
+        CreateIcsCalendarConnectionRequest, CreateLocalCalendarConnectionRequest,
+        CreateMessageRequest, CreateNoteRequest, CreateRoomRequest, CreateTaskRequest,
+        CreateUserRequest, DeleteFileRequest, GoogleCalendarConfigResponse, HealthResponse,
+        LoginRequest, MoveFileRequest, OidcConfigResponse, RealtimeEvent, RenameFileRequest,
+        RtcConfig, SetupAdminRequest, SyncBootstrapRequest, SyncPullRequest, SyncPushRequest,
+        ToggleMessageReactionRequest,
+        UpdateAccountCredentialsRequest, UpdateCalendarConnectionRequest,
+        UpdateCalendarEventRequest, UpdateDiagramRequest, UpdateNoteRequest, UpdateTaskRequest,
+        UpdateVoiceMemoRequest,
         UpdateResourceShareRequest, UpdateUserAccessRequest,
     },
     state::AppState,
@@ -39,6 +45,40 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/change-password", post(change_password))
         .route("/api/v1/auth/oidc/config", get(oidc_config))
         .route("/api/v1/auth/oidc/callback", get(oidc_callback))
+        .route("/api/v1/sync/bootstrap", post(sync_bootstrap))
+        .route("/api/v1/sync/pull", post(sync_pull))
+        .route("/api/v1/sync/push", post(sync_push))
+        .route("/api/v1/calendar/google/config", get(get_google_calendar_config))
+        .route(
+            "/api/v1/calendar/connections",
+            get(list_calendar_connections),
+        )
+        .route(
+            "/api/v1/calendar/connections/google",
+            post(connect_google_calendar),
+        )
+        .route(
+            "/api/v1/calendar/connections/ics",
+            post(create_ics_calendar_connection),
+        )
+        .route(
+            "/api/v1/calendar/connections/local",
+            post(create_local_calendar_connection),
+        )
+        .route(
+            "/api/v1/calendar/connections/{id}",
+            put(update_calendar_connection).delete(delete_calendar_connection),
+        )
+        .route(
+            "/api/v1/calendar/connections/{id}/events",
+            get(list_calendar_events).post(create_calendar_event),
+        )
+        .route(
+            "/api/v1/calendar/connections/{id}/events/{event_id}",
+            put(update_calendar_event).delete(delete_calendar_event),
+        )
+        .route("/api/v1/tasks", get(list_tasks).post(create_task))
+        .route("/api/v1/tasks/{id}", put(update_task).delete(delete_task))
         .route("/api/v1/users/me/avatar", post(upload_current_user_avatar))
         .route("/api/v1/users/me/credentials", put(update_current_user_credentials))
         .route(
@@ -53,6 +93,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/admin/storage-overview",
             get(get_admin_storage_overview),
+        )
+        .route(
+            "/api/v1/admin/system/update",
+            get(get_system_update_status).post(trigger_system_update),
         )
         .route("/api/v1/admin/users", get(list_users).post(create_user))
         .route("/api/v1/admin/users/{id}/access", put(update_user_access))
@@ -70,14 +114,17 @@ pub fn router(state: AppState) -> Router {
             get(get_resource_share).put(update_resource_share),
         )
         .route("/api/v1/notes", get(list_notes).post(create_note))
-        .route("/api/v1/notes/{id}", put(update_note))
+        .route("/api/v1/notes/{id}", put(update_note).delete(delete_note))
         .route("/api/v1/diagrams", get(list_diagrams).post(create_diagram))
         .route("/api/v1/diagrams/{id}", put(update_diagram))
         .route(
             "/api/v1/voice-memos",
             get(list_voice_memos).post(create_voice_memo),
         )
-        .route("/api/v1/voice-memos/{id}", axum::routing::delete(delete_voice_memo))
+        .route(
+            "/api/v1/voice-memos/{id}",
+            put(update_voice_memo).delete(delete_voice_memo),
+        )
         .route("/api/v1/voice-memos/{id}/audio", get(get_voice_audio))
         .route("/api/v1/voice-memos/{id}/job", get(get_job))
         .route("/api/v1/voice-memos/{id}/retry", post(retry_job))
@@ -86,6 +133,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/v1/rooms/{id}/messages",
             get(list_messages).post(create_message),
+        )
+        .route(
+            "/api/v1/rooms/{id}/messages/{message_id}/reactions",
+            post(toggle_message_reaction),
         )
         .route("/api/v1/files/tree", get(list_files))
         .route("/api/v1/files/folders", post(create_folder))
@@ -254,6 +305,37 @@ async fn get_admin_storage_overview(State(state): State<AppState>) -> Json<Admin
     Json(state.storage_overview().await)
 }
 
+async fn require_manage_org_settings_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> AppResult<crate::models::UserProfile> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    state.ensure_manage_org_settings(user.id).await?;
+    Ok(user)
+}
+
+async fn get_system_update_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<crate::models::SystemUpdateStatus>> {
+    let _user = require_manage_org_settings_user(&state, &headers).await?;
+    Ok(Json(state.system_update_status().await))
+}
+
+async fn trigger_system_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<crate::models::SystemUpdateStatus>> {
+    let _user = require_manage_org_settings_user(&state, &headers).await?;
+    Ok(Json(state.trigger_system_update().await?))
+}
+
 async fn list_users(State(state): State<AppState>) -> Json<Vec<crate::models::AdminUserSummary>> {
     Json(state.list_users().await)
 }
@@ -301,21 +383,290 @@ async fn resolve_user_credential_request(
 }
 
 async fn oidc_config(State(state): State<AppState>) -> Json<OidcConfigResponse> {
-    let issuer = state
-        .config
-        .authentik_issuer
-        .trim_end_matches('/')
-        .to_string();
-    Json(OidcConfigResponse {
-        issuer: issuer.clone(),
-        client_id: state.config.authentik_client_id.clone(),
-        authorization_url: if issuer.is_empty() {
-            String::new()
-        } else {
-            format!("{issuer}/authorize")
-        },
-        redirect_url: format!("{}/auth/oidc/callback", state.config.web_base_url),
-    })
+    Json(state.oidc_config().await)
+}
+
+async fn get_google_calendar_config(State(state): State<AppState>) -> Json<GoogleCalendarConfigResponse> {
+    Json(state.google_calendar_config().await)
+}
+
+async fn sync_bootstrap(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SyncBootstrapRequest>,
+) -> AppResult<Json<crate::models::SyncEnvelope>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.sync_bootstrap(user, payload).await?))
+}
+
+async fn sync_pull(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SyncPullRequest>,
+) -> AppResult<Json<crate::models::SyncEnvelope>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.sync_pull(user, payload).await?))
+}
+
+async fn sync_push(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<SyncPushRequest>,
+) -> AppResult<Json<crate::models::SyncPushResponse>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.sync_push(user, payload).await?))
+}
+
+async fn list_calendar_connections(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<Vec<crate::models::CalendarConnection>>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.list_calendar_connections(user).await))
+}
+
+async fn connect_google_calendar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ConnectGoogleCalendarRequest>,
+) -> AppResult<Json<crate::models::CalendarConnection>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.connect_google_calendar(user, payload).await?))
+}
+
+async fn create_ics_calendar_connection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateIcsCalendarConnectionRequest>,
+) -> AppResult<Json<crate::models::CalendarConnection>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.create_ics_calendar_connection(user, payload).await?))
+}
+
+async fn create_local_calendar_connection(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateLocalCalendarConnectionRequest>,
+) -> AppResult<Json<crate::models::CalendarConnection>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.create_local_calendar_connection(user, payload).await?))
+}
+
+#[derive(Deserialize)]
+struct CalendarEventsQuery {
+    start: Option<String>,
+    end: Option<String>,
+}
+
+async fn update_calendar_connection(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateCalendarConnectionRequest>,
+) -> AppResult<Json<crate::models::CalendarConnection>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.update_calendar_connection(user, id, payload).await?))
+}
+
+async fn delete_calendar_connection(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<StatusCode> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    state.delete_calendar_connection(user, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_calendar_events(
+    Path(id): Path<Uuid>,
+    Query(query): Query<CalendarEventsQuery>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<Vec<crate::models::CalendarEvent>>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    let start = query
+        .start
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let end = query
+        .end
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(|| start + chrono::Duration::days(30));
+    Ok(Json(state.list_calendar_events(user, id, start, end).await?))
+}
+
+async fn create_calendar_event(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateCalendarEventRequest>,
+) -> AppResult<Json<crate::models::CalendarEvent>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.create_calendar_event(user, id, payload).await?))
+}
+
+async fn update_calendar_event(
+    Path((id, event_id)): Path<(Uuid, String)>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateCalendarEventRequest>,
+) -> AppResult<Json<crate::models::CalendarEvent>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.update_calendar_event(user, id, &event_id, payload).await?))
+}
+
+async fn delete_calendar_event(
+    Path((id, event_id)): Path<(Uuid, String)>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<StatusCode> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    state.delete_calendar_event(user, id, &event_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_tasks(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<Vec<crate::models::TaskItem>>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.list_tasks(user).await))
+}
+
+async fn create_task(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<CreateTaskRequest>,
+) -> AppResult<Json<crate::models::TaskItem>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.create_task(user, payload).await?))
+}
+
+async fn update_task(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<UpdateTaskRequest>,
+) -> AppResult<Json<crate::models::TaskItem>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    Ok(Json(state.update_task(user, id, payload).await?))
+}
+
+async fn delete_task(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<StatusCode> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    state.delete_task(user, id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
@@ -369,6 +720,11 @@ async fn update_note(
         revision: note.revision,
     });
     Ok(Json(note))
+}
+
+async fn delete_note(Path(id): Path<Uuid>, State(state): State<AppState>) -> AppResult<StatusCode> {
+    state.delete_note(id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_diagrams(State(state): State<AppState>) -> Json<Vec<crate::models::Diagram>> {
@@ -448,6 +804,14 @@ async fn delete_voice_memo(
 ) -> AppResult<StatusCode> {
     state.delete_voice_memo(id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn update_voice_memo(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateVoiceMemoRequest>,
+) -> AppResult<Json<crate::models::VoiceMemo>> {
+    Ok(Json(state.update_voice_memo(id, payload).await?))
 }
 
 async fn get_job(
@@ -634,6 +998,29 @@ async fn create_message(
         body: message.body.clone(),
         author: message.author.display_name.clone(),
         author_id: message.author.id,
+    });
+    Ok(Json(message))
+}
+
+async fn toggle_message_reaction(
+    Path((id, message_id)): Path<(Uuid, Uuid)>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ToggleMessageReactionRequest>,
+) -> AppResult<Json<crate::models::Message>> {
+    let user = state
+        .authenticated_user_from_header(
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()),
+        )
+        .await?;
+    let message = state
+        .toggle_message_reaction(id, message_id, payload, user)
+        .await?;
+    let _ = state.realtime.send(RealtimeEvent::ChatMessageReactionsUpdated {
+        room_id: id,
+        message_id,
     });
     Ok(Json(message))
 }

@@ -27,6 +27,10 @@ export function createShareActions(context: CreateShareActionsContext) {
     return `note:${noteId}`
   }
 
+  function resourceKeyForCalendar(connectionId: string) {
+    return `calendar:${connectionId}`
+  }
+
   async function openShareDialog(target: ShareTarget) {
     context.setShareTarget(target)
     context.setShareUserQuery('')
@@ -97,6 +101,7 @@ export function createShareActions(context: CreateShareActionsContext) {
   return {
     resourceKeyForFilePath,
     resourceKeyForNote,
+    resourceKeyForCalendar,
     openShareDialog,
     setShareVisibility,
     toggleShareUser,

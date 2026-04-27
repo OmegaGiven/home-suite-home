@@ -1,7 +1,9 @@
 import type { CSSProperties, ReactNode, RefObject } from 'react'
+import { PaneSplitter } from './PaneSplitter'
 
 type Props = {
   sectionClassName?: string
+  sectionRef?: RefObject<HTMLElement | null>
   managerRef?: RefObject<HTMLDivElement | null>
   managerClassName: string
   drawerOpen: boolean
@@ -20,6 +22,7 @@ type Props = {
 
 export function LibraryShell({
   sectionClassName = 'panel',
+  sectionRef,
   managerRef,
   managerClassName,
   drawerOpen,
@@ -36,7 +39,7 @@ export function LibraryShell({
   onToggleDrawer,
 }: Props) {
   return (
-    <section className={sectionClassName}>
+    <section ref={sectionRef} className={sectionClassName}>
       <div
         ref={managerRef}
         className={managerClassName}
@@ -50,13 +53,11 @@ export function LibraryShell({
       >
         {sidebarVisible ? <aside className={sidebarClassName}>{sidebar}</aside> : null}
         {showSplitter ? (
-          <div
-            className={`${splitterClassName} ${activeSplitter ? 'active' : ''} ${drawerOpen ? '' : 'collapsed'}`}
-            role="separator"
-            aria-orientation="vertical"
-            onMouseDown={() => {
-              if (drawerOpen) onStartResize()
-            }}
+          <PaneSplitter
+            className={splitterClassName}
+            active={activeSplitter}
+            drawerOpen={drawerOpen}
+            onStartResize={onStartResize}
             onDoubleClick={onToggleDrawer}
           />
         ) : null}

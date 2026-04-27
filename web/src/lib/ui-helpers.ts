@@ -1,6 +1,13 @@
 import type { CSSProperties } from 'react'
 import type { Diagram, FileNode, Note } from './types'
 
+export type FileTreeSortKey = 'name' | 'type' | 'size' | 'modified' | 'created'
+export type FileTreeSortDirection = 'desc' | 'asc'
+export type FileTreeSortState = {
+  key: FileTreeSortKey
+  direction: FileTreeSortDirection
+}
+
 export type FolderNode = {
   name: string
   path: string
@@ -33,6 +40,22 @@ export type NoteInsertKind =
   | 'code-block'
   | 'divider'
   | 'table'
+
+export type NoteToolbarAction =
+  | 'undo'
+  | 'redo'
+  | 'heading-1'
+  | 'heading-2'
+  | 'heading-3'
+  | 'bold'
+  | 'italic'
+  | 'underline'
+  | 'divider'
+  | 'bullet-list'
+  | 'code-block'
+  | 'table'
+  | 'quote'
+  | 'link'
 
 export function defaultNoteTitle() {
   const now = new Date()
@@ -108,6 +131,50 @@ export function insertTextAtSelection(text: string) {
   range.collapse(true)
   selection.removeAllRanges()
   selection.addRange(range)
+}
+
+export function getCaretOffsetInContentEditable(root: HTMLElement) {
+  const selection = window.getSelection()
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return null
+  const range = selection.getRangeAt(0)
+  if (!root.contains(range.startContainer)) return null
+  const beforeRange = range.cloneRange()
+  beforeRange.selectNodeContents(root)
+  beforeRange.setEnd(range.startContainer, range.startOffset)
+  return beforeRange.toString().length
+}
+
+export function getCaretRectForOffset(root: HTMLElement, offset: number) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let remaining = Math.max(offset, 0)
+  let currentNode = walker.nextNode()
+
+  while (currentNode) {
+    const textLength = currentNode.textContent?.length ?? 0
+    if (remaining <= textLength) {
+      const range = document.createRange()
+      range.setStart(currentNode, Math.min(remaining, textLength))
+      range.collapse(true)
+      const rect = range.getClientRects()[0] ?? range.getBoundingClientRect()
+      if (rect && (rect.width || rect.height)) return rect
+      break
+    }
+    remaining -= textLength
+    currentNode = walker.nextNode()
+  }
+
+  const fallbackRect = root.getBoundingClientRect()
+  if (!fallbackRect.width && !fallbackRect.height) return null
+  return fallbackRect
+}
+
+export function colorForPresenceLabel(label: string) {
+  let hash = 0
+  for (let index = 0; index < label.length; index += 1) {
+    hash = (hash * 31 + label.charCodeAt(index)) >>> 0
+  }
+  const hue = hash % 360
+  return `hsl(${hue} 78% 68%)`
 }
 
 export function normalizeFolderPath(value: string) {
@@ -211,6 +278,109 @@ export function formatFileTimestamp(value?: string | null) {
   return `${year}.${month}.${day}:${hours}:${minutes}`
 }
 
+export function aggregateFileNodeSize(node: FileNode): number | null {
+  if (node.kind === 'file') return node.size_bytes ?? null
+  let total = 0
+  let hasSize = false
+  for (const child of node.children) {
+    const childSize = aggregateFileNodeSize(child)
+    if (typeof childSize === 'number') {
+      total += childSize
+      hasSize = true
+    }
+  }
+  return hasSize ? total : null
+}
+
+export function filterFileTree(
+  nodes: FileNode[],
+  query: string,
+  getDisplayName: (node: FileNode) => string = (node) => node.name,
+): FileNode[] {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return nodes
+
+  const filterNode = (node: FileNode): FileNode | null => {
+    const matchesSelf =
+      getDisplayName(node).toLowerCase().includes(normalized) ||
+      node.path.toLowerCase().includes(normalized)
+    const filteredChildren =
+      node.kind === 'directory'
+        ? node.children.map(filterNode).filter((child): child is FileNode => child !== null)
+        : []
+
+    if (!matchesSelf && filteredChildren.length === 0) return null
+    return filteredChildren === node.children ? node : { ...node, children: filteredChildren }
+  }
+
+  return nodes.map(filterNode).filter((node): node is FileNode => node !== null)
+}
+
+export function filterFileNode(
+  node: FileNode | null | undefined,
+  query: string,
+  getDisplayName: (node: FileNode) => string = (treeNode) => treeNode.name,
+): FileNode | null {
+  if (!node) return null
+  const result = filterFileTree([node], query, getDisplayName)
+  return result[0] ?? null
+}
+
+export function toggleFileTreeSortState(
+  current: FileTreeSortState | null,
+  key: FileTreeSortKey,
+): FileTreeSortState {
+  if (!current || current.key !== key) {
+    return { key, direction: 'desc' }
+  }
+  return { key, direction: current.direction === 'desc' ? 'asc' : 'desc' }
+}
+
+export function sortFileTree(
+  nodes: FileNode[],
+  sort: FileTreeSortState | null,
+  getDisplayName: (node: FileNode) => string = (node) => node.name,
+): FileNode[] {
+  if (!sort) return nodes
+
+  const compareValues = (left: FileNode, right: FileNode) => {
+    switch (sort.key) {
+      case 'name':
+        return getDisplayName(left).localeCompare(getDisplayName(right), undefined, { sensitivity: 'base' })
+      case 'type': {
+        const leftType = left.kind === 'directory' ? 'Folder' : fileTypeLabel(left.name)
+        const rightType = right.kind === 'directory' ? 'Folder' : fileTypeLabel(right.name)
+        return leftType.localeCompare(rightType, undefined, { sensitivity: 'base' })
+      }
+      case 'size': {
+        const leftSize = left.kind === 'directory' ? (aggregateFileNodeSize(left) ?? -1) : (left.size_bytes ?? -1)
+        const rightSize = right.kind === 'directory' ? (aggregateFileNodeSize(right) ?? -1) : (right.size_bytes ?? -1)
+        return leftSize - rightSize
+      }
+      case 'modified': {
+        const leftTime = left.updated_at ? new Date(left.updated_at).getTime() : -1
+        const rightTime = right.updated_at ? new Date(right.updated_at).getTime() : -1
+        return leftTime - rightTime
+      }
+      case 'created': {
+        const leftTime = left.created_at ? new Date(left.created_at).getTime() : -1
+        const rightTime = right.created_at ? new Date(right.created_at).getTime() : -1
+        return leftTime - rightTime
+      }
+    }
+  }
+
+  const multiplier = sort.direction === 'desc' ? -1 : 1
+
+  return [...nodes]
+    .map((node) =>
+      node.kind === 'directory'
+        ? { ...node, children: sortFileTree(node.children, sort, getDisplayName) }
+        : node,
+    )
+    .sort((left, right) => compareValues(left, right) * multiplier)
+}
+
 export function deriveParentPath(path: string) {
   if (!path) return null
   const parts = path.split('/').filter(Boolean)
@@ -224,10 +394,105 @@ export function deriveDirectoryPath(path: string, isDirectory = false) {
   return deriveParentPath(path) ?? path
 }
 
+export function ancestorDirectoryPaths(path?: string | null) {
+  if (!path) return []
+  const parts = path.split('/').filter(Boolean)
+  if (parts.length === 0) return []
+  return parts.map((_, index) => parts.slice(0, index + 1).join('/'))
+}
+
 export function mergeFolderPaths(existing: string[], incoming: string[]) {
   return Array.from(
     new Set([...existing, ...incoming].map(normalizeFolderPath).filter((value) => value !== 'Inbox')),
   ).sort((a, b) => a.localeCompare(b))
+}
+
+export function mergeConcurrentMarkdown(
+  baseMarkdown: string,
+  localMarkdown: string,
+  remoteMarkdown: string,
+): { markdown: string; hadConflict: boolean } {
+  if (localMarkdown === remoteMarkdown) {
+    return { markdown: localMarkdown, hadConflict: false }
+  }
+  if (localMarkdown === baseMarkdown) {
+    return { markdown: remoteMarkdown, hadConflict: false }
+  }
+  if (remoteMarkdown === baseMarkdown) {
+    return { markdown: localMarkdown, hadConflict: false }
+  }
+
+  const baseLines = baseMarkdown.split('\n')
+  const localLines = localMarkdown.split('\n')
+  const remoteLines = remoteMarkdown.split('\n')
+  const maxLength = Math.max(baseLines.length, localLines.length, remoteLines.length)
+  const merged: string[] = []
+  let hadConflict = false
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const baseLine = baseLines[index]
+    const localLine = localLines[index]
+    const remoteLine = remoteLines[index]
+
+    if (localLine === remoteLine) {
+      if (localLine !== undefined) merged.push(localLine)
+      continue
+    }
+    if (localLine === baseLine) {
+      if (remoteLine !== undefined) merged.push(remoteLine)
+      continue
+    }
+    if (remoteLine === baseLine) {
+      if (localLine !== undefined) merged.push(localLine)
+      continue
+    }
+
+    hadConflict = true
+    merged.push('<<<<<<< Your edit')
+    if (localLine !== undefined) merged.push(localLine)
+    merged.push('=======')
+    if (remoteLine !== undefined) merged.push(remoteLine)
+    merged.push('>>>>>>> Remote edit')
+  }
+
+  return {
+    markdown: merged.join('\n'),
+    hadConflict,
+  }
+}
+
+export function filterNoteFolderNode(node: NoteFolderNode, query: string): NoteFolderNode | null {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return node
+  const matchesSelf = node.name.toLowerCase().includes(normalized) || node.path.toLowerCase().includes(normalized)
+  const filteredNotes = node.notes.filter((note) => note.title.toLowerCase().includes(normalized))
+  const filteredChildren = node.children
+    .map((child) => filterNoteFolderNode(child, normalized))
+    .filter((child): child is NoteFolderNode => child !== null)
+
+  if (!matchesSelf && filteredNotes.length === 0 && filteredChildren.length === 0) return null
+  return {
+    ...node,
+    notes: filteredNotes,
+    children: filteredChildren,
+  }
+}
+
+export function filterDiagramFolderNode(node: DiagramFolderNode, query: string): DiagramFolderNode | null {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return node
+  const matchesSelf = node.name.toLowerCase().includes(normalized) || node.path.toLowerCase().includes(normalized)
+  const filteredDiagrams = node.diagrams.filter((diagram) => diagramDisplayName(diagram.title).toLowerCase().includes(normalized))
+  const filteredChildren = node.children
+    .map((child) => filterDiagramFolderNode(child, normalized))
+    .filter((child): child is DiagramFolderNode => child !== null)
+
+  if (!matchesSelf && filteredDiagrams.length === 0 && filteredChildren.length === 0) return null
+  return {
+    ...node,
+    diagrams: filteredDiagrams,
+    children: filteredChildren,
+  }
 }
 
 function buildFolderTree(notes: Note[], customFolders: string[]): FolderNode[] {

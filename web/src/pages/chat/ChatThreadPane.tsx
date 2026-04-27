@@ -1,7 +1,11 @@
-import type { RefObject } from 'react'
+import { useState, type RefObject } from 'react'
+import { RenameIcon } from '../../components/LibraryActionIcons'
 import { UserAvatar } from '../../components/UserAvatar'
 import type { Message, Room } from '../../lib/types'
 import { formatFileTimestamp } from '../../lib/ui-helpers'
+
+// Standard chat-style reactions drawn from the Unicode emoji set.
+const REACTION_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🎉', '👏', '🔥', '👀', '👎']
 
 type RemoteParticipant = {
   id: string
@@ -39,6 +43,7 @@ type Props = {
   onLeaveCall: () => void
   onDeleteRoom: (roomId: string) => Promise<void>
   onSendMessage: (body: string) => Promise<void>
+  onToggleMessageReaction: (messageId: string, emoji: string) => Promise<void>
 }
 
 export function ChatThreadPane({
@@ -68,9 +73,13 @@ export function ChatThreadPane({
   onLeaveCall,
   onDeleteRoom,
   onSendMessage,
+  onToggleMessageReaction,
 }: Props) {
+  const [reactionPickerMessageId, setReactionPickerMessageId] = useState<string | null>(null)
+  const isImageMessage = (body: string) => body.startsWith('data:image/')
+
   return (
-    <div className="chat-card">
+    <div className="chat-thread-pane">
       <div className="chat-thread-header">
         {selectedRoom ? (
           <>
@@ -116,7 +125,7 @@ export function ChatThreadPane({
                       title="Rename thread"
                       onClick={() => setRenamingRoom(true)}
                     >
-                      ✎
+                      <RenameIcon className="chat-thread-rename-icon" />
                     </button>
                   </div>
                   <div className="chat-thread-actions">
@@ -245,6 +254,36 @@ export function ChatThreadPane({
         {messages.map((message) => (
           <div className={`message-row ${message.author.id === currentUserId ? 'own' : 'other'}`} key={message.id}>
             <div className={`message ${message.author.id === currentUserId ? 'own' : 'other'}`}>
+              <div className="message-reaction-picker-wrap">
+                <button
+                  className="message-reaction-add"
+                  type="button"
+                  aria-label="Add reaction"
+                  title="Add reaction"
+                  onClick={() =>
+                    setReactionPickerMessageId((current) => (current === message.id ? null : message.id))
+                  }
+                >
+                  +
+                </button>
+                {reactionPickerMessageId === message.id ? (
+                  <div className="message-reaction-picker">
+                    {REACTION_EMOJIS.map((emoji) => (
+                      <button
+                        key={`${message.id}-${emoji}-picker`}
+                        className="message-reaction-emoji"
+                        type="button"
+                        onClick={() => {
+                          setReactionPickerMessageId(null)
+                          void onToggleMessageReaction(message.id, emoji)
+                        }}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <div className="message-meta-row">
                 <UserAvatar user={message.author} className="user-avatar-chat" />
                 <div className="message-meta">
@@ -252,7 +291,32 @@ export function ChatThreadPane({
                   <span className="message-timestamp">{formatFileTimestamp(message.created_at)}</span>
                 </div>
               </div>
-              <span>{message.body}</span>
+              {isImageMessage(message.body) ? (
+                <img
+                  src={message.body}
+                  alt="Shared chat image"
+                  className="chat-message-image"
+                  loading="lazy"
+                />
+              ) : (
+                <span>{message.body}</span>
+              )}
+              <div className="message-reactions">
+                {message.reactions.map((reaction) => {
+                  const reactedByCurrentUser = !!currentUserId && reaction.user_ids.includes(currentUserId)
+                  return (
+                    <button
+                      key={`${message.id}-${reaction.emoji}`}
+                      className={`message-reaction-chip ${reactedByCurrentUser ? 'active' : ''}`}
+                      type="button"
+                      onClick={() => void onToggleMessageReaction(message.id, reaction.emoji)}
+                    >
+                      <span>{reaction.emoji}</span>
+                      <span>{reaction.user_ids.length}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
           </div>
         ))}
@@ -274,7 +338,38 @@ export function ChatThreadPane({
           onChange={(event) => setMessageDraft(event.target.value)}
           placeholder={`Message ${selectedRoom?.name ?? ''}`}
         />
-        <button className="button" type="submit">Send</button>
+        <label
+          className="button-secondary chat-call-icon-button"
+          aria-label="Upload image"
+          title="Upload image"
+        >
+          <svg viewBox="0 0 24 24" className="chat-call-icon" aria-hidden="true">
+            <path d="M5.5 6.5h4l1.2-1.5h2.6l1.2 1.5h4a1.75 1.75 0 0 1 1.75 1.75v8.5a1.75 1.75 0 0 1-1.75 1.75h-13A1.75 1.75 0 0 1 3.75 16.75v-8.5A1.75 1.75 0 0 1 5.5 6.5Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinejoin="round" />
+            <circle cx="12" cy="12.5" r="2.7" fill="none" stroke="currentColor" strokeWidth="1.9" />
+          </svg>
+          <input
+            type="file"
+            hidden
+            accept="image/*"
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (!file) return
+              const reader = new FileReader()
+              reader.onload = () => {
+                const result = reader.result
+                if (typeof result !== 'string' || !result.startsWith('data:image/')) return
+                void onSendMessage(result)
+              }
+              reader.readAsDataURL(file)
+              event.currentTarget.value = ''
+            }}
+          />
+        </label>
+        <button className="button chat-call-icon-button" type="submit" aria-label="Send message" title="Send message">
+          <svg viewBox="0 0 24 24" className="chat-call-icon" aria-hidden="true">
+            <path d="M4.75 19.25 20 12 4.75 4.75l2.05 6.1L13 12l-6.2 1.15-2.05 6.1Z" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
       </form>
     </div>
   )

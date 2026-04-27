@@ -12,6 +12,7 @@ type RemoteParticipant = {
 }
 
 type Props = {
+  chatManagerRef: RefObject<HTMLDivElement | null>
   chatDrawerOpen: boolean
   chatPaneSize: { width: number; height: number }
   activeChatSplitter: boolean
@@ -29,11 +30,11 @@ type Props = {
   screenSharing: boolean
   remoteParticipants: RemoteParticipant[]
   localVideoRef: RefObject<HTMLVideoElement | null>
-  onCreateRoom: (name: string, participantIds: string[]) => Promise<void>
-  onCreateDirectRoom: (participantIds: string[]) => void
+  onCreateRoom: (name: string, participantIds: string[], folder?: string) => Promise<void>
+  onCreateDirectRoom: (participantIds: string[], folder?: string) => void
   onDeleteRoom: (roomId: string) => Promise<void>
   confirmRoomDelete: boolean
-  onRenameRoom: (roomId: string, name: string) => Promise<void>
+  onRenameRoom: (roomId: string, name: string, folder?: string) => Promise<void>
   onUpdateRoomParticipants: (roomId: string, participantIds: string[]) => Promise<void>
   onSelectRoom: (id: string) => void
   onJoinVoiceCall: () => void
@@ -43,9 +44,11 @@ type Props = {
   onStartChatResize: () => void
   onToggleChatDrawer: () => void
   onSendMessage: (body: string) => Promise<void>
+  onToggleMessageReaction: (messageId: string, emoji: string) => Promise<void>
 }
 
 export function ChatPage({
+  chatManagerRef,
   chatDrawerOpen,
   chatPaneSize,
   activeChatSplitter,
@@ -77,6 +80,7 @@ export function ChatPage({
   onStartChatResize,
   onToggleChatDrawer,
   onSendMessage,
+  onToggleMessageReaction,
 }: Props) {
   const [renamingRoom, setRenamingRoom] = useState(false)
   const [roomNameDraft, setRoomNameDraft] = useState(selectedRoom?.name ?? '')
@@ -85,9 +89,11 @@ export function ChatPage({
   const [threadNameDraft, setThreadNameDraft] = useState('')
   const [threadParticipantIds, setThreadParticipantIds] = useState<string[]>([])
   const [threadParticipantQuery, setThreadParticipantQuery] = useState('')
+  const [threadFolderDraft, setThreadFolderDraft] = useState('')
   const [createDirectOpen, setCreateDirectOpen] = useState(false)
   const [directParticipantIds, setDirectParticipantIds] = useState<string[]>([])
   const [directParticipantQuery, setDirectParticipantQuery] = useState('')
+  const [directFolderDraft, setDirectFolderDraft] = useState('')
   const [messageDraft, setMessageDraft] = useState('')
   const [participantsOpen, setParticipantsOpen] = useState(false)
   const [addingParticipant, setAddingParticipant] = useState(false)
@@ -185,86 +191,10 @@ export function ChatPage({
     })
   }, [comsParticipants, participantSearch, selectedRoom?.participant_ids])
 
-  const creationActionButtons = (
-    <>
-      <button
-        className="button-secondary chat-call-icon-button"
-        onClick={() => {
-          setDirectParticipantIds([])
-          setDirectParticipantQuery('')
-          setCreateDirectOpen(true)
-        }}
-        aria-label="New message"
-        title="New message"
-      >
-        <svg viewBox="0 0 24 24" className="chat-call-icon" aria-hidden="true">
-          <path
-            d="M5.5 7.25A2.75 2.75 0 0 1 8.25 4.5h7.5a2.75 2.75 0 0 1 2.75 2.75v5.5a2.75 2.75 0 0 1-2.75 2.75H11l-3.9 3.05c-.45.35-1.1.03-1.1-.54V15.5h-1A2.75 2.75 0 0 1 2.25 12.75v-5.5A2.75 2.75 0 0 1 5 4.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-          <path d="M10.8 7.7v4.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-          <path d="M8.4 10.1h4.8" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
-        </svg>
-      </button>
-      <button
-        className="button-secondary chat-call-icon-button"
-        onClick={() => {
-          setThreadNameDraft(`thread-${rooms.length + 1}`)
-          setThreadParticipantIds([])
-          setThreadParticipantQuery('')
-          setCreateThreadOpen(true)
-        }}
-        aria-label="Create thread"
-        title="Create thread"
-      >
-        <svg viewBox="0 0 24 24" className="chat-call-icon" aria-hidden="true">
-          <path
-            d="M5.5 6.25h8"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-          />
-          <path
-            d="M5.5 11h13"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-          />
-          <path
-            d="M5.5 15.75h8"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-          />
-          <path
-            d="M17.6 4.9v5.4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-          />
-          <path
-            d="M14.9 7.6h5.4"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.9"
-            strokeLinecap="round"
-          />
-        </svg>
-      </button>
-    </>
-  )
-
   return (
     <section className="panel">
       <ChatSidebar
+        chatManagerRef={chatManagerRef}
         chatDrawerOpen={chatDrawerOpen}
         chatPaneSize={chatPaneSize}
         activeChatSplitter={activeChatSplitter}
@@ -272,10 +202,31 @@ export function ChatPage({
         roomUnreadCounts={roomUnreadCounts}
         selectedRoomId={selectedRoomId}
         activeCallRoomId={activeCallRoomId}
-        creationActionButtons={creationActionButtons}
+        selectedRoom={selectedRoom}
+        comsParticipants={comsParticipants}
         onSelectRoom={onSelectRoom}
         onStartChatResize={onStartChatResize}
         onToggleChatDrawer={onToggleChatDrawer}
+        onCreateFolder={() => undefined}
+        onCreateDirectMessage={(folder) => {
+          setDirectParticipantIds([])
+          setDirectParticipantQuery('')
+          setDirectFolderDraft(folder)
+          setCreateDirectOpen(true)
+        }}
+        onCreateThread={(folder) => {
+          setThreadNameDraft(`thread-${rooms.length + 1}`)
+          setThreadParticipantIds([])
+          setThreadParticipantQuery('')
+          setThreadFolderDraft(folder)
+          setCreateThreadOpen(true)
+        }}
+        onRenameSelectedConversation={() => setRenamingRoom(true)}
+        onMoveConversationToFolder={(roomId, folder) => {
+          const room = rooms.find((entry) => entry.id === roomId)
+          if (!room) return
+          void onRenameRoom(roomId, room.name, folder)
+        }}
       >
         <ChatThreadPane
           renamingRoom={renamingRoom}
@@ -307,6 +258,7 @@ export function ChatPage({
           onLeaveCall={onLeaveCall}
           onDeleteRoom={onDeleteRoom}
           onSendMessage={onSendMessage}
+          onToggleMessageReaction={onToggleMessageReaction}
         />
       </ChatSidebar>
       <ChatModals
@@ -327,6 +279,8 @@ export function ChatPage({
         setDirectParticipantIds={setDirectParticipantIds}
         directParticipantQuery={directParticipantQuery}
         setDirectParticipantQuery={setDirectParticipantQuery}
+        directFolderDraft={directFolderDraft}
+        setDirectFolderDraft={setDirectFolderDraft}
         selectedDirectParticipants={selectedDirectParticipants}
         filteredDirectParticipants={filteredDirectParticipants}
         onCreateDirectRoom={onCreateDirectRoom}
@@ -338,6 +292,8 @@ export function ChatPage({
         setThreadParticipantIds={setThreadParticipantIds}
         threadParticipantQuery={threadParticipantQuery}
         setThreadParticipantQuery={setThreadParticipantQuery}
+        threadFolderDraft={threadFolderDraft}
+        setThreadFolderDraft={setThreadFolderDraft}
         selectedThreadParticipants={selectedThreadParticipants}
         filteredThreadParticipants={filteredThreadParticipants}
         onCreateRoom={onCreateRoom}

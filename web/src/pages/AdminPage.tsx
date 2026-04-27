@@ -6,7 +6,10 @@ import type {
   AdminStorageOverview,
   AdminUserSummary,
   CreateUserRequest,
+  OidcConfig,
+  OidcProviderSettings,
   RolePolicy,
+  SystemUpdateStatus,
   UpdateUserAccessRequest,
   UserRole,
   UserToolScope,
@@ -23,7 +26,11 @@ type Props = {
   currentAccent: string
   currentPageGutter: number
   currentRadius: number
+  oidcConfig: OidcConfig | null
+  systemUpdateStatus: SystemUpdateStatus | null
   onSave: (settings: AdminSettings) => void
+  onRefreshSystemUpdateStatus: () => void
+  onRunSystemUpdate: () => void
   onApplyCurrentAppearance: () => void
   onCreateUser: (payload: CreateUserRequest) => Promise<void>
   onResetPassword: (userId: string, password: string) => void
@@ -31,7 +38,7 @@ type Props = {
   onResolveCredentialRequest: (userId: string, approve: boolean) => void
 }
 
-type AdminCategory = 'roles' | 'users' | 'storage'
+type AdminCategory = 'roles' | 'users' | 'storage' | 'authentication' | 'deployment'
 
 const TOOL_SCOPE_FIELDS: Array<{ key: keyof UserToolScope; label: string }> = [
   { key: 'notes', label: 'Notes' },
@@ -52,7 +59,62 @@ const ADMIN_CATEGORIES: Array<{ key: AdminCategory; label: string }> = [
   { key: 'roles', label: 'Roles' },
   { key: 'users', label: 'Users' },
   { key: 'storage', label: 'Storage Limits' },
+  { key: 'authentication', label: 'Authentication' },
+  { key: 'deployment', label: 'Deployment' },
 ]
+
+const EMPTY_OIDC_SETTINGS: OidcProviderSettings = {
+  id: '',
+  title: 'Authentication',
+  enabled: false,
+  provider: 'authentik',
+  issuer: '',
+  client_id: '',
+  client_secret: '',
+  authorization_url: '',
+  token_url: '',
+  userinfo_url: '',
+  scopes: 'openid profile email',
+}
+
+function authProviderLabel(provider: OidcProviderSettings) {
+  return provider.title.trim() || (provider.provider === 'authentik' ? 'Authentik' : 'Authentication')
+}
+
+function createAuthProvider(seed?: Partial<OidcProviderSettings>): OidcProviderSettings {
+  return {
+    ...EMPTY_OIDC_SETTINGS,
+    id: seed?.id?.trim() || globalThis.crypto?.randomUUID?.() || `auth-${Date.now()}`,
+    title: seed?.title ?? 'Authentication',
+    enabled: seed?.enabled ?? false,
+    provider: seed?.provider ?? 'authentik',
+    issuer: seed?.issuer ?? '',
+    client_id: seed?.client_id ?? '',
+    client_secret: seed?.client_secret ?? '',
+    authorization_url: seed?.authorization_url ?? '',
+    token_url: seed?.token_url ?? '',
+    userinfo_url: seed?.userinfo_url ?? '',
+    scopes: seed?.scopes ?? 'openid profile email',
+  }
+}
+
+function normalizeAuthProviders(settings: AdminSettings | null) {
+  if (!settings) return { providers: [createAuthProvider()], activeId: '' }
+  const providers = (settings.oidc_providers?.length ? settings.oidc_providers : [settings.oidc]).map((provider, index) =>
+    createAuthProvider({
+      ...provider,
+      id: provider.id || `auth-${index + 1}`,
+      title:
+        provider.title ||
+        (provider.provider === 'authentik' ? 'Authentik' : index === 0 ? 'Authentication' : `Authentication ${index + 1}`),
+    }),
+  )
+  const activeId =
+    (settings.active_oidc_provider_id && providers.some((provider) => provider.id === settings.active_oidc_provider_id)
+      ? settings.active_oidc_provider_id
+      : providers.find((provider) => provider.enabled)?.id) || providers[0]?.id || ''
+  return { providers, activeId }
+}
 
 function formatStorageAmount(bytes: number, preferredUnit: 'MB' | 'GB') {
   const divisor = preferredUnit === 'GB' ? 1024 * 1024 * 1024 : 1024 * 1024
@@ -89,7 +151,11 @@ export function AdminPage({
   currentAccent,
   currentPageGutter,
   currentRadius,
+  oidcConfig,
+  systemUpdateStatus,
   onSave,
+  onRefreshSystemUpdateStatus,
+  onRunSystemUpdate,
   onApplyCurrentAppearance,
   onCreateUser,
   onResetPassword,
@@ -126,6 +192,14 @@ export function AdminPage({
     customize_appearance: true,
   })
   const [activeCategory, setActiveCategory] = useState<AdminCategory>('roles')
+  const initialAuthState = normalizeAuthProviders(settings)
+  const [authProvidersDraft, setAuthProvidersDraft] = useState<OidcProviderSettings[]>(initialAuthState.providers)
+  const [selectedAuthProviderId, setSelectedAuthProviderId] = useState<string>(
+    initialAuthState.providers[0]?.id || initialAuthState.activeId || '',
+  )
+  const [activeAuthProviderId, setActiveAuthProviderId] = useState<string>(
+    initialAuthState.activeId || initialAuthState.providers[0]?.id || '',
+  )
   const scopeMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -143,6 +217,14 @@ export function AdminPage({
     })
   }, [users])
 
+  useEffect(() => {
+    if (!settings) return
+    const next = normalizeAuthProviders(settings)
+    setAuthProvidersDraft(next.providers)
+    setSelectedAuthProviderId(next.providers[0]?.id || next.activeId || '')
+    setActiveAuthProviderId(next.activeId || next.providers[0]?.id || '')
+  }, [settings])
+
   const publicStoragePercent = useMemo(() => {
     if (!storageOverview?.detected_total_mb) return 0
     return Math.min(100, Math.round((storageOverview.public_storage_mb / storageOverview.detected_total_mb) * 100))
@@ -152,6 +234,17 @@ export function AdminPage({
     () => users.find((user) => user.id === storageEditUserId) ?? null,
     [users, storageEditUserId],
   )
+  const selectedAuthProvider =
+    authProvidersDraft.find((provider) => provider.id === selectedAuthProviderId) ?? authProvidersDraft[0] ?? createAuthProvider()
+  const resolvedAuthorizationUrl =
+    selectedAuthProvider.authorization_url.trim() ||
+    (selectedAuthProvider.issuer.trim() ? `${selectedAuthProvider.issuer.trim().replace(/\/+$/, '')}/authorize` : '')
+  const resolvedTokenUrl =
+    selectedAuthProvider.token_url.trim() ||
+    (selectedAuthProvider.issuer.trim() ? `${selectedAuthProvider.issuer.trim().replace(/\/+$/, '')}/token` : '')
+  const resolvedUserInfoUrl =
+    selectedAuthProvider.userinfo_url.trim() ||
+    (selectedAuthProvider.issuer.trim() ? `${selectedAuthProvider.issuer.trim().replace(/\/+$/, '')}/userinfo` : '')
 
   useEffect(() => {
     if (!openScopeUserId || !scopeMenuRef.current || !scopeMenuPosition) return
@@ -329,6 +422,9 @@ export function AdminPage({
                 <div className="muted" style={{ marginBottom: 12 }}>
                   Font: {settings.org_font_family || currentFontFamily}<br />
                   Accent: {settings.org_accent || currentAccent}<br />
+                  Background: {settings.org_background}<br />
+                  Gradient: {settings.org_gradient_top_left}, {settings.org_gradient_top_right}, {settings.org_gradient_bottom_left}, {settings.org_gradient_bottom_right}<br />
+                  Gradient strength: {settings.org_gradient_strength}%<br />
                   Margins: {settings.org_page_gutter || currentPageGutter}px<br />
                   Radius: {settings.org_radius || currentRadius}px
                 </div>
@@ -522,6 +618,336 @@ export function AdminPage({
                 <span>Voice upload limit (MB)</span>
                 <input className="input" type="number" disabled={!canManageOrgSettings} value={settings.voice_upload_limit_mb} onChange={(event) => onSave({ ...settings, voice_upload_limit_mb: Number(event.target.value) || 0 })} />
               </label>
+            </div>
+          ) : null}
+
+          {activeCategory === 'authentication' ? (
+            <div className="settings-card">
+              <h3>Authentication</h3>
+              <div className="button-row" style={{ marginBottom: 12 }}>
+                <button
+                  className="button"
+                  type="button"
+                  disabled={!canManageOrgSettings}
+                  onClick={() => {
+                    const nextProvider = createAuthProvider({
+                      title: `Authentication ${authProvidersDraft.length + 1}`,
+                    })
+                    setAuthProvidersDraft((current) => [...current, nextProvider])
+                    setSelectedAuthProviderId(nextProvider.id)
+                    if (!activeAuthProviderId) {
+                      setActiveAuthProviderId(nextProvider.id)
+                    }
+                  }}
+                >
+                  Add Authentication
+                </button>
+              </div>
+              <div className="admin-role-list" style={{ marginBottom: 16 }}>
+                {authProvidersDraft.map((provider) => (
+                  <button
+                    key={provider.id}
+                    className={`ghost-button ${provider.id === selectedAuthProviderId ? 'is-active' : ''}`}
+                    type="button"
+                    onClick={() => setSelectedAuthProviderId(provider.id)}
+                  >
+                    {authProviderLabel(provider)}
+                  </button>
+                ))}
+              </div>
+              <div className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={selectedAuthProvider.enabled}
+                  disabled={!canManageOrgSettings}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, enabled: event.target.checked } : provider,
+                      ),
+                    )
+                  }
+                />
+                <span>Enable SSO</span>
+              </div>
+              <label className="settings-field">
+                <span>Title</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.title}
+                  placeholder="Authentik Production"
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, title: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Default Authentication</span>
+                <select
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={activeAuthProviderId}
+                  onChange={(event) => setActiveAuthProviderId(event.target.value)}
+                >
+                  {authProvidersDraft.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {authProviderLabel(provider)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>Provider</span>
+                <select
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.provider}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, provider: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                >
+                  <option value="authentik">Authentik</option>
+                  <option value="generic">Generic OIDC</option>
+                </select>
+              </label>
+              <label className="settings-field">
+                <span>Issuer URL</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.issuer}
+                  placeholder="https://id.example.com/application/o/sweet"
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, issuer: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Client ID</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.client_id}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, client_id: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Client Secret</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.client_secret}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, client_secret: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Authorization Endpoint</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.authorization_url}
+                  placeholder={resolvedAuthorizationUrl}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, authorization_url: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Token Endpoint</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.token_url}
+                  placeholder={resolvedTokenUrl}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, token_url: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Userinfo Endpoint</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.userinfo_url}
+                  placeholder={resolvedUserInfoUrl}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, userinfo_url: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                <span>Scopes</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={selectedAuthProvider.scopes}
+                  onChange={(event) =>
+                    setAuthProvidersDraft((current) =>
+                      current.map((provider) =>
+                        provider.id === selectedAuthProvider.id ? { ...provider, scopes: event.target.value } : provider,
+                      ),
+                    )
+                  }
+                />
+              </label>
+              <div className="code-block" style={{ marginBottom: 12 }}>
+                Callback URL: {oidcConfig?.redirect_url ?? 'Loading...'}
+                {'\n'}Authorization URL: {resolvedAuthorizationUrl || 'Not set'}
+                {'\n'}Token URL: {resolvedTokenUrl || 'Not set'}
+                {'\n'}Userinfo URL: {resolvedUserInfoUrl || 'Not set'}
+              </div>
+              <div className="button-row">
+                <button
+                  className="button"
+                  type="button"
+                  disabled={!canManageOrgSettings}
+                  onClick={() =>
+                    onSave({
+                      ...settings,
+                      oidc: authProvidersDraft.find((provider) => provider.id === activeAuthProviderId) ?? selectedAuthProvider,
+                      oidc_providers: authProvidersDraft,
+                      active_oidc_provider_id: activeAuthProviderId,
+                    })
+                  }
+                >
+                  Save authentication
+                </button>
+              </div>
+              <div className="settings-divider" />
+              <div className="settings-toggle">
+                <input
+                  type="checkbox"
+                  checked={settings.google_calendar_enabled}
+                  disabled={!canManageOrgSettings}
+                  onChange={(event) => onSave({ ...settings, google_calendar_enabled: event.target.checked })}
+                />
+                <span>Enable Google Calendar sync</span>
+              </div>
+              <label className="settings-field">
+                <span>Google Calendar Client ID</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={settings.google_calendar_client_id}
+                  onChange={(event) => onSave({ ...settings, google_calendar_client_id: event.target.value })}
+                />
+              </label>
+              <label className="settings-field">
+                <span>Google Calendar Client Secret</span>
+                <input
+                  className="input"
+                  disabled={!canManageOrgSettings}
+                  value={settings.google_calendar_client_secret}
+                  onChange={(event) => onSave({ ...settings, google_calendar_client_secret: event.target.value })}
+                />
+              </label>
+              <div className="code-block" style={{ marginBottom: 12 }}>
+                Google Calendar redirect URL: {`${window.location.origin}/calendar`}
+              </div>
+              <p className="muted" style={{ marginTop: 12 }}>
+                Authentik works out of the box with issuer, client ID, and client secret. Other providers can use the same OIDC fields and override the endpoints if needed. Google Calendar sync uses the redirect URL above.
+              </p>
+            </div>
+          ) : null}
+
+          {activeCategory === 'deployment' ? (
+            <div className="settings-card">
+              <h3>Deployment</h3>
+              <div className="admin-update-card">
+                <div className="admin-update-row">
+                  <strong>Current version</strong>
+                  <span className="muted">{systemUpdateStatus?.current_version || 'Unknown'}</span>
+                </div>
+                <div className="admin-update-row">
+                  <strong>Update target</strong>
+                  <span className="muted">{systemUpdateStatus?.update_target || 'Not configured'}</span>
+                </div>
+                <div className="admin-update-row">
+                  <strong>Status</strong>
+                  <span className={`admin-update-status ${systemUpdateStatus?.update_in_progress ? 'is-running' : ''}`}>
+                    {systemUpdateStatus?.update_in_progress
+                      ? 'Updating'
+                      : systemUpdateStatus?.update_enabled
+                        ? 'Ready'
+                        : 'Disabled'}
+                  </span>
+                </div>
+                <div className="admin-update-row">
+                  <strong>Last message</strong>
+                  <span className="muted">{systemUpdateStatus?.last_message || 'No update activity yet.'}</span>
+                </div>
+                {systemUpdateStatus?.last_started_at ? (
+                  <div className="admin-update-row">
+                    <strong>Last started</strong>
+                    <span className="muted">{new Date(systemUpdateStatus.last_started_at).toLocaleString()}</span>
+                  </div>
+                ) : null}
+                {systemUpdateStatus?.last_finished_at ? (
+                  <div className="admin-update-row">
+                    <strong>Last finished</strong>
+                    <span className="muted">{new Date(systemUpdateStatus.last_finished_at).toLocaleString()}</span>
+                  </div>
+                ) : null}
+                {systemUpdateStatus?.last_error ? (
+                  <div className="code-block" style={{ marginTop: 12 }}>{systemUpdateStatus.last_error}</div>
+                ) : null}
+                <div className="button-row" style={{ marginTop: 12 }}>
+                  <button className="button-secondary" type="button" disabled={!canManageOrgSettings} onClick={onRefreshSystemUpdateStatus}>
+                    Refresh status
+                  </button>
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={!canManageOrgSettings || !systemUpdateStatus?.update_enabled || Boolean(systemUpdateStatus?.update_in_progress)}
+                    onClick={onRunSystemUpdate}
+                  >
+                    {systemUpdateStatus?.update_in_progress ? 'Updating…' : 'Update now'}
+                  </button>
+                </div>
+              </div>
+              <div className="code-block" style={{ marginTop: 12 }}>
+                This button runs the configured host update command. For a homeserver Docker deployment,
+                point that command at a script that pulls the latest published `server` and `web` images and
+                restarts the stack.
+              </div>
             </div>
           ) : null}
         </div>

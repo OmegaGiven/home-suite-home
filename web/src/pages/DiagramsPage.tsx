@@ -1,127 +1,14 @@
-import { useMemo, useRef, useState, type KeyboardEventHandler, type RefObject } from 'react'
+import { useMemo, useState, type KeyboardEventHandler, type RefObject } from 'react'
 import { DrawioDiagramEditor, type DrawioDiagramEditorHandle } from '../components/DrawioDiagramEditor'
 import { FolderPromptModal } from '../components/FolderPromptModal'
 import { DiagramLibraryTreeNode } from '../components/DiagramLibraryTreeNode'
-import { FileTreeNode } from '../components/FileTreeNode'
+import { FileTreeHeader, FileTreeNodes, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
+import { LibraryActionBar } from '../components/LibraryActionBar'
+import { NewDiagramIcon, NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { LibraryShell } from '../components/LibraryShell'
 import type { DiagramEditorMode } from '../lib/app-config'
 import type { Diagram, FileNode } from '../lib/types'
-import { diagramDisplayName, normalizeDiagramFolderPath, type DiagramFolderNode } from '../lib/ui-helpers'
-
-function NewDiagramIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M6 3.75h8.7l3.3 3.35v13.15H6z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M14.7 3.75V7.1H18"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M12 9.75v6.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8.75 13h6.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function NewFolderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M3.75 7.25A2.25 2.25 0 0 1 6 5h4.15l1.55 1.7H18A2.25 2.25 0 0 1 20.25 9v7.75A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M15.75 10.25v5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M13 13h5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function UploadIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M12 4.75v10.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8.6 8.35 12 4.75l3.4 3.6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M6 15.75v1.5c0 .83.67 1.5 1.5 1.5h9c.83 0 1.5-.67 1.5-1.5v-1.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-function RenameIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M4.75 19.25h4.1l9.35-9.35-4.1-4.1-9.35 9.35v4.1Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinejoin="round"
-      />
-      <path
-        d="m12.95 6.95 4.1 4.1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
+import { aggregateFileNodeSize, ancestorDirectoryPaths, deriveDirectoryPath, diagramDisplayName, fileTypeLabel, filterDiagramFolderNode, filterFileNode, formatFileSize, formatFileTimestamp, normalizeDiagramFolderPath, sortFileTree, toggleFileTreeSortState, type DiagramFolderNode, type FileTreeSortState } from '../lib/ui-helpers'
 
 type Props = {
   diagramFullscreen: boolean
@@ -204,9 +91,18 @@ export function DiagramsPage({
   onDiagramDraftKeyDown,
   onPersistDiagramXml,
 }: Props) {
-  const uploadInputRef = useRef<HTMLInputElement | null>(null)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [renameFolderOpen, setRenameFolderOpen] = useState(false)
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
+  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
+  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
+  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
+    type: true,
+    size: true,
+    modified: true,
+    created: true,
+  })
   const [newFolderName, setNewFolderName] = useState('')
   const currentLibraryFolderPath = useMemo(
     () => (selectedDiagram ? normalizeDiagramFolderPath(selectedDiagram.title) : 'Diagrams'),
@@ -225,6 +121,34 @@ export function DiagramsPage({
         .sort((a, b) => diagramDisplayName(a.title).localeCompare(diagramDisplayName(b.title))),
     }
   }, [diagramTree, diagrams])
+  const filteredDiagramTreeNode = useMemo(
+    () => filterFileNode(diagramTreeNode, sidebarSearchQuery, (node) => node.name),
+    [diagramTreeNode, sidebarSearchQuery],
+  )
+  const visibleDiagramNodes = useMemo(
+    () =>
+      filteredDiagramTreeNode?.path === 'diagrams'
+        ? filteredDiagramTreeNode.children
+        : filteredDiagramTreeNode
+          ? [filteredDiagramTreeNode]
+          : [],
+    [filteredDiagramTreeNode],
+  )
+  const sortedVisibleDiagramNodes = useMemo(
+    () => sortFileTree(visibleDiagramNodes, sortState, (node) => node.name),
+    [visibleDiagramNodes, sortState],
+  )
+  const filteredDiagramRootNode = useMemo(
+    () => filterDiagramFolderNode(diagramRootNode, sidebarSearchQuery),
+    [diagramRootNode, sidebarSearchQuery],
+  )
+  const highlightedPaths = useMemo(
+    () =>
+      selectedDiagramPath
+        ? ancestorDirectoryPaths(deriveDirectoryPath(selectedDiagramPath, false)).filter((path) => path !== 'diagrams')
+        : [],
+    [selectedDiagramPath],
+  )
 
   return (
     <>
@@ -277,64 +201,63 @@ export function DiagramsPage({
         onToggleDrawer={onToggleDiagramDrawer}
         sidebar={
           <>
-            <div className="file-sidebar-header-row">
-              <div className="button-row files-actions">
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={() => setCreateFolderOpen(true)}
-                  aria-label="New folder"
-                  title="New folder"
-                >
-                  <NewFolderIcon />
-                </button>
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={() => {
+            <LibraryActionBar
+              searchOpen={sidebarSearchOpen}
+              searchQuery={sidebarSearchQuery}
+              searchPlaceholder="Search diagrams"
+              onOpenSearch={() => setSidebarSearchOpen(true)}
+              onCloseSearch={() => {
+                setSidebarSearchOpen(false)
+                setSidebarSearchQuery('')
+              }}
+              onChangeSearchQuery={setSidebarSearchQuery}
+              metaFilterOpen={metaFilterOpen}
+              rowMetaVisibility={rowMetaVisibility}
+              onToggleMetaFilterOpen={() => setMetaFilterOpen((current) => !current)}
+              onToggleMetaVisibility={(column) =>
+                setRowMetaVisibility((current) => ({ ...current, [column]: !current[column] }))
+              }
+              rootDropPath="Diagrams"
+              draggingPath={draggingPath}
+              dropTargetPath={dropTargetPath}
+              onDropTargetChange={onDropTargetChange}
+              onDropRoot={onDrop}
+              commonActions={[
+                { key: 'folder', label: 'New folder', icon: <NewFolderIcon />, onClick: () => setCreateFolderOpen(true) },
+                {
+                  key: 'rename',
+                  label: 'Rename folder',
+                  icon: <RenameIcon />,
+                  disabled: currentLibraryFolderPath === 'Diagrams',
+                  onClick: () => {
                     setRenameFolderName(currentLibraryFolderPath.split('/').pop() ?? '')
                     setRenameFolderOpen(true)
-                  }}
-                  aria-label="Rename folder"
-                  title="Rename folder"
-                  disabled={currentLibraryFolderPath === 'Diagrams'}
-                >
-                  <RenameIcon />
-                </button>
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={onCreateDiagram}
-                  aria-label="New diagram"
-                  title="New diagram"
-                >
-                  <NewDiagramIcon />
-                </button>
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={() => uploadInputRef.current?.click()}
-                  aria-label="Upload diagram"
-                  title="Upload diagram"
-                >
-                  <UploadIcon />
-                </button>
-                <input
-                  ref={uploadInputRef}
-                  type="file"
-                  accept=".drawio,.xml,text/xml,application/xml"
-                  style={{ display: 'none' }}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) onUploadFile(file)
-                    event.currentTarget.value = ''
-                  }}
-                />
-              </div>
-            </div>
+                  },
+                },
+                {
+                  key: 'upload',
+                  kind: 'upload',
+                  label: 'Upload diagram',
+                  icon: <UploadIcon />,
+                  accept: '.drawio,.xml,text/xml,application/xml',
+                  onFileSelected: onUploadFile,
+                },
+              ]}
+              pageActions={[{ key: 'diagram', label: 'New diagram', icon: <NewDiagramIcon />, onClick: onCreateDiagram }]}
+            />
             <div className="folder-tree file-tree notes-folder-tree">
-              {diagramTreeNode && onSelectDiagramPath ? (
-                <FileTreeNode
-                  node={diagramTreeNode}
+              <FileTreeHeader
+                rowMetaVisibility={rowMetaVisibility}
+                sortState={sortState}
+                onSort={(key) => setSortState((current) => toggleFileTreeSortState(current, key))}
+              />
+              {sortedVisibleDiagramNodes.length > 0 && diagramTreeNode && onSelectDiagramPath ? (
+                <FileTreeNodes
+                  nodes={sortedVisibleDiagramNodes}
                   getDisplayName={(treeNode) => treeNode.name}
                   selectedPath={selectedDiagramPath ?? ''}
                   activePath={selectedDiagramPath ?? null}
+                  highlightedPaths={highlightedPaths}
                   markedPaths={[]}
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
@@ -348,11 +271,20 @@ export function DiagramsPage({
                       ? treeNode.path.startsWith('diagrams/') && treeNode.path.toLowerCase().endsWith('.drawio')
                       : treeNode.path !== 'diagrams'
                   }
+                  getRowMeta={(treeNode) => ({
+                    type: treeNode.kind === 'directory' ? 'Folder' : fileTypeLabel(treeNode.name),
+                    size: formatFileSize(treeNode.kind === 'directory' ? aggregateFileNodeSize(treeNode) : treeNode.size_bytes),
+                    modified: formatFileTimestamp(treeNode.updated_at),
+                    created: formatFileTimestamp(treeNode.created_at),
+                  })}
+                  rowMetaVisibility={rowMetaVisibility}
                 />
-              ) : (
+              ) : filteredDiagramRootNode ? (
                 <DiagramLibraryTreeNode
-                  node={diagramRootNode}
+                  node={filteredDiagramRootNode}
                   selectedDiagramId={selectedDiagramId}
+                  activeFolderPath={currentLibraryFolderPath}
+                  hideRoot
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
                   onSelectDiagram={onSelectDiagram}
@@ -360,7 +292,10 @@ export function DiagramsPage({
                   onDragEnd={onDragEnd}
                   onDropTargetChange={onDropTargetChange}
                   onDrop={onDrop}
+                  rowMetaVisibility={rowMetaVisibility}
                 />
+              ) : (
+                <div className="empty-state">No matching diagrams.</div>
               )}
             </div>
           </>
@@ -399,8 +334,45 @@ export function DiagramsPage({
               >
                 XML
               </button>
-              <button className="button" onClick={onSaveDiagram}>
-                Save
+              <button
+                type="button"
+                className="notes-save-indicator"
+                onClick={onSaveDiagram}
+                title="Save diagram"
+                aria-label="Save diagram"
+              >
+                <span className="notes-save-indicator-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" className="notes-save-indicator-svg" aria-hidden="true">
+                    <path
+                      d="M5 3.75h11.25l3 3V20.25H5z"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M7.25 4.9h7.15v4.15H7.25z"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M11.15 5.85h1.35v2.25h-1.35z"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinejoin="round"
+                    />
+                    <path
+                      d="M7.6 11.6h8.8v5.65H7.6z"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.8"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
               </button>
             </div>
           </div>

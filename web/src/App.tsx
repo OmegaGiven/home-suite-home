@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState, startTransition } from 'react'
 import './App.css'
 import { ActionNotice } from './components/ActionNotice'
 import { AppPageRenderer } from './components/AppPageRenderer'
+import { ConnectionBanner } from './components/ConnectionBanner'
 import { getDrawioBaseUrl, getStandaloneDrawioUrl, type DrawioDiagramEditorHandle } from './components/DrawioDiagramEditor'
 import { FloatingActivityPanels } from './components/FloatingActivityPanels'
 import { ShareModal } from './components/ShareModal'
 import { ShortcutsPopover } from './components/ShortcutsPopover'
+import { SyncConflictsPanel } from './components/SyncConflictsPanel'
 import { TopNav } from './components/TopNav'
 import { api } from './lib/api'
 import { diagramIdFromPath as diagramIdFromManagedPath, noteIdFromPath, noteTitleFromPath } from './lib/file-display'
@@ -24,6 +26,21 @@ import { createAuthActions } from './lib/auth-actions'
 import { createShareActions, type ShareTarget } from './lib/share-actions'
 import { createDiagramActions } from './lib/diagram-actions'
 import { createComsActions } from './lib/coms-actions'
+import { createOptimisticDirectoryNode, insertFileTreeNode, moveFileTreeNode, removeFileTreeNode, renameFileTreeNode, replaceFileTreeNode } from './lib/file-tree-state'
+import { offlineDb } from './lib/offline-db'
+import { pendingManagedUploadToFileNode } from './lib/pending-managed-uploads'
+import { pendingVoiceUploadToFileNode, pendingVoiceUploadToMemo } from './lib/pending-voice'
+import { sessionStore, subscribeToConnectivity, getConnectivityState } from './lib/platform'
+import {
+  discardQueuedSyncConflict,
+  flushQueuedOperations,
+  listQueuedSyncConflicts,
+  loadCachedWorkspaceSnapshot,
+  persistWorkspaceSnapshot,
+  queueSyncOperation,
+  refreshWorkspace,
+  retryQueuedSyncConflict,
+} from './lib/sync-engine'
 import {
   activateRelativeFile as activateRelativeFileAction,
   beginFileColumnResize as beginFileColumnResizeAction,
@@ -66,8 +83,11 @@ import {
 } from './lib/shortcuts'
 import type {
   AdminSettings,
+  CalendarConnection,
+  CalendarEvent,
   Diagram,
   FileNode,
+  GoogleCalendarConfig,
   Message,
   Note,
   OidcConfig,
@@ -77,6 +97,9 @@ import type {
   RtcConfig,
   SetupStatusResponse,
   SessionResponse,
+  SyncCursorSet,
+  SystemUpdateStatus,
+  TaskItem,
   UserProfile,
   VoiceMemo,
 } from './lib/types'
@@ -89,16 +112,19 @@ import {
   blurEditableTarget,
   buildDiagramTree,
   buildNoteTree,
+  colorForPresenceLabel,
   defaultNoteTitle,
   deriveDirectoryPath,
   deriveParentPath,
   diagramDisplayName,
   findFileNode,
   flattenFileNodes,
+  getCaretOffsetInContentEditable,
   isEditableTarget,
   managedPathForDiagramFolder,
   managedPathForNoteFolder,
   managedPathForVoiceFolder,
+  mergeConcurrentMarkdown,
   mergeFolderPaths,
   normalizeDiagramDirectoryPath,
   normalizeDiagramFolderPath,
@@ -114,6 +140,14 @@ type RemoteParticipant = {
   stream: MediaStream
 }
 
+type RemoteNoteCursor = {
+  clientId: string
+  user: string
+  offset: number
+  seenAt: number
+  color: string
+}
+
 type FileColumnVisibility = Record<FileColumnKey, boolean>
 
 function createClientId() {
@@ -123,6 +157,54 @@ function createClientId() {
   return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 }
 
+function createEntityId() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `00000000-0000-4000-8000-${Date.now().toString(16).slice(-12).padStart(12, '0')}`
+}
+
+function slugForNoteTitle(title: string) {
+  const slug = title
+    .split('')
+    .map((char) => (/[a-z0-9]/i.test(char) ? char.toLowerCase() : '-'))
+    .join('')
+    .split('-')
+    .filter(Boolean)
+    .join('-')
+  return slug || 'note'
+}
+
+function slugForDiagramTitle(title: string) {
+  const display = diagramDisplayName(title)
+  const slug = display
+    .split('')
+    .map((char) => (/[a-z0-9]/i.test(char) ? char.toLowerCase() : '-'))
+    .join('')
+    .split('-')
+    .filter(Boolean)
+    .join('-')
+  return slug || 'diagram'
+}
+
+function noteManagedFilePath(note: Note) {
+  return `${managedPathForNoteFolder(note.folder || 'Inbox')}/${slugForNoteTitle(note.title)}-${note.id}.md`
+}
+
+function diagramManagedFilePath(diagram: Diagram) {
+  const normalizedTitle = normalizeDiagramTitlePath(diagram.title)
+  const parts = normalizedTitle.split('/').filter(Boolean)
+  const leaf = parts[parts.length - 1] || 'Untitled'
+  const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : ''
+  const prefix = folder ? `diagrams/${folder}` : 'diagrams'
+  return `${prefix}/${slugForDiagramTitle(leaf)}-${diagram.id}.drawio`
+}
+
+function upsertVoiceMemo(records: VoiceMemo[], nextRecord: VoiceMemo) {
+  const withoutExisting = records.filter((record) => record.id !== nextRecord.id)
+  return [nextRecord, ...withoutExisting].sort((left, right) => right.created_at.localeCompare(left.created_at))
+}
+
 function App() {
   const [route, setRoute] = useState<RoutePath>(normalizeRoute(window.location.pathname))
   const [locationSearch, setLocationSearch] = useState(window.location.search)
@@ -130,9 +212,11 @@ function App() {
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null)
   const [session, setSession] = useState<SessionResponse | null>(null)
   const [oidc, setOidc] = useState<OidcConfig | null>(null)
+  const [googleCalendarConfig, setGoogleCalendarConfig] = useState<GoogleCalendarConfig | null>(null)
   const [adminSettings, setAdminSettings] = useState<AdminSettings | null>(null)
   const [adminUsers, setAdminUsers] = useState<import('./lib/types').AdminUserSummary[]>([])
   const [adminStorageOverview, setAdminStorageOverview] = useState<import('./lib/types').AdminStorageOverview | null>(null)
+  const [systemUpdateStatus, setSystemUpdateStatus] = useState<SystemUpdateStatus | null>(null)
   const [notes, setNotes] = useState<Note[]>([])
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null)
   const [noteDraft, setNoteDraft] = useState(demoMarkdown)
@@ -186,6 +270,7 @@ function App() {
   const [activeFileColumnSplitter, setActiveFileColumnSplitter] = useState<FileColumnKey | null>(null)
   const [notePaneSize, setNotePaneSize] = useState({ width: 280, height: 220 })
   const [activeNoteSplitter, setActiveNoteSplitter] = useState(false)
+  const [noteFullscreen, setNoteFullscreen] = useState(false)
   const [diagramPaneSize, setDiagramPaneSize] = useState({ width: 280, height: 220 })
   const [activeDiagramSplitter, setActiveDiagramSplitter] = useState(false)
   const [diagramDrawerOpen, setDiagramDrawerOpen] = useState(true)
@@ -208,6 +293,12 @@ function App() {
   const [diagramLoadVersion, setDiagramLoadVersion] = useState(0)
   const [memos, setMemos] = useState<VoiceMemo[]>([])
   const [selectedVoiceMemoId, setSelectedVoiceMemoId] = useState<string | null>(null)
+  const [calendarConnections, setCalendarConnections] = useState<CalendarConnection[]>([])
+  const [selectedCalendarConnectionId, setSelectedCalendarConnectionId] = useState<string | null>(null)
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
+  const [calendarLoading, setCalendarLoading] = useState(false)
+  const [tasks, setTasks] = useState<TaskItem[]>([])
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
   const [rooms, setRooms] = useState<Room[]>([])
   const [comsParticipants, setComsParticipants] = useState<UserProfile[]>([])
   const [roomUnreadCounts, setRoomUnreadCounts] = useState<Record<string, number>>({})
@@ -218,6 +309,10 @@ function App() {
   const [voiceInputLevel, setVoiceInputLevel] = useState(0)
   const [status, setStatus] = useState('Bootstrapping workspace')
   const [actionNotice, setActionNotice] = useState<ActionNoticeState | null>(null)
+  const [syncNotice, setSyncNotice] = useState<{ tone: 'offline' | 'error'; message: string } | null>(null)
+  const [syncConflicts, setSyncConflicts] = useState<import('./lib/types').QueuedSyncConflict[]>([])
+  const [syncConflictsOpen, setSyncConflictsOpen] = useState(false)
+  const [syncCursors, setSyncCursors] = useState<SyncCursorSet>({ generated_at: new Date(0).toISOString() })
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null)
   const [shareDraft, setShareDraft] = useState<ResourceShare | null>(null)
   const [shareUserQuery, setShareUserQuery] = useState('')
@@ -231,6 +326,7 @@ function App() {
   const [callMediaMode, setCallMediaMode] = useState<'audio' | 'video' | null>(null)
   const [screenSharing, setScreenSharing] = useState(false)
   const [notePresence, setNotePresence] = useState<Record<string, NotePresenceEntry[]>>({})
+  const [noteCursors, setNoteCursors] = useState<Record<string, RemoteNoteCursor[]>>({})
   const [remoteParticipants, setRemoteParticipants] = useState<RemoteParticipant[]>([])
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const recordingStreamRef = useRef<MediaStream | null>(null)
@@ -242,6 +338,7 @@ function App() {
   const speechTranscriptRef = useRef('')
   const fileManagerRef = useRef<HTMLDivElement | null>(null)
   const noteManagerRef = useRef<HTMLDivElement | null>(null)
+  const notesSectionRef = useRef<HTMLElement | null>(null)
   const diagramManagerRef = useRef<HTMLDivElement | null>(null)
   const chatManagerRef = useRef<HTMLDivElement | null>(null)
   const diagramsSectionRef = useRef<HTMLElement | null>(null)
@@ -279,6 +376,8 @@ function App() {
   const noteDraftRef = useRef(noteDraft)
   const notesRef = useRef<Note[]>([])
   const diagramsRef = useRef<Diagram[]>([])
+  const memosRef = useRef<VoiceMemo[]>([])
+  const syncNoticeTimeoutRef = useRef<number | null>(null)
   const persistedNoteStateRef = useRef<Record<string, { title: string; folder: string; markdown: string }>>({})
   const locallyDirtyNoteIdsRef = useRef<Set<string>>(new Set())
   const pendingLocalDraftRestoreRef = useRef<{ noteId: string; markdown: string } | null>(null)
@@ -305,10 +404,13 @@ function App() {
     resetAdminUserPassword,
     updateAdminUserAccess,
     resolveAdminUserCredentialRequest,
+    refreshSystemUpdateStatus,
+    runSystemUpdate,
   } = createAdminActions({
     session,
     setAdminSettings,
     setAdminStorageOverview,
+    setSystemUpdateStatus,
     setAdminUsers,
     setSetupStatus,
     setComsParticipants,
@@ -337,10 +439,17 @@ function App() {
     setVoiceInputLevel,
     setMemos,
     setSelectedVoiceMemoId,
-    refreshFilesTree,
+    uploadVoiceMemoRecord: uploadVoiceMemoLocalFirst,
+    listVoiceMemos: api.listVoiceMemos,
+    getVoiceJob: api.getVoiceJob,
+    retryVoiceJob: api.retryVoiceJob,
     showActionNotice,
   })
   const activePresence = selectedNoteId ? notePresence[selectedNoteId] ?? [] : []
+  const activeRemoteNoteCursors = useMemo(
+    () => (selectedNoteId ? noteCursors[selectedNoteId] ?? [] : []),
+    [noteCursors, selectedNoteId],
+  )
   const clientLabel = session
     ? `${session.user.display_name} (${clientIdRef.current.slice(0, 6)})`
     : `Guest (${clientIdRef.current.slice(0, 6)})`
@@ -382,6 +491,7 @@ function App() {
     registerPresence,
     prunePresence,
     broadcastPresence,
+    broadcastNoteCursor,
     scheduleNoteDraftBroadcast,
     createNote,
     saveNote,
@@ -419,6 +529,8 @@ function App() {
     setSelectedFolderPath,
     setStatus,
     setRoute,
+    createNoteRecord: createNoteLocalFirst,
+    updateNoteRecord: updateNoteLocalFirst,
     refreshFilesTree,
     showActionNotice,
     normalizeFolderPath,
@@ -442,9 +554,11 @@ function App() {
     setDiagramDraft,
     setDiagramLoadVersion,
     setDiagramEditorMode,
+    createDiagramRecord: createDiagramLocalFirst,
+    updateDiagramRecord: updateDiagramLocalFirst,
     showActionNotice,
   })
-  const { createRoom, createDirectRoom, renameRoom, updateRoomParticipants, deleteRoom, sendMessage } =
+  const { createRoom, createDirectRoom, renameRoom, updateRoomParticipants, deleteRoom, sendMessage, toggleMessageReaction } =
     createComsActions({
       rooms,
       comsParticipants,
@@ -454,6 +568,8 @@ function App() {
       callJoinedRef,
       setMessages,
       refreshRooms,
+      createMessageRecord: createMessageLocalFirst,
+      toggleMessageReactionRecord: toggleMessageReactionLocalFirst,
       leaveCall,
       showActionNotice,
     })
@@ -463,6 +579,7 @@ function App() {
     addTableColumnFromContext,
     copyNoteSelection,
     pasteIntoNoteFromClipboard,
+    runToolbarAction,
     openNoteContextMenu,
     handleNoteEditorKeyDown,
     handleNoteEditorInput,
@@ -553,6 +670,10 @@ function App() {
         : deriveDirectoryPath(selectedPath, false)
     return normalizeVoiceDirectoryPath(basePath || 'voice')
   }, [filesTree, selectedFilePath, selectedVoiceMemo?.audio_path])
+  const selectedVoicePath = useMemo(() => {
+    if (selectedVoiceMemo?.audio_path) return selectedVoiceMemo.audio_path
+    return selectedFilePath.startsWith('voice') ? selectedFilePath : null
+  }, [selectedFilePath, selectedVoiceMemo?.audio_path])
   const directoryNodes = currentDirectoryNode?.children ?? []
   const allFileNodes = useMemo(() => flattenFileNodes(filesTree), [filesTree])
   const selectedDiagramPath = useMemo(
@@ -777,6 +898,11 @@ function App() {
     setSelectedNoteId,
     setDiagrams,
     setSelectedDiagramId,
+    createManagedFolderRecord: createManagedFolderLocalFirst,
+    moveManagedPathRecord: moveManagedPathLocalFirst,
+    renameManagedPathRecord: renameManagedPathLocalFirst,
+    deleteManagedPathRecord: deleteManagedPathLocalFirst,
+    uploadManagedFileRecord: uploadManagedFileLocalFirst,
     refreshFilesTree,
     rememberPersistedNotes,
     mergeFolderPaths,
@@ -797,6 +923,8 @@ function App() {
           return currentRolePolicy.tool_scope.diagrams
         case '/voice':
           return currentRolePolicy.tool_scope.voice
+        case '/calendar':
+          return true
         case '/coms':
           return currentRolePolicy.tool_scope.coms
         case '/admin':
@@ -821,6 +949,991 @@ function App() {
     return nextRooms
   }
 
+  async function refreshCalendarConnections(options?: { preferredSelectedConnectionId?: string | null }) {
+    const nextConnections = await api.listCalendarConnections()
+    setCalendarConnections(nextConnections)
+    setSelectedCalendarConnectionId((current) => {
+      const preferred = options?.preferredSelectedConnectionId ?? current
+      if (preferred && nextConnections.some((connection) => connection.id === preferred)) {
+        return preferred
+      }
+      return nextConnections[0]?.id ?? null
+    })
+    return nextConnections
+  }
+
+  async function refreshTasks(options?: { preferredSelectedTaskId?: string | null }) {
+    const nextTasks = await api.listTasks()
+    setTasks(nextTasks)
+    setSelectedTaskId((current) => {
+      const preferred = options?.preferredSelectedTaskId ?? current
+      if (preferred && nextTasks.some((task) => task.id === preferred)) {
+        return preferred
+      }
+      return nextTasks[0]?.id ?? null
+    })
+    return nextTasks
+  }
+
+  async function refreshCalendarEvents(connectionId: string) {
+    const start = new Date()
+    const end = new Date(start)
+    end.setDate(end.getDate() + 30)
+    const nextEvents = await api.listCalendarEvents(connectionId, start.toISOString(), end.toISOString())
+    setCalendarEvents(nextEvents)
+    return nextEvents
+  }
+
+  async function createNoteLocalFirst(title: string, folder?: string, markdown?: string) {
+    if (getConnectivityState()) {
+      return api.createNote(title, folder, markdown)
+    }
+    if (!session) {
+      throw new Error('You must be signed in to create notes offline.')
+    }
+    const now = new Date().toISOString()
+    const note: Note = {
+      id: createEntityId(),
+      title,
+      folder: folder || 'Inbox',
+      markdown: markdown ?? '# New note\n\nStart writing.',
+      rendered_html: '',
+      revision: 1,
+      created_at: now,
+      updated_at: now,
+      author_id: session.user.id,
+      last_editor_id: session.user.id,
+    }
+    await queueSyncOperation({
+      kind: 'create_note',
+      client_generated_id: note.id,
+      title: note.title,
+      folder: note.folder,
+      markdown: note.markdown,
+    })
+    return note
+  }
+
+  async function updateNoteLocalFirst(note: Note, payload: { markdown: string; folder: string }, options?: { keepalive?: boolean }) {
+    if (getConnectivityState()) {
+      return api.updateNote({ ...note, markdown: payload.markdown, folder: payload.folder }, options)
+    }
+    const updated: Note = {
+      ...note,
+      markdown: payload.markdown,
+      folder: payload.folder,
+      revision: note.revision + 1,
+      updated_at: new Date().toISOString(),
+      last_editor_id: session?.user.id ?? note.last_editor_id,
+    }
+    await queueSyncOperation({
+      kind: 'update_note',
+      id: note.id,
+      title: updated.title,
+      folder: updated.folder,
+      markdown: updated.markdown,
+      revision: note.revision,
+    })
+    return updated
+  }
+
+  async function deleteNoteLocalFirst(note: Note) {
+    if (getConnectivityState()) {
+      await api.deleteNote(note.id)
+      return
+    }
+    await queueSyncOperation({ kind: 'delete_note', id: note.id })
+  }
+
+  async function createLocalCalendarConnectionLocalFirst(title: string) {
+    if (getConnectivityState()) {
+      return api.createLocalCalendarConnection(title)
+    }
+    if (!session) {
+      throw new Error('You must be signed in to create calendars offline.')
+    }
+    const now = new Date().toISOString()
+    const connection: CalendarConnection = {
+      id: createEntityId(),
+      owner_id: session.user.id,
+      owner_display_name: session.user.display_name,
+      title,
+      provider: 'sweet',
+      external_id: '',
+      calendar_id: `sweet:${title.toLowerCase().replace(/\s+/g, '-')}`,
+      account_label: 'Sweet calendar',
+      access_token: null,
+      refresh_token: null,
+      token_expires_at: null,
+      ics_url: null,
+      created_at: now,
+      updated_at: now,
+    }
+    await queueSyncOperation({ kind: 'create_local_calendar', client_generated_id: connection.id, title })
+    return connection
+  }
+
+  async function renameCalendarConnectionLocalFirst(id: string, title: string) {
+    if (getConnectivityState()) {
+      return api.updateCalendarConnection(id, title)
+    }
+    const current = calendarConnections.find((connection) => connection.id === id)
+    if (!current) {
+      throw new Error('Calendar not found.')
+    }
+    const updated: CalendarConnection = { ...current, title, updated_at: new Date().toISOString() }
+    await queueSyncOperation({ kind: 'rename_calendar', id, title })
+    return updated
+  }
+
+  async function deleteCalendarConnectionLocalFirst(id: string) {
+    if (getConnectivityState()) {
+      await api.deleteCalendarConnection(id)
+      return
+    }
+    await queueSyncOperation({ kind: 'delete_calendar', id })
+  }
+
+  async function createCalendarEventLocalFirst(
+    connectionId: string,
+    payload: { title: string; description: string; location: string; start_at: string; end_at: string; all_day: boolean },
+  ) {
+    if (getConnectivityState()) {
+      return api.createCalendarEvent(connectionId, payload)
+    }
+    const event: CalendarEvent = {
+      id: createEntityId(),
+      connection_id: connectionId,
+      title: payload.title,
+      description: payload.description,
+      location: payload.location,
+      start_at: payload.start_at,
+      end_at: payload.end_at,
+      all_day: payload.all_day,
+      source_url: '',
+      organizer: session?.user.display_name ?? 'You',
+      updated_at: new Date().toISOString(),
+    }
+    await queueSyncOperation({ kind: 'create_calendar_event', client_generated_id: event.id, connection_id: connectionId, ...payload })
+    return event
+  }
+
+  async function updateCalendarEventLocalFirst(
+    connectionId: string,
+    eventId: string,
+    payload: { title: string; description: string; location: string; start_at: string; end_at: string; all_day: boolean },
+  ) {
+    if (getConnectivityState()) {
+      return api.updateCalendarEvent(connectionId, eventId, payload)
+    }
+    const current = calendarEvents.find((event) => event.id === eventId)
+    if (!current) {
+      throw new Error('Event not found.')
+    }
+    const updated: CalendarEvent = { ...current, ...payload, updated_at: new Date().toISOString() }
+    await queueSyncOperation({ kind: 'update_calendar_event', connection_id: connectionId, event_id: eventId, ...payload })
+    return updated
+  }
+
+  async function deleteCalendarEventLocalFirst(connectionId: string, eventId: string) {
+    if (getConnectivityState()) {
+      await api.deleteCalendarEvent(connectionId, eventId)
+      return
+    }
+    await queueSyncOperation({ kind: 'delete_calendar_event', connection_id: connectionId, event_id: eventId })
+  }
+
+  async function createTaskLocalFirst(payload: {
+    title: string
+    description: string
+    start_at?: string | null
+    end_at?: string | null
+    all_day: boolean
+    calendar_connection_id?: string | null
+  }) {
+    if (getConnectivityState()) {
+      return api.createTask(payload)
+    }
+    if (!session) {
+      throw new Error('You must be signed in to create tasks offline.')
+    }
+    const now = new Date().toISOString()
+    const task: TaskItem = {
+      id: createEntityId(),
+      owner_id: session.user.id,
+      owner_display_name: session.user.display_name,
+      title: payload.title,
+      description: payload.description,
+      status: 'open',
+      start_at: payload.start_at ?? null,
+      end_at: payload.end_at ?? null,
+      all_day: payload.all_day,
+      calendar_connection_id: payload.calendar_connection_id ?? null,
+      created_at: now,
+      updated_at: now,
+      completed_at: null,
+    }
+    await queueSyncOperation({ kind: 'create_task', client_generated_id: task.id, ...payload })
+    return task
+  }
+
+  async function updateTaskLocalFirst(
+    id: string,
+    payload: {
+      title: string
+      description: string
+      status: 'open' | 'completed'
+      start_at?: string | null
+      end_at?: string | null
+      all_day: boolean
+      calendar_connection_id?: string | null
+    },
+  ) {
+    if (getConnectivityState()) {
+      return api.updateTask(id, payload)
+    }
+    const current = tasks.find((task) => task.id === id)
+    if (!current) {
+      throw new Error('Task not found.')
+    }
+    const updated: TaskItem = {
+      ...current,
+      ...payload,
+      updated_at: new Date().toISOString(),
+      completed_at: payload.status === 'completed' ? current.completed_at ?? new Date().toISOString() : null,
+    }
+    await queueSyncOperation({ kind: 'update_task', id, ...payload })
+    return updated
+  }
+
+  async function deleteTaskLocalFirst(id: string) {
+    if (getConnectivityState()) {
+      await api.deleteTask(id)
+      return
+    }
+    await queueSyncOperation({ kind: 'delete_task', id })
+  }
+
+  async function createDiagramLocalFirst(title: string, xml?: string) {
+    if (getConnectivityState()) {
+      return api.createDiagram(title, xml)
+    }
+    if (!session) {
+      throw new Error('You must be signed in to create diagrams offline.')
+    }
+    const now = new Date().toISOString()
+    const diagram: Diagram = {
+      id: createEntityId(),
+      title,
+      xml: xml ?? createEmptyDrawioDiagramXml(),
+      revision: 1,
+      created_at: now,
+      updated_at: now,
+      author_id: session.user.id,
+      last_editor_id: session.user.id,
+    }
+    await queueSyncOperation({
+      kind: 'create_diagram',
+      client_generated_id: diagram.id,
+      title: diagram.title,
+      xml: diagram.xml,
+    })
+    return diagram
+  }
+
+  async function updateDiagramLocalFirst(diagram: Diagram, xml: string) {
+    if (getConnectivityState()) {
+      return api.updateDiagram({ ...diagram, xml })
+    }
+    const updated: Diagram = {
+      ...diagram,
+      xml,
+      revision: diagram.revision + 1,
+      updated_at: new Date().toISOString(),
+      last_editor_id: session?.user.id ?? diagram.last_editor_id,
+    }
+    await queueSyncOperation({
+      kind: 'update_diagram',
+      id: diagram.id,
+      title: updated.title,
+      xml: updated.xml,
+      revision: diagram.revision,
+    })
+    return updated
+  }
+
+  async function createMessageLocalFirst(roomId: string, body: string) {
+    if (getConnectivityState()) {
+      return api.createMessage(roomId, body)
+    }
+    if (!session) {
+      throw new Error('You must be signed in to send messages offline.')
+    }
+    const message: Message = {
+      id: createEntityId(),
+      room_id: roomId,
+      author: session.user,
+      body,
+      created_at: new Date().toISOString(),
+      reactions: [],
+    }
+    await queueSyncOperation({
+      kind: 'create_message',
+      client_generated_id: message.id,
+      room_id: roomId,
+      body,
+    })
+    return message
+  }
+
+  async function toggleMessageReactionLocalFirst(roomId: string, messageId: string, emoji: string) {
+    if (getConnectivityState()) {
+      return api.toggleMessageReaction(roomId, messageId, emoji)
+    }
+    if (!session) {
+      throw new Error('You must be signed in to react offline.')
+    }
+    const current = messages.find((entry) => entry.id === messageId)
+    if (!current) {
+      throw new Error('Message not found.')
+    }
+    const nextReactions = current.reactions.map((reaction) => ({
+      emoji: reaction.emoji,
+      user_ids: [...reaction.user_ids],
+    }))
+    const existing = nextReactions.find((reaction) => reaction.emoji === emoji)
+    if (existing) {
+      const index = existing.user_ids.indexOf(session.user.id)
+      if (index >= 0) {
+        existing.user_ids.splice(index, 1)
+      } else {
+        existing.user_ids.push(session.user.id)
+      }
+    } else {
+      nextReactions.push({ emoji, user_ids: [session.user.id] })
+    }
+    const filtered = nextReactions.filter((reaction) => reaction.user_ids.length > 0).sort((left, right) => left.emoji.localeCompare(right.emoji))
+    const updated: Message = { ...current, reactions: filtered }
+    await queueSyncOperation({ kind: 'toggle_message_reaction', room_id: roomId, message_id: messageId, emoji })
+    return updated
+  }
+
+  function showSyncNotice(tone: 'offline' | 'error', message: string, timeoutMs = 4500) {
+    if (syncNoticeTimeoutRef.current != null) {
+      window.clearTimeout(syncNoticeTimeoutRef.current)
+      syncNoticeTimeoutRef.current = null
+    }
+    setSyncNotice({ tone, message })
+    if (timeoutMs > 0) {
+      syncNoticeTimeoutRef.current = window.setTimeout(() => {
+        setSyncNotice((current) => (current?.message === message ? null : current))
+        syncNoticeTimeoutRef.current = null
+      }, timeoutMs)
+    }
+  }
+
+  async function refreshQueuedSyncConflicts() {
+    const nextConflicts = await listQueuedSyncConflicts()
+    setSyncConflicts(nextConflicts)
+    if (nextConflicts.length === 0) {
+      setSyncConflictsOpen(false)
+    }
+    return nextConflicts
+  }
+
+  async function uploadVoiceMemoLocalFirst(title: string, file: Blob, browserTranscript?: string) {
+    if (getConnectivityState()) {
+      const memo = await api.uploadVoiceMemo(title, file, browserTranscript)
+      const nextMemos = await api.listVoiceMemos()
+      setMemos(nextMemos)
+      await refreshFilesTree()
+      showActionNotice(`Uploaded audio: ${title}`)
+      return memo
+    }
+
+    const pendingUpload = {
+      id: createEntityId(),
+      title,
+      filename: file instanceof File ? file.name : 'memo.webm',
+      mime_type: file.type || 'audio/webm',
+      size_bytes: file.size,
+      browser_transcript: browserTranscript?.trim() || null,
+      created_at: new Date().toISOString(),
+      blob: file,
+    }
+    await offlineDb.savePendingVoiceUpload(pendingUpload)
+    const memo = pendingVoiceUploadToMemo(pendingUpload)
+    setMemos((current) => upsertVoiceMemo(current, memo))
+    setFilesTree((current) => insertFileTreeNode(current, pendingVoiceUploadToFileNode(pendingUpload)))
+    showActionNotice(`Queued audio upload: ${title}`)
+    return memo
+  }
+
+  async function renamePendingVoiceUploadLocalFirst(memoId: string, title: string) {
+    const pendingUpload = (await offlineDb.listPendingVoiceUploads()).find((entry) => entry.id === memoId)
+    if (!pendingUpload) {
+      throw new Error('Pending upload could not be found.')
+    }
+    await offlineDb.savePendingVoiceUpload({ ...pendingUpload, title })
+    const updated = pendingVoiceUploadToMemo({ ...pendingUpload, title })
+    setMemos((current) => current.map((entry) => (entry.id === memoId ? updated : entry)))
+    showActionNotice(`Renamed memo to ${title}`)
+    return updated
+  }
+
+  async function deletePendingVoiceUploadLocalFirst(memoId: string) {
+    await offlineDb.removePendingVoiceUpload(memoId)
+    const memo = memosRef.current.find((entry) => entry.id === memoId)
+    setMemos((current) => current.filter((entry) => entry.id !== memoId))
+    setFilesTree((current) => removeFileTreeNode(current, memo?.audio_path ?? '').nodes)
+    setSelectedVoiceMemoId((current) => (current === memoId ? (memosRef.current.find((entry) => entry.id !== memoId)?.id ?? null) : current))
+    showActionNotice(`Deleted memo: ${memo?.title || 'Untitled memo'}`)
+  }
+
+  async function uploadManagedFileLocalFirst(path: string, file: Blob, filename: string) {
+    if (getConnectivityState()) {
+      const node = await api.uploadFile(path, file, filename)
+      await refreshFilesTree()
+      showActionNotice(`Uploaded file: ${filename}`)
+      return node
+    }
+
+    const pendingUpload = {
+      id: createEntityId(),
+      path,
+      filename,
+      mime_type: file.type || 'application/octet-stream',
+      size_bytes: file.size,
+      created_at: new Date().toISOString(),
+      blob: file,
+    }
+    await offlineDb.savePendingManagedUpload(pendingUpload)
+    const node = pendingManagedUploadToFileNode(pendingUpload)
+    setFilesTree((current) => insertFileTreeNode(current, node))
+    showActionNotice(`Queued file upload: ${filename}`)
+    return node
+  }
+
+  async function flushPendingVoiceUploads() {
+    if (!getConnectivityState()) {
+      return
+    }
+    const pendingUploads = await offlineDb.listPendingVoiceUploads()
+    if (pendingUploads.length === 0) {
+      return
+    }
+    for (const pendingUpload of pendingUploads) {
+      await api.uploadVoiceMemo(
+        pendingUpload.title,
+        pendingUpload.blob,
+        pendingUpload.browser_transcript?.trim() || undefined,
+      )
+      await offlineDb.removePendingVoiceUpload(pendingUpload.id)
+    }
+  }
+
+  async function flushPendingManagedUploads() {
+    if (!getConnectivityState()) {
+      return
+    }
+    const pendingUploads = await offlineDb.listPendingManagedUploads()
+    if (pendingUploads.length === 0) {
+      return
+    }
+    for (const pendingUpload of pendingUploads) {
+      await api.uploadFile(pendingUpload.path, pendingUpload.blob, pendingUpload.filename)
+      await offlineDb.removePendingManagedUpload(pendingUpload.id)
+    }
+  }
+
+  async function createManagedFolderLocalFirst(path: string) {
+    if (getConnectivityState()) {
+      return api.createDriveFolder(path)
+    }
+
+    const node = createOptimisticDirectoryNode(path)
+    setFilesTree((current) => insertFileTreeNode(current, node))
+    await queueSyncOperation({ kind: 'create_managed_folder', path })
+    return node
+  }
+
+  async function moveManagedPathLocalFirst(sourcePath: string, destinationDir: string) {
+    if (getConnectivityState()) {
+      return api.moveFile(sourcePath, destinationDir)
+    }
+    const now = new Date().toISOString()
+    let moved: FileNode | null = null
+
+    if (sourcePath === 'drive' || sourcePath.startsWith('drive/')) {
+      setFilesTree((current) => {
+        const result = moveFileTreeNode(current, sourcePath, destinationDir)
+        moved = result.moved
+        return result.nodes
+      })
+      if (!moved) {
+        throw new Error('Could not find the item to move.')
+      }
+    } else if (sourcePath === 'notes' || sourcePath.startsWith('notes/')) {
+      if (sourcePath.endsWith('.md')) {
+        const noteId = noteIdFromPath(sourcePath)
+        const current = noteId ? notesRef.current.find((entry) => entry.id === noteId) : null
+        if (!current) throw new Error('Note not found.')
+        const nextFolder = normalizeFolderPath(destinationDir.replace(/^notes\/?/, '') || 'Inbox')
+        const updated: Note = {
+          ...current,
+          folder: nextFolder,
+          revision: current.revision + 1,
+          updated_at: now,
+          last_editor_id: session?.user.id ?? current.last_editor_id,
+        }
+        setNotes((entries) => entries.map((entry) => (entry.id === updated.id ? updated : entry)))
+        rememberPersistedNotes(notesRef.current.map((entry) => (entry.id === updated.id ? updated : entry)))
+        setCustomFolders((currentFolders) => mergeFolderPaths(currentFolders, [current.folder || 'Inbox', updated.folder || 'Inbox']))
+        if (selectedNoteIdRef.current === updated.id) {
+          setSelectedFolderPath(nextFolder)
+        }
+        const nextPath = noteManagedFilePath(updated)
+        setFilesTree((tree) => {
+          const result = replaceFileTreeNode(tree, sourcePath, {
+            name: nextPath.split('/').pop() ?? '',
+            path: nextPath,
+            kind: 'file',
+            size_bytes: updated.markdown.length,
+            created_at: updated.created_at,
+            updated_at: updated.updated_at,
+            children: [],
+          })
+          moved = result.replaced
+          return result.nodes
+        })
+      } else {
+        const sourceFolder = normalizeFolderPath(sourcePath.replace(/^notes\/?/, '') || 'Inbox')
+        const folderName = sourceFolder.split('/').pop() || sourceFolder
+        const targetFolder = normalizeFolderPath(destinationDir.replace(/^notes\/?/, '') || 'Inbox')
+        const rebasedRoot = normalizeFolderPath(targetFolder === 'Inbox' ? folderName : `${targetFolder}/${folderName}`)
+        const rebaseFolderPath = (folderPath: string) => {
+          const normalized = normalizeFolderPath(folderPath || 'Inbox')
+          if (normalized === sourceFolder) return rebasedRoot
+          if (normalized.startsWith(`${sourceFolder}/`)) {
+            return normalizeFolderPath(`${rebasedRoot}/${normalized.slice(sourceFolder.length + 1)}`)
+          }
+          return normalized
+        }
+        const nextNotes = notesRef.current.map((note) => {
+          const normalized = normalizeFolderPath(note.folder || 'Inbox')
+          if (normalized !== sourceFolder && !normalized.startsWith(`${sourceFolder}/`)) return note
+          return {
+            ...note,
+            folder: rebaseFolderPath(note.folder || 'Inbox'),
+            revision: note.revision + 1,
+            updated_at: now,
+            last_editor_id: session?.user.id ?? note.last_editor_id,
+          }
+        })
+        setNotes(nextNotes)
+        rememberPersistedNotes(nextNotes)
+        setCustomFolders((currentFolders) =>
+          mergeFolderPaths(
+            currentFolders.map((folderPath) => {
+              const normalized = normalizeFolderPath(folderPath)
+              if (normalized === sourceFolder || normalized.startsWith(`${sourceFolder}/`)) {
+                return rebaseFolderPath(normalized)
+              }
+              return normalized
+            }),
+            nextNotes.map((note) => note.folder || 'Inbox'),
+          ),
+        )
+        if (
+          selectedFolderPathRef.current === sourceFolder ||
+          selectedFolderPathRef.current.startsWith(`${sourceFolder}/`)
+        ) {
+          setSelectedFolderPath(rebaseFolderPath(selectedFolderPathRef.current))
+        }
+        setFilesTree((tree) => {
+          const result = moveFileTreeNode(tree, sourcePath, destinationDir)
+          moved = result.moved
+          return result.nodes
+        })
+      }
+    } else if (sourcePath === 'diagrams' || sourcePath.startsWith('diagrams/')) {
+      if (sourcePath.endsWith('.drawio')) {
+        const diagramId = diagramIdFromManagedPath(sourcePath)
+        const current = diagramId ? diagramsRef.current.find((entry) => entry.id === diagramId) : null
+        if (!current) throw new Error('Diagram not found.')
+        const folderSuffix = destinationDir.replace(/^diagrams\/?/, '')
+        const nextTitle = normalizeDiagramTitlePath(
+          folderSuffix ? `Diagrams/${folderSuffix}/${diagramDisplayName(current.title)}` : `Diagrams/${diagramDisplayName(current.title)}`,
+        )
+        const updated: Diagram = {
+          ...current,
+          title: nextTitle,
+          revision: current.revision + 1,
+          updated_at: now,
+          last_editor_id: session?.user.id ?? current.last_editor_id,
+        }
+        const nextDiagrams = diagramsRef.current.map((entry) => (entry.id === updated.id ? updated : entry))
+        setDiagrams(nextDiagrams)
+        setCustomDiagramFolders((currentFolders) =>
+          Array.from(new Set([...currentFolders, normalizeDiagramFolderPath(current.title), normalizeDiagramFolderPath(updated.title)])).sort((left, right) => left.localeCompare(right)),
+        )
+        const nextPath = diagramManagedFilePath(updated)
+        setFilesTree((tree) => {
+          const result = replaceFileTreeNode(tree, sourcePath, {
+            name: nextPath.split('/').pop() ?? '',
+            path: nextPath,
+            kind: 'file',
+            size_bytes: updated.xml.length,
+            created_at: updated.created_at,
+            updated_at: updated.updated_at,
+            children: [],
+          })
+          moved = result.replaced
+          return result.nodes
+        })
+      } else {
+        const sourceFolder = sourcePath.replace(/^diagrams\/?/, '')
+        const folderName = sourceFolder.split('/').pop() || sourceFolder
+        const targetFolder = destinationDir.replace(/^diagrams\/?/, '')
+        const rebasedRoot = targetFolder ? `${targetFolder}/${folderName}` : folderName
+        const rebaseTitle = (title: string) => {
+          if (title === sourceFolder) return rebasedRoot
+          if (title.startsWith(`${sourceFolder}/`)) {
+            return `${rebasedRoot}/${title.slice(sourceFolder.length + 1)}`
+          }
+          return title
+        }
+        const nextDiagrams = diagramsRef.current.map((diagram) => {
+          if (diagram.title !== sourceFolder && !diagram.title.startsWith(`${sourceFolder}/`)) return diagram
+          return {
+            ...diagram,
+            title: rebaseTitle(diagram.title),
+            revision: diagram.revision + 1,
+            updated_at: now,
+            last_editor_id: session?.user.id ?? diagram.last_editor_id,
+          }
+        })
+        setDiagrams(nextDiagrams)
+        setCustomDiagramFolders((currentFolders) =>
+          Array.from(
+            new Set(
+              currentFolders.map((folderPath) => {
+                if (folderPath === sourceFolder) return rebasedRoot
+                if (folderPath.startsWith(`${sourceFolder}/`)) {
+                  return `${rebasedRoot}/${folderPath.slice(sourceFolder.length + 1)}`
+                }
+                return folderPath
+              }),
+            ),
+          ).sort((left, right) => left.localeCompare(right)),
+        )
+        setFilesTree((tree) => {
+          const result = moveFileTreeNode(tree, sourcePath, destinationDir)
+          moved = result.moved
+          return result.nodes
+        })
+      }
+    } else if (sourcePath === 'voice' || sourcePath.startsWith('voice/')) {
+      if (sourcePath.includes('.') && !sourcePath.endsWith('/')) {
+        const current = memosRef.current.find((entry) => entry.audio_path === sourcePath)
+        if (!current) throw new Error('Voice memo not found.')
+        const leaf = sourcePath.split('/').pop() ?? current.audio_path
+        const nextPath = `${destinationDir}/${leaf}`
+        const nextMemos = memosRef.current.map((entry) =>
+          entry.id === current.id ? { ...entry, audio_path: nextPath, updated_at: now } : entry,
+        )
+        setMemos(nextMemos)
+        setFilesTree((tree) => {
+          const result = moveFileTreeNode(tree, sourcePath, destinationDir)
+          moved = result.moved
+          return result.nodes
+        })
+      } else {
+        const nextMemos = memosRef.current.map((memo) => {
+          if (memo.audio_path !== sourcePath && !memo.audio_path.startsWith(`${sourcePath}/`)) return memo
+          return {
+            ...memo,
+            audio_path: memo.audio_path.replace(sourcePath, `${destinationDir}/${sourcePath.split('/').pop() || ''}`),
+            updated_at: now,
+          }
+        })
+        setMemos(nextMemos)
+        setFilesTree((tree) => {
+          const result = moveFileTreeNode(tree, sourcePath, destinationDir)
+          moved = result.moved
+          return result.nodes
+        })
+      }
+    } else {
+      throw new Error('Managed path is not supported for offline move.')
+    }
+
+    if (!moved) throw new Error('Could not find the item to move.')
+
+    await queueSyncOperation({ kind: 'move_managed_path', source_path: sourcePath, destination_dir: destinationDir })
+    return moved
+  }
+
+  async function renameManagedPathLocalFirst(path: string, newName: string) {
+    if (getConnectivityState()) {
+      return api.renameFile(path, newName)
+    }
+    const now = new Date().toISOString()
+    let renamed: FileNode | null = null
+
+    if (path === 'drive' || path.startsWith('drive/')) {
+      setFilesTree((current) => {
+        const result = renameFileTreeNode(current, path, newName)
+        renamed = result.renamed
+        return result.nodes
+      })
+    } else if (path === 'notes' || path.startsWith('notes/')) {
+      if (path.endsWith('.md')) {
+        const noteId = noteIdFromPath(path)
+        const current = noteId ? notesRef.current.find((entry) => entry.id === noteId) : null
+        if (!current) throw new Error('Note not found.')
+        const updated: Note = {
+          ...current,
+          title: newName.trim(),
+          revision: current.revision + 1,
+          updated_at: now,
+          last_editor_id: session?.user.id ?? current.last_editor_id,
+        }
+        const nextNotes = notesRef.current.map((entry) => (entry.id === updated.id ? updated : entry))
+        setNotes(nextNotes)
+        rememberPersistedNotes(nextNotes)
+        const nextPath = noteManagedFilePath(updated)
+        setFilesTree((tree) => {
+          const result = replaceFileTreeNode(tree, path, {
+            name: nextPath.split('/').pop() ?? '',
+            path: nextPath,
+            kind: 'file',
+            size_bytes: updated.markdown.length,
+            created_at: updated.created_at,
+            updated_at: updated.updated_at,
+            children: [],
+          })
+          renamed = result.replaced
+          return result.nodes
+        })
+      } else {
+        const sourceFolder = normalizeFolderPath(path.replace(/^notes\/?/, '') || 'Inbox')
+        const leaf = normalizeFolderPath(sourceFolder).split('/').filter(Boolean).pop() ?? sourceFolder
+        const destinationFolder = normalizeFolderPath(
+          [...sourceFolder.split('/').filter(Boolean).slice(0, -1), newName.trim()].join('/'),
+        )
+        const rebaseFolderPath = (folderPath: string) => {
+          const normalized = normalizeFolderPath(folderPath || 'Inbox')
+          if (normalized === sourceFolder) return destinationFolder
+          if (normalized.startsWith(`${sourceFolder}/`)) {
+            return normalizeFolderPath(`${destinationFolder}/${normalized.slice(sourceFolder.length + 1)}`)
+          }
+          return normalized
+        }
+        const nextNotes = notesRef.current.map((note) => {
+          const normalized = normalizeFolderPath(note.folder || 'Inbox')
+          if (normalized !== sourceFolder && !normalized.startsWith(`${sourceFolder}/`)) return note
+          return {
+            ...note,
+            folder: rebaseFolderPath(note.folder || 'Inbox'),
+            revision: note.revision + 1,
+            updated_at: now,
+            last_editor_id: session?.user.id ?? note.last_editor_id,
+          }
+        })
+        setNotes(nextNotes)
+        rememberPersistedNotes(nextNotes)
+        setCustomFolders((currentFolders) =>
+          mergeFolderPaths(
+            currentFolders.map((folderPath) => {
+              const normalized = normalizeFolderPath(folderPath)
+              if (normalized === sourceFolder || normalized.startsWith(`${sourceFolder}/`)) {
+                return rebaseFolderPath(normalized)
+              }
+              return normalized
+            }),
+            nextNotes.map((note) => note.folder || 'Inbox'),
+          ),
+        )
+        if (
+          selectedFolderPathRef.current === sourceFolder ||
+          selectedFolderPathRef.current.startsWith(`${sourceFolder}/`)
+        ) {
+          setSelectedFolderPath(rebaseFolderPath(selectedFolderPathRef.current))
+        }
+        setFilesTree((tree) => {
+          const result = renameFileTreeNode(tree, path, leaf === sourceFolder ? newName.trim() : newName.trim())
+          renamed = result.renamed
+          return result.nodes
+        })
+      }
+    } else if (path === 'diagrams' || path.startsWith('diagrams/')) {
+      if (path.endsWith('.drawio')) {
+        const diagramId = diagramIdFromManagedPath(path)
+        const current = diagramId ? diagramsRef.current.find((entry) => entry.id === diagramId) : null
+        if (!current) throw new Error('Diagram not found.')
+        const updated: Diagram = {
+          ...current,
+          title: normalizeDiagramTitlePath(
+            `${normalizeDiagramFolderPath(current.title)}/${newName.trim()}`,
+          ),
+          revision: current.revision + 1,
+          updated_at: now,
+          last_editor_id: session?.user.id ?? current.last_editor_id,
+        }
+        const nextDiagrams = diagramsRef.current.map((entry) => (entry.id === updated.id ? updated : entry))
+        setDiagrams(nextDiagrams)
+        const nextPath = diagramManagedFilePath(updated)
+        setFilesTree((tree) => {
+          const result = replaceFileTreeNode(tree, path, {
+            name: nextPath.split('/').pop() ?? '',
+            path: nextPath,
+            kind: 'file',
+            size_bytes: updated.xml.length,
+            created_at: updated.created_at,
+            updated_at: updated.updated_at,
+            children: [],
+          })
+          renamed = result.replaced
+          return result.nodes
+        })
+      } else {
+        const sourceFolder = path.replace(/^diagrams\/?/, '')
+        const parts = sourceFolder.split('/').filter(Boolean)
+        const destinationFolder = [...parts.slice(0, -1), newName.trim()].join('/')
+        const nextDiagrams = diagramsRef.current.map((diagram) => {
+          if (diagram.title !== sourceFolder && !diagram.title.startsWith(`${sourceFolder}/`)) return diagram
+          return {
+            ...diagram,
+            title: diagram.title.replace(sourceFolder, destinationFolder),
+            revision: diagram.revision + 1,
+            updated_at: now,
+            last_editor_id: session?.user.id ?? diagram.last_editor_id,
+          }
+        })
+        setDiagrams(nextDiagrams)
+        setCustomDiagramFolders((currentFolders) =>
+          Array.from(
+            new Set(
+              currentFolders.map((folderPath) => {
+                if (folderPath === sourceFolder) return destinationFolder
+                if (folderPath.startsWith(`${sourceFolder}/`)) {
+                  return `${destinationFolder}/${folderPath.slice(sourceFolder.length + 1)}`
+                }
+                return folderPath
+              }),
+            ),
+          ).sort((left, right) => left.localeCompare(right)),
+        )
+        setFilesTree((tree) => {
+          const result = renameFileTreeNode(tree, path, newName.trim())
+          renamed = result.renamed
+          return result.nodes
+        })
+      }
+    } else if (path === 'voice' || path.startsWith('voice/')) {
+      const nextPath = `${deriveParentPath(path) ?? 'voice'}/${newName.trim()}`
+      const nextMemos = memosRef.current.map((memo) => {
+        if (memo.audio_path !== path && !memo.audio_path.startsWith(`${path}/`)) return memo
+        return {
+          ...memo,
+          audio_path: memo.audio_path.replace(path, nextPath),
+          updated_at: now,
+        }
+      })
+      setMemos(nextMemos)
+      setFilesTree((tree) => {
+        const result = renameFileTreeNode(tree, path, newName.trim())
+        renamed = result.renamed
+        return result.nodes
+      })
+    } else {
+      throw new Error('Managed path is not supported for offline rename.')
+    }
+    if (!renamed) throw new Error('Could not find the item to rename.')
+
+    await queueSyncOperation({ kind: 'rename_managed_path', path, new_name: newName })
+    return renamed
+  }
+
+  async function deleteManagedPathLocalFirst(path: string) {
+    if (getConnectivityState()) {
+      await api.deleteFile(path)
+      return
+    }
+
+    if (path === 'drive' || path.startsWith('drive/')) {
+      setFilesTree((current) => removeFileTreeNode(current, path).nodes)
+    } else if (path === 'notes' || path.startsWith('notes/')) {
+      if (path.endsWith('.md')) {
+        const noteId = noteIdFromPath(path)
+        if (!noteId) throw new Error('Note not found.')
+        const nextNotes = notesRef.current.filter((entry) => entry.id !== noteId)
+        setNotes(nextNotes)
+        rememberPersistedNotes(nextNotes)
+        setSelectedNoteId((current) => (current && nextNotes.some((note) => note.id === current) ? current : null))
+      } else {
+        const sourceFolder = normalizeFolderPath(path.replace(/^notes\/?/, '') || 'Inbox')
+        const nextNotes = notesRef.current.filter((note) => {
+          const normalized = normalizeFolderPath(note.folder || 'Inbox')
+          return normalized !== sourceFolder && !normalized.startsWith(`${sourceFolder}/`)
+        })
+        setNotes(nextNotes)
+        rememberPersistedNotes(nextNotes)
+        setCustomFolders((current) =>
+          current.filter((folderPath) => {
+            const normalized = normalizeFolderPath(folderPath)
+            return normalized !== sourceFolder && !normalized.startsWith(`${sourceFolder}/`)
+          }),
+        )
+        if (
+          selectedFolderPathRef.current === sourceFolder ||
+          selectedFolderPathRef.current.startsWith(`${sourceFolder}/`)
+        ) {
+          setSelectedFolderPath('Inbox')
+        }
+        setSelectedNoteId((current) => (current && nextNotes.some((note) => note.id === current) ? current : null))
+      }
+      setFilesTree((current) => removeFileTreeNode(current, path).nodes)
+    } else if (path === 'diagrams' || path.startsWith('diagrams/')) {
+      if (path.endsWith('.drawio')) {
+        const diagramId = diagramIdFromManagedPath(path)
+        if (!diagramId) throw new Error('Diagram not found.')
+        const nextDiagrams = diagramsRef.current.filter((entry) => entry.id !== diagramId)
+        setDiagrams(nextDiagrams)
+        setSelectedDiagramId((current) =>
+          current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
+        )
+      } else {
+        const sourceFolder = path.replace(/^diagrams\/?/, '')
+        const nextDiagrams = diagramsRef.current.filter(
+          (diagram) => diagram.title !== sourceFolder && !diagram.title.startsWith(`${sourceFolder}/`),
+        )
+        setDiagrams(nextDiagrams)
+        setCustomDiagramFolders((current) =>
+          current.filter((folderPath) => folderPath !== sourceFolder && !folderPath.startsWith(`${sourceFolder}/`)),
+        )
+        setSelectedDiagramId((current) =>
+          current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
+        )
+      }
+      setFilesTree((current) => removeFileTreeNode(current, path).nodes)
+    } else if (path === 'voice' || path.startsWith('voice/')) {
+      const nextMemos = memosRef.current.filter(
+        (memo) => memo.audio_path !== path && !memo.audio_path.startsWith(`${path}/`),
+      )
+      setMemos(nextMemos)
+      setSelectedVoiceMemoId((current) =>
+        current && nextMemos.some((memo) => memo.id === current) ? current : null,
+      )
+      setFilesTree((current) => removeFileTreeNode(current, path).nodes)
+    } else {
+      throw new Error('Managed path is not supported for offline delete.')
+    }
+
+    await queueSyncOperation({ kind: 'delete_managed_path', path })
+  }
+
   const orderedNavItems = useMemo(() => {
     const byPath = new Map(NAV_ITEMS.map((item) => [item.path, item]))
     const visibleItems = NAV_ITEMS.filter((item) => canAccessRoute(item.path))
@@ -840,6 +1953,13 @@ function App() {
         ...appearance,
         fontFamily: adminSettings.org_font_family,
         accent: adminSettings.org_accent,
+        background: adminSettings.org_background,
+        disableGradients: adminSettings.org_disable_gradients,
+        gradientTopLeft: adminSettings.org_gradient_top_left,
+        gradientTopRight: adminSettings.org_gradient_top_right,
+        gradientBottomLeft: adminSettings.org_gradient_bottom_left,
+        gradientBottomRight: adminSettings.org_gradient_bottom_right,
+        gradientStrength: adminSettings.org_gradient_strength,
         pageGutter: adminSettings.org_page_gutter,
         radius: adminSettings.org_radius,
       }
@@ -872,6 +1992,10 @@ function App() {
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+
+  useEffect(() => {
+    void refreshQueuedSyncConflicts()
   }, [])
 
   useEffect(() => {
@@ -919,6 +2043,10 @@ function App() {
   useEffect(() => {
     diagramsRef.current = diagrams
   }, [diagrams])
+
+  useEffect(() => {
+    memosRef.current = memos
+  }, [memos])
 
   useEffect(() => {
     selectedFolderPathRef.current = selectedFolderPath
@@ -984,6 +2112,25 @@ function App() {
   useEffect(() => {
     void bootstrap()
   }, [])
+
+  useEffect(
+    () =>
+      subscribeToConnectivity((online) => {
+        if (!online) {
+          showSyncNotice('offline', 'Offline mode. Changes will sync when your connection returns.')
+        }
+      }),
+    [],
+  )
+
+  useEffect(
+    () => () => {
+      if (syncNoticeTimeoutRef.current != null) {
+        window.clearTimeout(syncNoticeTimeoutRef.current)
+      }
+    },
+    [],
+  )
 
   useEffect(() => {
     const stored = window.localStorage.getItem('sweet.noteFolders')
@@ -1198,12 +2345,50 @@ function App() {
         accent: typeof parsed.accent === 'string' ? parsed.accent : DEFAULT_APPEARANCE.accent,
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily : DEFAULT_APPEARANCE.fontFamily,
         background: typeof parsed.background === 'string' ? parsed.background : DEFAULT_APPEARANCE.background,
-        gradientStart:
-          typeof parsed.gradientStart === 'string'
-            ? parsed.gradientStart
-            : DEFAULT_APPEARANCE.gradientStart,
-        gradientEnd:
-          typeof parsed.gradientEnd === 'string' ? parsed.gradientEnd : DEFAULT_APPEARANCE.gradientEnd,
+        backgroundImage:
+          typeof parsed.backgroundImage === 'string' ? parsed.backgroundImage : DEFAULT_APPEARANCE.backgroundImage,
+        disableGradients:
+          typeof parsed.disableGradients === 'boolean' ? parsed.disableGradients : DEFAULT_APPEARANCE.disableGradients,
+        gradientTopLeftEnabled:
+          typeof parsed.gradientTopLeftEnabled === 'boolean'
+            ? parsed.gradientTopLeftEnabled
+            : DEFAULT_APPEARANCE.gradientTopLeftEnabled,
+        gradientTopRightEnabled:
+          typeof parsed.gradientTopRightEnabled === 'boolean'
+            ? parsed.gradientTopRightEnabled
+            : DEFAULT_APPEARANCE.gradientTopRightEnabled,
+        gradientBottomLeftEnabled:
+          typeof parsed.gradientBottomLeftEnabled === 'boolean'
+            ? parsed.gradientBottomLeftEnabled
+            : DEFAULT_APPEARANCE.gradientBottomLeftEnabled,
+        gradientBottomRightEnabled:
+          typeof parsed.gradientBottomRightEnabled === 'boolean'
+            ? parsed.gradientBottomRightEnabled
+            : DEFAULT_APPEARANCE.gradientBottomRightEnabled,
+        gradientTopLeft:
+          typeof parsed.gradientTopLeft === 'string'
+            ? parsed.gradientTopLeft
+            : typeof (parsed as Partial<{ gradientStart: string }>).gradientStart === 'string'
+              ? (parsed as Partial<{ gradientStart: string }>).gradientStart!
+              : DEFAULT_APPEARANCE.gradientTopLeft,
+        gradientTopRight:
+          typeof parsed.gradientTopRight === 'string'
+            ? parsed.gradientTopRight
+            : typeof (parsed as Partial<{ gradientEnd: string }>).gradientEnd === 'string'
+              ? (parsed as Partial<{ gradientEnd: string }>).gradientEnd!
+              : DEFAULT_APPEARANCE.gradientTopRight,
+        gradientBottomLeft:
+          typeof parsed.gradientBottomLeft === 'string'
+            ? parsed.gradientBottomLeft
+            : typeof (parsed as Partial<{ gradientStart: string }>).gradientStart === 'string'
+              ? (parsed as Partial<{ gradientStart: string }>).gradientStart!
+              : DEFAULT_APPEARANCE.gradientBottomLeft,
+        gradientBottomRight:
+          typeof parsed.gradientBottomRight === 'string'
+            ? parsed.gradientBottomRight
+            : typeof (parsed as Partial<{ gradientEnd: string }>).gradientEnd === 'string'
+              ? (parsed as Partial<{ gradientEnd: string }>).gradientEnd!
+              : DEFAULT_APPEARANCE.gradientBottomRight,
         gradientStrength:
           typeof parsed.gradientStrength === 'number'
             ? parsed.gradientStrength
@@ -1485,7 +2670,7 @@ function App() {
       const currentDiagram = diagramsRef.current.find((entry) => entry.id === diagramId)
       if (!currentDiagram) return
       try {
-        const updated = await api.updateDiagram({ ...currentDiagram, xml })
+        const updated = await updateDiagramLocalFirst(currentDiagram, xml)
         setDiagrams((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)))
       } catch (error) {
         console.error('Failed to save standalone draw.io diagram', error)
@@ -1557,6 +2742,13 @@ function App() {
       setMessages([])
       return
     }
+    if (!getConnectivityState()) {
+      void loadCachedWorkspaceSnapshot().then((snapshot) => {
+        if (!snapshot) return
+        setMessages(snapshot.messages.filter((message) => message.room_id === selectedRoomId))
+      })
+      return
+    }
     void api.listMessages(selectedRoomId).then(setMessages)
   }, [selectedRoomId])
 
@@ -1598,6 +2790,11 @@ function App() {
           void api.listMessages(payload.room_id).then(setMessages)
         }
       }
+      if (payload.type === 'chat_message_reactions_updated') {
+        if (payload.room_id === selectedRoomIdRef.current) {
+          void api.listMessages(payload.room_id).then(setMessages)
+        }
+      }
       if (payload.type === 'note_patch') {
         const currentSelected = selectedNoteRef.current
         const editorHasLocalFocus =
@@ -1609,6 +2806,17 @@ function App() {
           currentSelected?.id === payload.note_id &&
           currentNoteIsDirty() &&
           editorHasLocalFocus
+        const persistedBeforeUpdate = persistedNoteStateRef.current[payload.note_id]
+        const localSelectedMarkdown =
+          selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
+        const mergedSelectedPatch =
+          selectedDirty && localSelectedMarkdown !== null
+            ? mergeConcurrentMarkdown(
+                persistedBeforeUpdate?.markdown ?? currentSelected?.markdown ?? '',
+                localSelectedMarkdown,
+                payload.markdown,
+              )
+            : null
 
         startTransition(() => {
           persistedNoteStateRef.current[payload.note_id] = {
@@ -1626,7 +2834,10 @@ function App() {
                     ...note,
                     title: payload.title,
                     folder: payload.folder,
-                    markdown: payload.markdown,
+                    markdown:
+                      selectedDirty && mergedSelectedPatch && note.id === payload.note_id
+                        ? mergedSelectedPatch.markdown
+                        : payload.markdown,
                     revision: payload.revision,
                   }
                 : note,
@@ -1638,14 +2849,40 @@ function App() {
           if (!selectedDirty) {
             setNoteDraft(payload.markdown)
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
+          } else if (mergedSelectedPatch) {
+            setNoteDraft(mergedSelectedPatch.markdown)
+            setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
+            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
+              noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedPatch.markdown)
+            }
+            setStatus(
+              mergedSelectedPatch.hadConflict
+                ? 'Concurrent note edits merged with conflict markers'
+                : 'Concurrent note edits merged',
+            )
           }
         }
       }
       if (payload.type === 'note_draft') {
         if (payload.client_id === clientIdRef.current) return
         const isSelectedNote = payload.note_id === selectedNoteIdRef.current
-        const editorHasLocalFocus = document.activeElement === noteEditorRef.current
+        const editorHasLocalFocus =
+          document.activeElement === noteEditorRef.current ||
+          (document.activeElement instanceof HTMLTextAreaElement &&
+            document.activeElement.classList.contains('note-raw-editor'))
         const selectedDirty = isSelectedNote && currentNoteIsDirty()
+        const currentSelected = selectedNoteRef.current
+        const persistedBeforeUpdate = persistedNoteStateRef.current[payload.note_id]
+        const localSelectedMarkdown =
+          isSelectedNote && selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
+        const mergedSelectedDraft =
+          isSelectedNote && selectedDirty && localSelectedMarkdown !== null
+            ? mergeConcurrentMarkdown(
+                persistedBeforeUpdate?.markdown ?? currentSelected?.markdown ?? '',
+                localSelectedMarkdown,
+                payload.markdown,
+              )
+            : null
 
         startTransition(() => {
           setNotes((current) =>
@@ -1655,7 +2892,10 @@ function App() {
                     ...note,
                     title: payload.title,
                     folder: payload.folder,
-                    markdown: payload.markdown,
+                    markdown:
+                      isSelectedNote && selectedDirty && mergedSelectedDraft && note.id === payload.note_id
+                        ? mergedSelectedDraft.markdown
+                        : payload.markdown,
                     revision: Math.max(note.revision, payload.revision),
                   }
                 : note,
@@ -1671,11 +2911,44 @@ function App() {
             if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
               noteEditorRef.current.innerHTML = markdownToEditableHtml(payload.markdown)
             }
+          } else if (mergedSelectedDraft) {
+            setNoteDraft(mergedSelectedDraft.markdown)
+            setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
+            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
+              noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedDraft.markdown)
+            }
+            setStatus(
+              mergedSelectedDraft.hadConflict
+                ? 'Concurrent note edits merged with conflict markers'
+                : 'Concurrent note edits merged',
+            )
           }
         }
       }
       if (payload.type === 'note_presence') {
         registerPresence(payload.note_id, payload.user)
+      }
+      if (payload.type === 'note_cursor') {
+        if (payload.client_id === clientIdRef.current) return
+        setNoteCursors((current) => {
+          const existing = current[payload.note_id] ?? []
+          if (payload.offset === null || payload.offset === undefined) {
+            const next = existing.filter((entry) => entry.clientId !== payload.client_id)
+            return { ...current, [payload.note_id]: next }
+          }
+          const seenAt = Date.now()
+          const next = [
+            {
+              clientId: payload.client_id,
+              user: payload.user,
+              offset: payload.offset,
+              seenAt,
+              color: colorForPresenceLabel(payload.user),
+            },
+            ...existing.filter((entry) => entry.clientId !== payload.client_id),
+          ].filter((entry) => seenAt - entry.seenAt < 12_000)
+          return { ...current, [payload.note_id]: next }
+        })
       }
       if (payload.type === 'signal' && payload.room_id === activeCallRoomIdRef.current) {
         void handleSignal(payload.from, payload.payload as SignalPayload)
@@ -1694,9 +2967,46 @@ function App() {
     const interval = window.setInterval(() => {
       broadcastPresence()
       prunePresence()
+      setNoteCursors((current) =>
+        Object.fromEntries(
+          Object.entries(current).map(([noteId, entries]) => [
+            noteId,
+            entries.filter((entry) => Date.now() - entry.seenAt < 12_000),
+          ]),
+        ),
+      )
     }, 10_000)
     return () => window.clearInterval(interval)
   }, [selectedNoteId, session?.user.id])
+
+  useEffect(() => {
+    if (route !== '/notes' || noteEditorMode !== 'rich' || !selectedNoteId) return
+
+    const publishCursor = () => {
+      const editor = noteEditorRef.current
+      if (!editor) return
+      const activeElement = document.activeElement as HTMLElement | null
+      const editorFocused = activeElement === editor || !!activeElement?.closest('.markdown-editor')
+      if (!editorFocused) {
+        broadcastNoteCursor(null)
+        return
+      }
+      broadcastNoteCursor(getCaretOffsetInContentEditable(editor))
+    }
+
+    const handleSelectionChange = () => publishCursor()
+    const handleBlur = () => window.setTimeout(() => publishCursor(), 0)
+
+    document.addEventListener('selectionchange', handleSelectionChange)
+    noteEditorRef.current?.addEventListener('blur', handleBlur, true)
+    publishCursor()
+
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange)
+      noteEditorRef.current?.removeEventListener('blur', handleBlur, true)
+      broadcastNoteCursor(null)
+    }
+  }, [route, noteEditorMode, selectedNoteId])
 
   useEffect(() => {
     const pending = memos.some((memo) => memo.status === 'pending' || memo.status === 'running')
@@ -1709,13 +3019,220 @@ function App() {
     return () => window.clearInterval(interval)
   }, [memos])
 
+  useEffect(() => {
+    if (authMode !== 'ready' || !session) return
+    void api
+      .googleCalendarConfig()
+      .then(setGoogleCalendarConfig)
+      .catch((error) => {
+        console.error(error)
+        setGoogleCalendarConfig(null)
+      })
+    void refreshCalendarConnections().catch((error) => {
+      console.error(error)
+    })
+    void refreshTasks().catch((error) => {
+      console.error(error)
+    })
+  }, [authMode, session?.token])
+
+  useEffect(() => {
+    if (route !== '/calendar' || !session) return
+    const params = new URLSearchParams(locationSearch)
+    const code = params.get('code')
+    const returnedState = params.get('state')
+    if (!code) return
+
+    const expectedState = window.sessionStorage.getItem('sweet.calendar.google.state')
+    if (expectedState && returnedState && expectedState !== returnedState) {
+      showActionNotice('Google calendar connection could not be verified.')
+      window.history.replaceState({}, '', '/calendar')
+      setLocationSearch('')
+      return
+    }
+
+    const redirectUrl = `${window.location.origin}/calendar`
+    window.sessionStorage.removeItem('sweet.calendar.google.state')
+    setCalendarLoading(true)
+    void api
+      .connectGoogleCalendar(code, redirectUrl)
+      .then(async (connection) => {
+        await refreshCalendarConnections({ preferredSelectedConnectionId: connection.id })
+        setSelectedCalendarConnectionId(connection.id)
+        showActionNotice(`Connected ${connection.title}`)
+      })
+      .catch((error) => {
+        console.error(error)
+        showActionNotice(error instanceof Error ? error.message : 'Could not connect Google calendar.')
+      })
+      .finally(() => {
+        setCalendarLoading(false)
+        window.history.replaceState({}, '', '/calendar')
+        setLocationSearch('')
+      })
+  }, [locationSearch, route, session?.token])
+
+  useEffect(() => {
+    if (authMode !== 'ready' || !session || !selectedCalendarConnectionId) {
+      setCalendarEvents([])
+      return
+    }
+    setCalendarLoading(true)
+    void refreshCalendarEvents(selectedCalendarConnectionId)
+      .catch((error) => {
+        console.error(error)
+        setCalendarEvents([])
+        showActionNotice(error instanceof Error ? error.message : 'Could not load calendar events.')
+      })
+      .finally(() => setCalendarLoading(false))
+  }, [authMode, selectedCalendarConnectionId, session?.token])
+
+  useEffect(() => {
+    if (session) return
+    setGoogleCalendarConfig(null)
+    setCalendarConnections([])
+    setSelectedCalendarConnectionId(null)
+    setCalendarEvents([])
+    setCalendarLoading(false)
+    setTasks([])
+    setSelectedTaskId(null)
+    setSyncCursors({ generated_at: new Date(0).toISOString() })
+  }, [session])
+
+  useEffect(() => {
+    if (authMode !== 'ready' || !session || !currentRolePolicy.manage_org_settings) {
+      setSystemUpdateStatus(null)
+      return
+    }
+    void api.getSystemUpdateStatus().then(setSystemUpdateStatus).catch((error) => {
+      console.error(error)
+    })
+  }, [authMode, session, currentRolePolicy.manage_org_settings])
+
+  useEffect(() => {
+    if (route !== '/admin' || !systemUpdateStatus?.update_in_progress || !currentRolePolicy.manage_org_settings) {
+      return
+    }
+    const interval = window.setInterval(() => {
+      void api.getSystemUpdateStatus().then(setSystemUpdateStatus).catch((error) => {
+        console.error(error)
+      })
+    }, 5000)
+    return () => window.clearInterval(interval)
+  }, [route, systemUpdateStatus?.update_in_progress, currentRolePolicy.manage_org_settings])
+
+  useEffect(() => {
+    if (authMode !== 'ready' || !session) return
+
+    let cancelled = false
+
+    async function runSyncCycle() {
+      if (!getConnectivityState()) {
+        return
+      }
+
+      try {
+        await flushPendingVoiceUploads()
+        await flushPendingManagedUploads()
+        const pushResponse = await flushQueuedOperations()
+        const nextConflicts = await refreshQueuedSyncConflicts()
+        const snapshot = await refreshWorkspace(pushResponse?.envelope.cursors ?? syncCursors, true)
+        if (cancelled) return
+        setSyncCursors(snapshot.cursors)
+        rememberPersistedNotes(snapshot.notes)
+        setNotes(snapshot.notes)
+        setFilesTree(snapshot.file_tree)
+        setDiagrams(snapshot.diagrams)
+        setMemos(snapshot.voice_memos)
+        setRooms(snapshot.rooms)
+        setTasks(snapshot.tasks)
+        setCalendarConnections(snapshot.calendar_connections)
+        if (selectedRoomId) {
+          setMessages(snapshot.messages.filter((message) => message.room_id === selectedRoomId))
+        }
+        setSelectedNoteId((current) => current && snapshot.notes.some((note) => note.id === current) ? current : (snapshot.notes[0]?.id ?? null))
+        setSelectedDiagramId((current) =>
+          current && snapshot.diagrams.some((diagram) => diagram.id === current) ? current : (snapshot.diagrams[0]?.id ?? null),
+        )
+        setSelectedVoiceMemoId((current) =>
+          current && snapshot.voice_memos.some((memo) => memo.id === current) ? current : (snapshot.voice_memos[0]?.id ?? null),
+        )
+        setSelectedRoomId((current) => current && snapshot.rooms.some((room) => room.id === current) ? current : (snapshot.rooms[0]?.id ?? null))
+        setSelectedCalendarConnectionId((current) =>
+          current && snapshot.calendar_connections.some((connection) => connection.id === current)
+            ? current
+            : (snapshot.calendar_connections[0]?.id ?? null),
+        )
+        setSelectedTaskId((current) =>
+          current && snapshot.tasks.some((task) => task.id === current) ? current : (snapshot.tasks[0]?.id ?? null),
+        )
+        setSyncNotice(null)
+        if (nextConflicts.length > 0) {
+          setSyncConflictsOpen(true)
+          showSyncNotice(
+            'error',
+            `${nextConflicts.length} offline change${nextConflicts.length === 1 ? '' : 's'} need review.`,
+            6500,
+          )
+        }
+      } catch (error) {
+        if (!cancelled) {
+          showSyncNotice('error', error instanceof Error ? error.message : 'Sync failed')
+        }
+      }
+    }
+
+    void runSyncCycle()
+    const interval = window.setInterval(() => {
+      void runSyncCycle()
+    }, 30000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [authMode, selectedRoomId, session, syncCursors])
+
+  useEffect(() => {
+    if (authMode !== 'ready' || !session) return
+    void persistWorkspaceSnapshot({
+      source: 'remote',
+      synced_at: new Date().toISOString(),
+      cursors: syncCursors,
+      notes,
+      diagrams,
+      voice_memos: memos,
+      rooms,
+      messages,
+      calendar_connections: calendarConnections,
+      calendar_events: calendarEvents,
+      tasks,
+      file_tree: filesTree,
+      resource_shares: [],
+      tombstones: [],
+    })
+  }, [
+    authMode,
+    calendarConnections,
+    calendarEvents,
+    diagrams,
+    filesTree,
+    memos,
+    messages,
+    notes,
+    rooms,
+    session,
+    syncCursors,
+    tasks,
+  ])
+
   useEffect(() => () => cleanupCallState(), [])
 
   function applyUpdatedUserProfile(profile: UserProfile) {
     setSession((current) => {
       if (!current) return current
       const next = { ...current, user: profile }
-      window.localStorage.setItem('sweet.session', JSON.stringify(next))
+      void sessionStore.set(next)
       return next
     })
     setAdminUsers((current) =>
@@ -1754,6 +3271,7 @@ function App() {
     uploadCurrentUserAvatar,
     updateCurrentUserCredentials,
     changeCurrentUserPassword,
+    logout,
   } = createAuthActions({
     adminSettings,
     session,
@@ -1776,12 +3294,15 @@ function App() {
     setSelectedDiagramId,
     setMemos,
     setSelectedVoiceMemoId,
+    setCalendarConnections,
+    setTasks,
     setRooms,
     setRoomUnreadCounts,
     setComsParticipants,
     setSelectedRoomId,
     setMessages,
     setRtcConfig,
+    setSyncCursors,
     rememberPersistedNotes,
     normalizeFolderPath,
     mergeFolderPaths,
@@ -1791,6 +3312,7 @@ function App() {
   const {
     resourceKeyForFilePath,
     resourceKeyForNote,
+    resourceKeyForCalendar,
     openShareDialog,
     setShareVisibility,
     toggleShareUser,
@@ -1844,7 +3366,172 @@ function App() {
     setActionNotice({ id: createClientId(), message })
   }
 
+  async function retrySyncConflict(id: string) {
+    await retryQueuedSyncConflict(id)
+    await refreshQueuedSyncConflicts()
+    showActionNotice('Queued conflict retry')
+  }
+
+  async function discardSyncConflict(id: string) {
+    await discardQueuedSyncConflict(id)
+    await refreshQueuedSyncConflicts()
+    showActionNotice('Discarded offline conflict')
+  }
+
+  async function retryAllSyncConflicts() {
+    const conflicts = await listQueuedSyncConflicts()
+    for (const conflict of conflicts) {
+      await retryQueuedSyncConflict(conflict.id)
+    }
+    await refreshQueuedSyncConflicts()
+    showActionNotice(`Queued ${conflicts.length} conflict${conflicts.length === 1 ? '' : 's'} for retry`)
+  }
+
+  async function discardAllSyncConflicts() {
+    const conflicts = await listQueuedSyncConflicts()
+    for (const conflict of conflicts) {
+      await discardQueuedSyncConflict(conflict.id)
+    }
+    await refreshQueuedSyncConflicts()
+    showActionNotice(`Discarded ${conflicts.length} offline conflict${conflicts.length === 1 ? '' : 's'}`)
+  }
+
+  async function openSyncConflictTarget(id: string) {
+    const conflict = syncConflicts.find((entry) => entry.id === id)
+    if (!conflict) {
+      return
+    }
+    const operation = conflict.queued_operation.operation
+    switch (operation.kind) {
+      case 'create_note':
+        setSelectedFolderPath(normalizeFolderPath(operation.folder || 'Inbox'))
+        await navigate('/notes')
+        return
+      case 'update_note':
+      case 'delete_note': {
+        const note = notesRef.current.find((entry) => entry.id === operation.id)
+        if (note) {
+          setSelectedFolderPath(normalizeFolderPath(note.folder || 'Inbox'))
+          setSelectedNoteId(note.id)
+        }
+        await navigate('/notes')
+        return
+      }
+      case 'create_diagram':
+        await navigate('/diagrams')
+        return
+      case 'update_diagram':
+        setSelectedDiagramId(operation.id)
+        await navigate('/diagrams')
+        return
+      case 'create_task':
+        setSelectedTaskId(operation.client_generated_id)
+        await navigate('/tasks')
+        return
+      case 'update_task':
+      case 'delete_task':
+        setSelectedTaskId(operation.id)
+        await navigate('/tasks')
+        return
+      case 'create_local_calendar':
+        await navigate('/calendar')
+        return
+      case 'rename_calendar':
+      case 'delete_calendar':
+        setSelectedCalendarConnectionId(operation.id)
+        await navigate('/calendar')
+        return
+      case 'create_calendar_event':
+      case 'update_calendar_event':
+      case 'delete_calendar_event':
+        setSelectedCalendarConnectionId(operation.connection_id)
+        await navigate('/calendar')
+        return
+      case 'create_message':
+      case 'toggle_message_reaction':
+        setSelectedRoomId(operation.room_id)
+        await navigate('/coms')
+        return
+      case 'create_managed_folder':
+        setSelectedFilePath(operation.path)
+        setActiveFilePath(operation.path)
+        await navigate('/files')
+        return
+      case 'move_managed_path':
+        setSelectedFilePath(operation.source_path)
+        setActiveFilePath(operation.source_path)
+        await navigate('/files')
+        return
+      case 'rename_managed_path':
+      case 'delete_managed_path':
+        setSelectedFilePath(operation.path)
+        setActiveFilePath(operation.path)
+        await navigate('/files')
+        return
+    }
+  }
+
+  async function deleteSelectedNote() {
+    const note = selectedNoteRef.current
+    if (!note) return
+
+    if (noteSavePromiseRef.current) {
+      await noteSavePromiseRef.current
+    }
+
+    if (noteDraftBroadcastTimeoutRef.current) {
+      window.clearTimeout(noteDraftBroadcastTimeoutRef.current)
+      noteDraftBroadcastTimeoutRef.current = null
+    }
+    if (noteLiveSaveTimeoutRef.current) {
+      window.clearTimeout(noteLiveSaveTimeoutRef.current)
+      noteLiveSaveTimeoutRef.current = null
+    }
+    pendingLiveSaveNoteIdRef.current = null
+
+    await deleteNoteLocalFirst(note)
+
+    locallyDirtyNoteIdsRef.current.delete(note.id)
+    clearNoteLocallyDirty(note.id)
+    setNotePresence((current) => {
+      const next = { ...current }
+      delete next[note.id]
+      return next
+    })
+    setNoteCursors((current) => {
+      const next = { ...current }
+      delete next[note.id]
+      return next
+    })
+
+    const nextNotes = getConnectivityState()
+      ? await api.listNotes()
+      : notesRef.current.filter((entry) => entry.id !== note.id)
+    rememberPersistedNotes(nextNotes)
+    setNotes(nextNotes)
+    setCustomFolders((current) =>
+      mergeFolderPaths(
+        current,
+        nextNotes.map((entry) => entry.folder || 'Inbox'),
+      ),
+    )
+
+    const nextSelected =
+      nextNotes.find((entry) => normalizeFolderPath(entry.folder || 'Inbox') === normalizeFolderPath(note.folder || 'Inbox')) ??
+      nextNotes[0] ??
+      null
+
+    setSelectedNoteId(nextSelected?.id ?? null)
+    setSelectedFolderPath(normalizeFolderPath(nextSelected?.folder || note.folder || 'Inbox'))
+    setNoteDraft(nextSelected?.markdown ?? '')
+    await refreshFilesTree()
+    showActionNotice(`Deleted note: ${note.title || 'Untitled note'}`)
+  }
+
   async function refreshFilesTree() {
+    if (!getConnectivityState()) {
+      return
+    }
     const nextTree = await api.listFilesTree()
     setFilesTree(nextTree)
   }
@@ -1887,7 +3574,7 @@ function App() {
       if (nextFolder === currentFolder) return
       const markdown = noteId === selectedNoteIdRef.current ? currentNoteMarkdown() : note.markdown
       const title = noteId === selectedNoteIdRef.current ? (selectedNoteRef.current?.title ?? note.title) : note.title
-      const updated = await api.updateNote({ ...note, title, folder: nextFolder, markdown })
+      const updated = await updateNoteLocalFirst({ ...note, title }, { folder: nextFolder, markdown })
       setNotes((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)))
       persistedNoteStateRef.current[updated.id] = {
         title: updated.title,
@@ -1932,7 +3619,7 @@ function App() {
         const updatedFolder = rebaseFolderPath(note.folder || 'Inbox')
         const markdown = note.id === selectedNoteIdRef.current ? currentNoteMarkdown() : note.markdown
         const title = note.id === selectedNoteIdRef.current ? (selectedNoteRef.current?.title ?? note.title) : note.title
-        return api.updateNote({ ...note, title, folder: updatedFolder, markdown })
+        return updateNoteLocalFirst({ ...note, title }, { folder: updatedFolder, markdown })
       }),
     )
 
@@ -1997,10 +3684,10 @@ function App() {
       const currentFolder = normalizeDiagramFolderPath(diagram.title)
       const nextFolder = normalizeDiagramFolderPath(`${destinationDir}/${diagramDisplayName(diagram.title)}`)
       if (nextFolder === currentFolder) return
-      const updated = await api.updateDiagram({
-        ...diagram,
-        title: `${destinationDir}/${diagramDisplayName(diagram.title)}`,
-      })
+      const updated = await updateDiagramLocalFirst(
+        { ...diagram, title: `${destinationDir}/${diagramDisplayName(diagram.title)}` },
+        diagram.xml,
+      )
       setDiagrams((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)))
       setCustomDiagramFolders((current) =>
         Array.from(new Set([...current, currentFolder, nextFolder])).sort((left, right) => left.localeCompare(right)),
@@ -2033,10 +3720,13 @@ function App() {
     })
     const updatedDiagrams = await Promise.all(
       affectedDiagrams.map((diagram) =>
-        api.updateDiagram({
-          ...diagram,
-          title: rebaseTitle(diagram.title),
-        }),
+        updateDiagramLocalFirst(
+          {
+            ...diagram,
+            title: rebaseTitle(diagram.title),
+          },
+          diagram.xml,
+        ),
       ),
     )
     const updatedById = new Map(updatedDiagrams.map((diagram) => [diagram.id, diagram]))
@@ -2207,46 +3897,49 @@ function App() {
   useEffect(() => {
     if (!activeSplitter) return
 
-    function onMouseMove(event: MouseEvent) {
+    function eventPoint(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        const touch = event.touches[0] ?? event.changedTouches[0]
+        return touch ? { clientX: touch.clientX, clientY: touch.clientY } : null
+      }
+      return { clientX: event.clientX, clientY: event.clientY }
+    }
+
+    function onPointerMove(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        event.preventDefault()
+      }
+      const point = eventPoint(event)
+      if (!point) return
       const root = fileManagerRef.current
       if (!root) return
       const rect = root.getBoundingClientRect()
       const splitterWidth = 8
       const stacked = window.matchMedia('(max-width: 760px)').matches
       const minLeft = 120
-      const minCenter = 280
       const minRight = 180
       const minTop = 120
-      const minMiddle = 180
       const minBottom = 160
 
       if (stacked) {
-        if (activeSplitter === 'left') {
-          const maxTop = rect.height - filePaneHeights.middle - minBottom - splitterWidth * 2
-          const nextTop = Math.min(maxTop, Math.max(minTop, event.clientY - rect.top))
-          setFilePaneHeights((current) => ({ ...current, top: Math.round(nextTop) }))
-          return
-        }
-
-        const topOffset = rect.top + filePaneHeights.top + splitterWidth
-        const maxMiddle = rect.height - filePaneHeights.top - minBottom - splitterWidth * 2
-        const nextMiddle = Math.min(maxMiddle, Math.max(minMiddle, event.clientY - topOffset))
-        setFilePaneHeights((current) => ({ ...current, middle: Math.round(nextMiddle) }))
+        const maxTop = rect.height - minBottom - splitterWidth
+        const nextTop = Math.min(maxTop, Math.max(minTop, point.clientY - rect.top))
+        setFilePaneHeights((current) => ({ ...current, top: Math.round(nextTop) }))
         return
       }
 
       if (activeSplitter === 'left') {
         const nextLeft = Math.min(
-          rect.width - minCenter - minRight - splitterWidth * 2,
-          Math.max(minLeft, event.clientX - rect.left),
+          rect.width - minRight - splitterWidth,
+          Math.max(minLeft, point.clientX - rect.left),
         )
         setFilePaneWidths((current) => ({ ...current, left: Math.round(nextLeft) }))
         return
       }
 
       const nextRight = Math.min(
-        rect.width - minCenter - minLeft - splitterWidth * 2,
-        Math.max(minRight, rect.right - event.clientX),
+        rect.width - minLeft - splitterWidth,
+        Math.max(minRight, rect.right - point.clientX),
       )
       filePreviewWidthRef.current = Math.round(nextRight)
       if (!filePreviewOpen) {
@@ -2255,15 +3948,19 @@ function App() {
       setFilePaneWidths((current) => ({ ...current, right: Math.round(nextRight) }))
     }
 
-    function onMouseUp() {
+    function onPointerUp() {
       setActiveSplitter(null)
     }
 
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mousemove', onPointerMove)
+    window.addEventListener('mouseup', onPointerUp)
+    window.addEventListener('touchmove', onPointerMove, { passive: false })
+    window.addEventListener('touchend', onPointerUp)
     return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onPointerMove)
+      window.removeEventListener('mouseup', onPointerUp)
+      window.removeEventListener('touchmove', onPointerMove)
+      window.removeEventListener('touchend', onPointerUp)
     }
   }, [activeSplitter, filePaneHeights.middle, filePaneHeights.top, filePreviewOpen])
 
@@ -2336,7 +4033,20 @@ function App() {
   useEffect(() => {
     if (!activeNoteSplitter || !noteDrawerOpen) return
 
-    function onMouseMove(event: MouseEvent) {
+    function eventPoint(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        const touch = event.touches[0] ?? event.changedTouches[0]
+        return touch ? { clientX: touch.clientX, clientY: touch.clientY } : null
+      }
+      return { clientX: event.clientX, clientY: event.clientY }
+    }
+
+    function onPointerMove(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        event.preventDefault()
+      }
+      const point = eventPoint(event)
+      if (!point) return
       const root = noteManagerRef.current
       if (!root) return
       const rect = root.getBoundingClientRect()
@@ -2347,7 +4057,7 @@ function App() {
         const minTop = 140
         const minBottom = 320
         const maxTop = rect.height - minBottom - splitterWidth
-        const nextTop = Math.min(maxTop, Math.max(minTop, event.clientY - rect.top))
+        const nextTop = Math.min(maxTop, Math.max(minTop, point.clientY - rect.top))
         setNotePaneSize((current) => ({ ...current, height: Math.round(nextTop) }))
         return
       }
@@ -2355,26 +4065,43 @@ function App() {
       const minLeft = 96
       const minRight = 360
       const maxLeft = rect.width - minRight - splitterWidth
-      const nextLeft = Math.min(maxLeft, Math.max(minLeft, event.clientX - rect.left))
+      const nextLeft = Math.min(maxLeft, Math.max(minLeft, point.clientX - rect.left))
       setNotePaneSize((current) => ({ ...current, width: Math.round(nextLeft) }))
     }
 
-    function onMouseUp() {
+    function onPointerUp() {
       setActiveNoteSplitter(false)
     }
 
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mousemove', onPointerMove)
+    window.addEventListener('mouseup', onPointerUp)
+    window.addEventListener('touchmove', onPointerMove, { passive: false })
+    window.addEventListener('touchend', onPointerUp)
     return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onPointerMove)
+      window.removeEventListener('mouseup', onPointerUp)
+      window.removeEventListener('touchmove', onPointerMove)
+      window.removeEventListener('touchend', onPointerUp)
     }
   }, [activeNoteSplitter, noteDrawerOpen])
 
   useEffect(() => {
     if (!activeDiagramSplitter || !diagramDrawerOpen) return
 
-    function onMouseMove(event: MouseEvent) {
+    function eventPoint(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        const touch = event.touches[0] ?? event.changedTouches[0]
+        return touch ? { clientX: touch.clientX, clientY: touch.clientY } : null
+      }
+      return { clientX: event.clientX, clientY: event.clientY }
+    }
+
+    function onPointerMove(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        event.preventDefault()
+      }
+      const point = eventPoint(event)
+      if (!point) return
       const root = diagramManagerRef.current
       if (!root) return
       const rect = root.getBoundingClientRect()
@@ -2385,7 +4112,7 @@ function App() {
         const minTop = 140
         const minBottom = 340
         const maxTop = rect.height - minBottom - splitterWidth
-        const nextTop = Math.min(maxTop, Math.max(minTop, event.clientY - rect.top))
+        const nextTop = Math.min(maxTop, Math.max(minTop, point.clientY - rect.top))
         setDiagramPaneSize((current) => ({ ...current, height: Math.round(nextTop) }))
         return
       }
@@ -2393,19 +4120,23 @@ function App() {
       const minLeft = 120
       const minRight = 420
       const maxLeft = rect.width - minRight - splitterWidth
-      const nextLeft = Math.min(maxLeft, Math.max(minLeft, event.clientX - rect.left))
+      const nextLeft = Math.min(maxLeft, Math.max(minLeft, point.clientX - rect.left))
       setDiagramPaneSize((current) => ({ ...current, width: Math.round(nextLeft) }))
     }
 
-    function onMouseUp() {
+    function onPointerUp() {
       setActiveDiagramSplitter(false)
     }
 
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mousemove', onPointerMove)
+    window.addEventListener('mouseup', onPointerUp)
+    window.addEventListener('touchmove', onPointerMove, { passive: false })
+    window.addEventListener('touchend', onPointerUp)
     return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onPointerMove)
+      window.removeEventListener('mouseup', onPointerUp)
+      window.removeEventListener('touchmove', onPointerMove)
+      window.removeEventListener('touchend', onPointerUp)
     }
   }, [activeDiagramSplitter, diagramDrawerOpen])
 
@@ -2421,7 +4152,20 @@ function App() {
   useEffect(() => {
     if (!activeVoiceSplitter || !voiceDrawerOpen) return
 
-    function onMouseMove(event: MouseEvent) {
+    function eventPoint(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        const touch = event.touches[0] ?? event.changedTouches[0]
+        return touch ? { clientX: touch.clientX, clientY: touch.clientY } : null
+      }
+      return { clientX: event.clientX, clientY: event.clientY }
+    }
+
+    function onPointerMove(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        event.preventDefault()
+      }
+      const point = eventPoint(event)
+      if (!point) return
       const root = document.querySelector('.voice-manager') as HTMLElement | null
       if (!root) return
       const rect = root.getBoundingClientRect()
@@ -2432,7 +4176,7 @@ function App() {
         const minTop = 140
         const minBottom = 320
         const maxTop = rect.height - minBottom - splitterWidth
-        const nextTop = Math.min(maxTop, Math.max(minTop, event.clientY - rect.top))
+        const nextTop = Math.min(maxTop, Math.max(minTop, point.clientY - rect.top))
         setVoicePaneSize((current) => ({ ...current, height: Math.round(nextTop) }))
         return
       }
@@ -2440,26 +4184,43 @@ function App() {
       const minLeft = 96
       const minRight = 360
       const maxLeft = rect.width - minRight - splitterWidth
-      const nextLeft = Math.min(maxLeft, Math.max(minLeft, event.clientX - rect.left))
+      const nextLeft = Math.min(maxLeft, Math.max(minLeft, point.clientX - rect.left))
       setVoicePaneSize((current) => ({ ...current, width: Math.round(nextLeft) }))
     }
 
-    function onMouseUp() {
+    function onPointerUp() {
       setActiveVoiceSplitter(false)
     }
 
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mousemove', onPointerMove)
+    window.addEventListener('mouseup', onPointerUp)
+    window.addEventListener('touchmove', onPointerMove, { passive: false })
+    window.addEventListener('touchend', onPointerUp)
     return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onPointerMove)
+      window.removeEventListener('mouseup', onPointerUp)
+      window.removeEventListener('touchmove', onPointerMove)
+      window.removeEventListener('touchend', onPointerUp)
     }
   }, [activeVoiceSplitter, voiceDrawerOpen])
 
   useEffect(() => {
     if (!activeChatSplitter || !chatDrawerOpen) return
 
-    function onMouseMove(event: MouseEvent) {
+    function eventPoint(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        const touch = event.touches[0] ?? event.changedTouches[0]
+        return touch ? { clientX: touch.clientX, clientY: touch.clientY } : null
+      }
+      return { clientX: event.clientX, clientY: event.clientY }
+    }
+
+    function onPointerMove(event: MouseEvent | TouchEvent) {
+      if ('touches' in event) {
+        event.preventDefault()
+      }
+      const point = eventPoint(event)
+      if (!point) return
       const root = chatManagerRef.current
       if (!root) return
       const rect = root.getBoundingClientRect()
@@ -2470,7 +4231,7 @@ function App() {
         const minTop = 140
         const minBottom = 320
         const maxTop = rect.height - minBottom - splitterWidth
-        const nextTop = Math.min(maxTop, Math.max(minTop, event.clientY - rect.top))
+        const nextTop = Math.min(maxTop, Math.max(minTop, point.clientY - rect.top))
         setChatPaneSize((current) => ({ ...current, height: Math.round(nextTop) }))
         return
       }
@@ -2478,19 +4239,23 @@ function App() {
       const minLeft = 96
       const minRight = 360
       const maxLeft = rect.width - minRight - splitterWidth
-      const nextLeft = Math.min(maxLeft, Math.max(minLeft, event.clientX - rect.left))
+      const nextLeft = Math.min(maxLeft, Math.max(minLeft, point.clientX - rect.left))
       setChatPaneSize((current) => ({ ...current, width: Math.round(nextLeft) }))
     }
 
-    function onMouseUp() {
+    function onPointerUp() {
       setActiveChatSplitter(false)
     }
 
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onMouseUp)
+    window.addEventListener('mousemove', onPointerMove)
+    window.addEventListener('mouseup', onPointerUp)
+    window.addEventListener('touchmove', onPointerMove, { passive: false })
+    window.addEventListener('touchend', onPointerUp)
     return () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onMouseUp)
+      window.removeEventListener('mousemove', onPointerMove)
+      window.removeEventListener('mouseup', onPointerUp)
+      window.removeEventListener('touchmove', onPointerMove)
+      window.removeEventListener('touchend', onPointerUp)
     }
   }, [activeChatSplitter, chatDrawerOpen])
 
@@ -2689,6 +4454,8 @@ function App() {
     : null
 
   const notesPageProps = {
+    noteFullscreen,
+    notesSectionRef,
     notePersistenceState,
     selectedNote,
     noteSaveState,
@@ -2707,6 +4474,7 @@ function App() {
     noteEditorMode,
     noteDraft,
     activePresence,
+    remoteCursors: activeRemoteNoteCursors,
     noteEditorRef,
     noteContextMenu,
     noteContextMenuRef,
@@ -2721,7 +4489,7 @@ function App() {
       if (!trimmed) return
       const nextPath = normalizeFolderPath(parentPath ? `${parentPath}/${trimmed}` : trimmed)
       void (async () => {
-        await api.createDriveFolder(managedPathForNoteFolder(nextPath))
+        await createManagedFolderLocalFirst(managedPathForNoteFolder(nextPath))
         setCustomFolders((current) => mergeFolderPaths(current, [nextPath]))
         setSelectedFolderPath(nextPath)
         await refreshFilesTree()
@@ -2732,7 +4500,7 @@ function App() {
       void (async () => {
         const markdown = await file.text()
         const leaf = file.name.replace(/\.[^.]+$/, '') || 'Imported note'
-        const note = await api.createNote(leaf, selectedFolderPath || 'Inbox', markdown)
+        const note = await createNoteLocalFirst(leaf, selectedFolderPath || 'Inbox', markdown)
         setNotes((current) => [note, ...current])
         setCustomFolders((current) => mergeFolderPaths(current, [note.folder || 'Inbox']))
         rememberPersistedNotes([note, ...notesRef.current])
@@ -2746,15 +4514,17 @@ function App() {
       const trimmed = name.trim()
       if (!trimmed || path === 'Inbox') return
       void (async () => {
-        const renamed = await api.renameFile(managedPathForNoteFolder(path), trimmed)
+        const renamed = await renameManagedPathLocalFirst(managedPathForNoteFolder(path), trimmed)
         const nextPath = renamed.path.replace(/^notes\//, '')
-        const nextNotes = await api.listNotes()
-        rememberPersistedNotes(nextNotes)
-        setNotes(nextNotes)
-        setCustomFolders((current) => rebaseFolderEntries(current, path, nextPath))
-        setSelectedFolderPath((current) =>
-          current === path || current.startsWith(`${path}/`) ? `${nextPath}${current.slice(path.length)}` : current,
-        )
+        if (getConnectivityState()) {
+          const nextNotes = await api.listNotes()
+          rememberPersistedNotes(nextNotes)
+          setNotes(nextNotes)
+          setCustomFolders((current) => rebaseFolderEntries(current, path, nextPath))
+          setSelectedFolderPath((current) =>
+            current === path || current.startsWith(`${path}/`) ? `${nextPath}${current.slice(path.length)}` : current,
+          )
+        }
         await refreshFilesTree()
         showActionNotice(`Renamed folder to ${trimmed}`)
       })()
@@ -2779,6 +4549,10 @@ function App() {
       window.requestAnimationFrame(() => scheduleNoteDraftBroadcast(currentNoteMarkdown()))
     },
     onRequestSave: () => void saveNote(),
+    onDeleteNote: () => void deleteSelectedNote(),
+    confirmNoteDelete: adminSettings?.confirm_file_delete ?? true,
+    onEnterFullscreen: () => setNoteFullscreen(true),
+    onExitFullscreen: () => setNoteFullscreen(false),
     onOpenShareDialog: (target: ShareTarget) => void openShareDialog(target),
     resourceKeyForNote,
     onSetNoteEditorMode: setNoteEditorMode,
@@ -2797,6 +4571,7 @@ function App() {
     onSetNoteContextMenu: setNoteContextMenu,
     onSetNoteContextSubmenu: setNoteContextSubmenu,
     onInsertNoteElement: insertNoteElement,
+    onRunToolbarAction: runToolbarAction,
     onAddTableRow: addTableRowFromContext,
     onAddTableColumn: addTableColumnFromContext,
   }
@@ -2918,7 +4693,7 @@ function App() {
       if (!trimmed) return
       const nextPath = normalizeDiagramDirectoryPath(`${parentPath}/${trimmed}`)
       void (async () => {
-        await api.createDriveFolder(managedPathForDiagramFolder(nextPath))
+        await createManagedFolderLocalFirst(managedPathForDiagramFolder(nextPath))
         setCustomDiagramFolders((current) =>
           Array.from(new Set([...current, nextPath])).sort((left, right) => left.localeCompare(right)),
         )
@@ -2931,7 +4706,7 @@ function App() {
         const xml = await file.text()
         const leaf = file.name.replace(/\.[^.]+$/, '') || 'Imported diagram'
         const title = normalizeDiagramTitlePath(`${selectedDiagram ? normalizeDiagramFolderPath(selectedDiagram.title) : 'Diagrams'}/${leaf}`)
-        const diagram = await api.createDiagram(title, xml)
+        const diagram = await createDiagramLocalFirst(title, xml)
         setDiagrams((current) => [diagram, ...current])
         setSelectedDiagramId(diagram.id)
         await refreshFilesTree()
@@ -2942,12 +4717,14 @@ function App() {
       const trimmed = name.trim()
       if (!trimmed || path === 'Diagrams') return
       void (async () => {
-        const renamed = await api.renameFile(managedPathForDiagramFolder(path), trimmed)
+        const renamed = await renameManagedPathLocalFirst(managedPathForDiagramFolder(path), trimmed)
         const nextPath = renamed.path.replace(/^diagrams\/?/, '')
         const normalizedNextPath = nextPath ? `Diagrams/${nextPath}` : 'Diagrams'
-        const nextDiagrams = await api.listDiagrams()
-        setDiagrams(nextDiagrams)
-        setCustomDiagramFolders((current) => rebaseFolderEntries(current, path, normalizedNextPath))
+        if (getConnectivityState()) {
+          const nextDiagrams = await api.listDiagrams()
+          setDiagrams(nextDiagrams)
+          setCustomDiagramFolders((current) => rebaseFolderEntries(current, path, normalizedNextPath))
+        }
         await refreshFilesTree()
         showActionNotice(`Renamed folder to ${trimmed}`)
       })()
@@ -3000,6 +4777,7 @@ function App() {
     activeVoiceSplitter,
     memos,
     selectedVoiceMemo,
+    selectedVoicePath,
     selectedVoiceMemoSizeBytes: selectedVoiceMemoNode?.size_bytes ?? null,
     currentVoiceFolderPath,
     recording,
@@ -3011,7 +4789,7 @@ function App() {
       if (!trimmed) return
       const nextPath = normalizeVoiceDirectoryPath(`${parentPath}/${trimmed}`)
       void (async () => {
-        await api.createDriveFolder(managedPathForVoiceFolder(nextPath))
+        await createManagedFolderLocalFirst(managedPathForVoiceFolder(nextPath))
         await refreshFilesTree()
         showActionNotice(`Created folder: ${trimmed}`)
       })()
@@ -3020,7 +4798,7 @@ function App() {
       const trimmed = name.trim()
       if (!trimmed || path === 'voice') return
       void (async () => {
-        await api.renameFile(managedPathForVoiceFolder(path), trimmed)
+        await renameManagedPathLocalFirst(managedPathForVoiceFolder(path), trimmed)
         await refreshFilesTree()
         showActionNotice(`Renamed folder to ${trimmed}`)
       })()
@@ -3037,11 +4815,232 @@ function App() {
     onOpenRecorder: openRecorderPanel,
     onUploadAudioFile: (file: File) => void uploadAudioFile(file),
     onPollTranscript: (memo: VoiceMemo) => void pollTranscript(memo),
-    onDeleteVoiceMemo: deleteVoiceMemo,
+    onRenameVoiceMemo: async (memoId: string, title: string) => {
+      const localMemo = memosRef.current.find((entry) => entry.id === memoId)
+      if (localMemo?.local_only) {
+        await renamePendingVoiceUploadLocalFirst(memoId, title)
+        return
+      }
+      const memo = await api.updateVoiceMemo(memoId, title)
+      setMemos((current) => current.map((entry) => (entry.id === memo.id ? memo : entry)))
+      await refreshFilesTree()
+      showActionNotice(`Renamed memo to ${title}`)
+    },
+    onDeleteVoiceMemo: async (memoId: string) => {
+      const localMemo = memosRef.current.find((entry) => entry.id === memoId)
+      if (localMemo?.local_only) {
+        await deletePendingVoiceUploadLocalFirst(memoId)
+        return
+      }
+      await deleteVoiceMemo(memoId)
+    },
     confirmVoiceDelete: adminSettings?.confirm_file_delete ?? true,
   }
 
+  const calendarPageProps = {
+    currentUserId: session?.user.id ?? null,
+    googleConfig: googleCalendarConfig,
+    connections: calendarConnections,
+    selectedConnectionId: selectedCalendarConnectionId,
+    events: calendarEvents,
+    loading: calendarLoading,
+    onSelectConnection: setSelectedCalendarConnectionId,
+    onStartGoogleConnect: () => {
+      if (!googleCalendarConfig?.enabled || !googleCalendarConfig.client_id) {
+        showActionNotice('Google Calendar is not configured by an admin.')
+        return
+      }
+      const state = globalThis.crypto?.randomUUID?.() || `calendar-${Date.now()}`
+      window.sessionStorage.setItem('sweet.calendar.google.state', state)
+      const params = new URLSearchParams({
+        client_id: googleCalendarConfig.client_id,
+        redirect_uri: googleCalendarConfig.redirect_url,
+        response_type: 'code',
+        access_type: 'offline',
+        prompt: 'consent',
+        scope: googleCalendarConfig.scope,
+        state,
+      })
+      window.location.assign(`https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`)
+    },
+    onCreateIcsConnection: async (title: string, url: string) => {
+      const connection = await api.createIcsCalendarConnection(title, url)
+      await refreshCalendarConnections({ preferredSelectedConnectionId: connection.id })
+      setSelectedCalendarConnectionId(connection.id)
+      showActionNotice(`Added ${connection.title}`)
+    },
+    onCreateLocalConnection: async (title: string) => {
+      const connection = await createLocalCalendarConnectionLocalFirst(title)
+      if (getConnectivityState()) {
+        await refreshCalendarConnections({ preferredSelectedConnectionId: connection.id })
+      } else {
+        setCalendarConnections((current) => [connection, ...current])
+      }
+      setSelectedCalendarConnectionId(connection.id)
+      showActionNotice(`Added ${connection.title}`)
+    },
+    onRenameConnection: async (id: string, title: string) => {
+      const connection = await renameCalendarConnectionLocalFirst(id, title)
+      setCalendarConnections((current) => current.map((entry) => (entry.id === connection.id ? connection : entry)))
+      showActionNotice(`Renamed ${connection.title}`)
+    },
+    onDeleteConnection: async (id: string) => {
+      await deleteCalendarConnectionLocalFirst(id)
+      if (getConnectivityState()) {
+        await refreshCalendarConnections({
+          preferredSelectedConnectionId:
+            selectedCalendarConnectionId === id ? null : selectedCalendarConnectionId,
+        })
+        if (selectedCalendarConnectionId === id) {
+          setCalendarEvents([])
+        }
+      } else {
+        setCalendarConnections((current) => current.filter((entry) => entry.id !== id))
+        setCalendarEvents((current) => current.filter((event) => event.connection_id !== id))
+        if (selectedCalendarConnectionId === id) {
+          setSelectedCalendarConnectionId(calendarConnections.find((entry) => entry.id !== id)?.id ?? null)
+        }
+      }
+      showActionNotice('Removed calendar')
+    },
+    onRefresh: async () => {
+      if (!selectedCalendarConnectionId) return
+      setCalendarLoading(true)
+      try {
+        await refreshCalendarEvents(selectedCalendarConnectionId)
+      } finally {
+        setCalendarLoading(false)
+      }
+    },
+    onCreateEvent: async (payload: {
+      title: string
+      description: string
+      location: string
+      start_at: string
+      end_at: string
+      all_day: boolean
+    }) => {
+      if (!selectedCalendarConnectionId) return
+      const created = await createCalendarEventLocalFirst(selectedCalendarConnectionId, payload)
+      if (getConnectivityState()) {
+        await refreshCalendarEvents(selectedCalendarConnectionId)
+      } else {
+        setCalendarEvents((current) => [...current, created].sort((left, right) => left.start_at.localeCompare(right.start_at)))
+      }
+      showActionNotice(`Added ${payload.title}`)
+    },
+    onUpdateEvent: async (
+      eventId: string,
+      payload: {
+        title: string
+        description: string
+        location: string
+        start_at: string
+        end_at: string
+        all_day: boolean
+      },
+    ) => {
+      if (!selectedCalendarConnectionId) return
+      const updated = await updateCalendarEventLocalFirst(selectedCalendarConnectionId, eventId, payload)
+      if (getConnectivityState()) {
+        await refreshCalendarEvents(selectedCalendarConnectionId)
+      } else {
+        setCalendarEvents((current) => current.map((event) => (event.id === updated.id ? updated : event)))
+      }
+      showActionNotice(`Updated ${payload.title}`)
+    },
+    onDeleteEvent: async (eventId: string) => {
+      if (!selectedCalendarConnectionId) return
+      await deleteCalendarEventLocalFirst(selectedCalendarConnectionId, eventId)
+      if (getConnectivityState()) {
+        await refreshCalendarEvents(selectedCalendarConnectionId)
+      } else {
+        setCalendarEvents((current) => current.filter((event) => event.id !== eventId))
+      }
+      showActionNotice('Deleted event')
+    },
+    onOpenShareDialog: (target: ShareTarget) => void openShareDialog(target),
+    resourceKeyForCalendar,
+  }
+
+  const tasksPageProps = {
+    tasks,
+    selectedTaskId,
+    calendars: calendarConnections,
+    onSelectTask: (id: string) => setSelectedTaskId(id),
+    onCreateTask: async (payload: {
+      title: string
+      description: string
+      start_at?: string | null
+      end_at?: string | null
+      all_day: boolean
+      calendar_connection_id?: string | null
+    }) => {
+      const created = await createTaskLocalFirst(payload)
+      setSelectedTaskId(created.id)
+      if (getConnectivityState()) {
+        await refreshTasks({ preferredSelectedTaskId: created.id })
+        if (payload.calendar_connection_id && payload.calendar_connection_id === selectedCalendarConnectionId) {
+          await refreshCalendarEvents(payload.calendar_connection_id)
+        }
+      } else {
+        setTasks((current) => [created, ...current])
+      }
+      showActionNotice(`Added ${payload.title}`)
+    },
+    onUpdateTask: async (
+      id: string,
+      payload: {
+        title: string
+        description: string
+        status: 'open' | 'completed'
+        start_at?: string | null
+        end_at?: string | null
+        all_day: boolean
+        calendar_connection_id?: string | null
+      },
+    ) => {
+      const previous = tasks.find((task) => task.id === id)
+      const updated = await updateTaskLocalFirst(id, payload)
+      setSelectedTaskId(updated.id)
+      if (getConnectivityState()) {
+        await refreshTasks({ preferredSelectedTaskId: updated.id })
+      } else {
+        setTasks((current) => current.map((task) => (task.id === updated.id ? updated : task)))
+      }
+      const refreshIds = new Set<string>()
+      if (previous?.calendar_connection_id) refreshIds.add(previous.calendar_connection_id)
+      if (payload.calendar_connection_id) refreshIds.add(payload.calendar_connection_id)
+      if (selectedCalendarConnectionId && refreshIds.has(selectedCalendarConnectionId)) {
+        if (getConnectivityState()) {
+          await refreshCalendarEvents(selectedCalendarConnectionId)
+        } else {
+          setCalendarEvents((current) => current)
+        }
+      }
+    },
+    onDeleteTask: async (id: string) => {
+      const previous = tasks.find((task) => task.id === id)
+      await deleteTaskLocalFirst(id)
+      if (getConnectivityState()) {
+        const remaining = tasks.filter((task) => task.id !== id)
+        const fallbackSelection = remaining.find((task) => task.id === selectedTaskId)?.id ?? remaining[0]?.id ?? null
+        await refreshTasks({ preferredSelectedTaskId: fallbackSelection })
+      } else {
+        setTasks((current) => current.filter((task) => task.id !== id))
+        setSelectedTaskId((current) => (current === id ? tasks.find((task) => task.id !== id)?.id ?? null : current))
+      }
+      if (selectedCalendarConnectionId && previous?.calendar_connection_id === selectedCalendarConnectionId) {
+        if (getConnectivityState()) {
+          await refreshCalendarEvents(selectedCalendarConnectionId)
+        }
+      }
+      showActionNotice('Deleted task')
+    },
+  }
+
   const chatPageProps = {
+    chatManagerRef,
     chatDrawerOpen,
     chatPaneSize,
     activeChatSplitter,
@@ -3073,6 +5072,7 @@ function App() {
     onStartChatResize: () => setActiveChatSplitter(true),
     onToggleChatDrawer: () => setChatDrawerOpen((current) => !current),
     onSendMessage: sendMessage,
+    onToggleMessageReaction: toggleMessageReaction,
   }
 
   const settingsPageProps = {
@@ -3080,17 +5080,15 @@ function App() {
     shortcuts,
     orderedNavItems,
     session,
-    status,
-    oidc,
-    rtcConfig,
-    clientId: clientIdRef.current,
     canCustomizeAppearance: !adminSettings?.enforce_org_appearance && currentRolePolicy.customize_appearance,
+    allowDirectCredentialChanges: adminSettings?.allow_user_credential_changes ?? true,
     onSetAppearance: setAppearance,
     onSetShortcuts: setShortcuts,
     onSetNavOrder: setNavOrder,
     onUploadAvatar: uploadCurrentUserAvatar,
     onUpdateCredentials: updateCurrentUserCredentials,
     onChangePassword: changeCurrentUserPassword,
+    onLogout: logout,
   }
 
   const adminPageProps = {
@@ -3104,13 +5102,24 @@ function App() {
     currentAccent: appearance.accent,
     currentPageGutter: appearance.pageGutter,
     currentRadius: appearance.radius,
+    oidcConfig: oidc,
+    systemUpdateStatus,
     onSave: (settings: AdminSettings) => void saveAdminSettings(settings),
+    onRefreshSystemUpdateStatus: () => void refreshSystemUpdateStatus(),
+    onRunSystemUpdate: () => void runSystemUpdate(),
     onApplyCurrentAppearance: () => {
       if (!adminSettings) return
       void saveAdminSettings({
         ...adminSettings,
         org_font_family: appearance.fontFamily,
         org_accent: appearance.accent,
+        org_background: appearance.background,
+        org_disable_gradients: appearance.disableGradients,
+        org_gradient_top_left: appearance.gradientTopLeft,
+        org_gradient_top_right: appearance.gradientTopRight,
+        org_gradient_bottom_left: appearance.gradientBottomLeft,
+        org_gradient_bottom_right: appearance.gradientBottomRight,
+        org_gradient_strength: appearance.gradientStrength,
         org_page_gutter: appearance.pageGutter,
         org_radius: appearance.radius,
       })
@@ -3153,8 +5162,19 @@ function App() {
           shortcutsContent={<ShortcutsPopover shortcuts={shortcuts} />}
         />
       ) : null}
+      {syncNotice ? <ConnectionBanner tone={syncNotice.tone} message={syncNotice.message} /> : null}
 
       {actionNotice ? <ActionNotice id={actionNotice.id} message={actionNotice.message} /> : null}
+      <SyncConflictsPanel
+        conflicts={syncConflicts}
+        open={syncConflictsOpen}
+        onToggleOpen={() => setSyncConflictsOpen((current) => !current)}
+        onRetry={(id) => void retrySyncConflict(id)}
+        onDiscard={(id) => void discardSyncConflict(id)}
+        onRetryAll={() => void retryAllSyncConflicts()}
+        onDiscardAll={() => void discardAllSyncConflicts()}
+        onOpenTarget={(id) => void openSyncConflictTarget(id)}
+      />
       <ShareModal
         shareTarget={shareTarget}
         shareDraft={shareDraft}
@@ -3196,6 +5216,8 @@ function App() {
         filesPageProps={filesPageProps}
         diagramsPageProps={diagramsPageProps}
         voicePageProps={voicePageProps}
+        calendarPageProps={calendarPageProps}
+        tasksPageProps={tasksPageProps}
         chatPageProps={chatPageProps}
         settingsPageProps={settingsPageProps}
         adminPageProps={adminPageProps}

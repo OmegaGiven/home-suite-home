@@ -1,6 +1,7 @@
 import type { ChangeEvent, Dispatch, SetStateAction } from 'react'
 import { api } from './api'
 import { canConvertManagedPath, canDeleteManagedPath, canRenameManagedPath, convertibleTextExtension, normalizeManagedDeletePaths } from './file-browser'
+import { getConnectivityState } from './platform'
 import type { Diagram, FileNode, Note, VoiceMemo } from './types'
 
 type CreateFileMutationActionsContext = {
@@ -32,6 +33,11 @@ type CreateFileMutationActionsContext = {
   setSelectedNoteId: Dispatch<SetStateAction<string | null>>
   setDiagrams: Dispatch<SetStateAction<Diagram[]>>
   setSelectedDiagramId: Dispatch<SetStateAction<string | null>>
+  createManagedFolderRecord: (path: string) => Promise<FileNode>
+  moveManagedPathRecord: (sourcePath: string, destinationDir: string) => Promise<FileNode>
+  renameManagedPathRecord: (path: string, newName: string) => Promise<FileNode>
+  deleteManagedPathRecord: (path: string) => Promise<void>
+  uploadManagedFileRecord: (path: string, file: Blob, filename: string) => Promise<FileNode>
   refreshFilesTree: () => Promise<void>
   rememberPersistedNotes: (nextNotes: Note[]) => void
   mergeFolderPaths: (current: string[], incoming: string[]) => string[]
@@ -43,6 +49,15 @@ type CreateFileMutationActionsContext = {
 }
 
 export function createFileMutationActions(context: CreateFileMutationActionsContext) {
+  function managedRootForPath(path: string | null | undefined) {
+    if (!path) return null
+    if (path === 'drive' || path.startsWith('drive/')) return 'drive'
+    if (path === 'notes' || path.startsWith('notes/')) return 'notes'
+    if (path === 'diagrams' || path.startsWith('diagrams/')) return 'diagrams'
+    if (path === 'voice' || path.startsWith('voice/')) return 'voice'
+    return null
+  }
+
   async function deleteVoiceMemo(memoId: string) {
     const memo = context.memos.find((entry) => entry.id === memoId)
     await api.deleteVoiceMemo(memoId)
@@ -61,15 +76,18 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
   async function createDriveFolderFromSelection() {
     const cleaned = context.newDriveFolderName.trim()
     if (!cleaned) return
-    const basePath =
-      context.currentDirectoryPath === 'drive' || context.currentDirectoryPath.startsWith('drive/')
+    const selectedDirectoryPath =
+      context.selectedFileNode?.kind === 'directory' ? context.selectedFileNode.path : context.currentDirectoryPath
+    const basePath = selectedDirectoryPath && managedRootForPath(selectedDirectoryPath)
+      ? selectedDirectoryPath
+      : managedRootForPath(context.currentDirectoryPath)
         ? context.currentDirectoryPath
         : 'drive'
     const nextPath = basePath === 'drive' ? cleaned : `${basePath}/${cleaned}`
-    await api.createDriveFolder(nextPath)
+    await context.createManagedFolderRecord(nextPath)
     context.setNewDriveFolderName('')
     context.setCreatingDriveFolder(false)
-    context.setSelectedFilePath(nextPath.startsWith('drive') ? nextPath : `drive/${nextPath}`)
+    context.setSelectedFilePath(nextPath)
     await context.refreshFilesTree()
   }
 
@@ -80,9 +98,8 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
       context.selectedFileNode?.kind === 'directory' && context.selectedFileNode.path.startsWith('drive')
         ? context.selectedFileNode.path
         : 'drive'
-    await api.uploadFile(basePath, file, file.name)
+    await context.uploadManagedFileRecord(basePath, file, file.name)
     event.target.value = ''
-    await context.refreshFilesTree()
   }
 
   async function moveDriveItem(sourcePath: string, destinationDir: string) {
@@ -108,31 +125,37 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
     if (sourcePath === destinationDir || destinationDir.startsWith(`${sourcePath}/`)) {
       return
     }
-    const moved = await api.moveFile(sourcePath, destinationDir)
+    const moved = await context.moveManagedPathRecord(sourcePath, destinationDir)
     if (context.selectedFilePath === sourcePath) {
       context.setSelectedFilePath(moved.path)
     } else if (context.selectedFilePath.startsWith(`${sourcePath}/`)) {
       context.setSelectedFilePath(`${moved.path}${context.selectedFilePath.slice(sourcePath.length)}`)
     }
     if (sameArea === 'notes') {
-      const nextNotes = await api.listNotes()
-      context.rememberPersistedNotes(nextNotes)
-      context.setNotes(nextNotes)
-      context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
+      if (getConnectivityState()) {
+        const nextNotes = await api.listNotes()
+        context.rememberPersistedNotes(nextNotes)
+        context.setNotes(nextNotes)
+        context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
+      }
     }
     if (sameArea === 'diagrams') {
-      const nextDiagrams = await api.listDiagrams()
-      context.setDiagrams(nextDiagrams)
-      context.setSelectedDiagramId((current) =>
-        current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
-      )
+      if (getConnectivityState()) {
+        const nextDiagrams = await api.listDiagrams()
+        context.setDiagrams(nextDiagrams)
+        context.setSelectedDiagramId((current) =>
+          current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
+        )
+      }
     }
     if (sameArea === 'voice') {
-      const nextMemos = await api.listVoiceMemos()
-      context.setMemos(nextMemos)
-      context.setSelectedVoiceMemoId((current) =>
-        current && nextMemos.some((memo) => memo.id === current) ? current : null,
-      )
+      if (getConnectivityState()) {
+        const nextMemos = await api.listVoiceMemos()
+        context.setMemos(nextMemos)
+        context.setSelectedVoiceMemoId((current) =>
+          current && nextMemos.some((memo) => memo.id === current) ? current : null,
+        )
+      }
     }
     await context.refreshFilesTree()
   }
@@ -209,7 +232,7 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
   async function renameManagedPath(path: string, newName: string) {
     const cleaned = newName.trim()
     if (!cleaned) return
-    const renamed = await api.renameFile(path, cleaned)
+    const renamed = await context.renameManagedPathRecord(path, cleaned)
     if (context.selectedFilePath === path) {
       context.setSelectedFilePath(renamed.path)
     } else if (context.selectedFilePath.startsWith(`${path}/`)) {
@@ -228,23 +251,29 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
       ),
     )
     if (path.startsWith('notes/')) {
-      const nextNotes = await api.listNotes()
-      context.rememberPersistedNotes(nextNotes)
-      context.setNotes(nextNotes)
-      context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
-      context.setSelectedNoteId((current) => (current && nextNotes.some((note) => note.id === current) ? current : null))
+      if (getConnectivityState()) {
+        const nextNotes = await api.listNotes()
+        context.rememberPersistedNotes(nextNotes)
+        context.setNotes(nextNotes)
+        context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
+        context.setSelectedNoteId((current) => (current && nextNotes.some((note) => note.id === current) ? current : null))
+      }
     }
     if (path.startsWith('voice/')) {
-      const nextMemos = await api.listVoiceMemos()
-      context.setMemos(nextMemos)
-      context.setSelectedVoiceMemoId((current) => (current && nextMemos.some((memo) => memo.id === current) ? current : null))
+      if (getConnectivityState()) {
+        const nextMemos = await api.listVoiceMemos()
+        context.setMemos(nextMemos)
+        context.setSelectedVoiceMemoId((current) => (current && nextMemos.some((memo) => memo.id === current) ? current : null))
+      }
     }
     if (path.startsWith('diagrams/')) {
-      const nextDiagrams = await api.listDiagrams()
-      context.setDiagrams(nextDiagrams)
-      context.setSelectedDiagramId((current) =>
-        current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
-      )
+      if (getConnectivityState()) {
+        const nextDiagrams = await api.listDiagrams()
+        context.setDiagrams(nextDiagrams)
+        context.setSelectedDiagramId((current) =>
+          current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
+        )
+      }
     }
     await context.refreshFilesTree()
     context.setRenamingFilePath(null)
@@ -256,7 +285,7 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
     const deletable = normalizedDeletePaths(paths).sort((left, right) => right.length - left.length)
     if (deletable.length === 0) return
     for (const path of deletable) {
-      await api.deleteFile(path)
+      await context.deleteManagedPathRecord(path)
     }
 
     const affectedRoots = new Set(
@@ -283,20 +312,24 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
       current.filter((path) => !deletable.some((deleted) => path === deleted || path.startsWith(`${deleted}/`))),
     )
     if (affectedRoots.has('notes')) {
-      const nextNotes = await api.listNotes()
-      context.rememberPersistedNotes(nextNotes)
-      context.setNotes(nextNotes)
-      context.setSelectedNoteId((current) =>
-        current && nextNotes.some((note) => note.id === current) ? current : null,
-      )
-      context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
+      if (getConnectivityState()) {
+        const nextNotes = await api.listNotes()
+        context.rememberPersistedNotes(nextNotes)
+        context.setNotes(nextNotes)
+        context.setSelectedNoteId((current) =>
+          current && nextNotes.some((note) => note.id === current) ? current : null,
+        )
+        context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
+      }
     }
     if (affectedRoots.has('diagrams')) {
-      const nextDiagrams = await api.listDiagrams()
-      context.setDiagrams(nextDiagrams)
-      context.setSelectedDiagramId((current) =>
-        current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
-      )
+      if (getConnectivityState()) {
+        const nextDiagrams = await api.listDiagrams()
+        context.setDiagrams(nextDiagrams)
+        context.setSelectedDiagramId((current) =>
+          current && nextDiagrams.some((diagram) => diagram.id === current) ? current : null,
+        )
+      }
     }
     await context.refreshFilesTree()
     context.setPendingDeletePaths([])

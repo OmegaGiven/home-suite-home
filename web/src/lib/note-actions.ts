@@ -41,6 +41,12 @@ type CreateNoteActionsContext = {
   setSelectedFolderPath: Dispatch<SetStateAction<string>>
   setStatus: Dispatch<SetStateAction<string>>
   setRoute: Dispatch<SetStateAction<RoutePath>>
+  createNoteRecord: (title: string, folder?: string, markdown?: string) => Promise<Note>
+  updateNoteRecord: (
+    note: Note,
+    payload: { markdown: string; folder: string },
+    options?: { keepalive?: boolean },
+  ) => Promise<Note>
   refreshFilesTree: () => Promise<void>
   showActionNotice: (message: string) => void
   normalizeFolderPath: (path: string) => string
@@ -144,6 +150,24 @@ export function createNoteActions(context: CreateNoteActionsContext) {
     registerPresence(context.selectedNoteIdRef.current, context.notePresenceLabel)
   }
 
+  function broadcastNoteCursor(offset: number | null) {
+    if (
+      !context.selectedNoteIdRef.current ||
+      !context.socketRef.current ||
+      context.socketRef.current.readyState !== WebSocket.OPEN
+    ) {
+      return
+    }
+    const event: RealtimeEvent = {
+      type: 'note_cursor',
+      note_id: context.selectedNoteIdRef.current,
+      user: context.notePresenceLabel,
+      client_id: context.clientIdRef.current,
+      offset,
+    }
+    context.socketRef.current.send(JSON.stringify(event))
+  }
+
   function broadcastNoteDraft(markdown: string) {
     const note = context.selectedNoteRef.current
     if (!note || !context.socketRef.current || context.socketRef.current.readyState !== WebSocket.OPEN) {
@@ -207,7 +231,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
   }
 
   async function createNote() {
-    const note = await api.createNote(context.defaultNoteTitle(), context.selectedFolderPath || 'Inbox')
+    const note = await context.createNoteRecord(context.defaultNoteTitle(), context.selectedFolderPath || 'Inbox')
     context.setNotes((current) => [note, ...current])
     context.setSelectedNoteId(note.id)
     context.setSelectedFolderPath(context.normalizeFolderPath(note.folder))
@@ -252,12 +276,13 @@ export function createNoteActions(context: CreateNoteActionsContext) {
     const task = (async () => {
       context.setNoteSaveState('saving')
       try {
-        const updated = await api.updateNote(
+        const updated = await context.updateNoteRecord(
           {
             ...targetNote,
             markdown,
             folder: targetFolder,
           },
+          { markdown, folder: targetFolder },
           { keepalive: options?.keepalive },
         )
         context.setNotes((current) => current.map((note) => (note.id === updated.id ? updated : note)))
@@ -384,7 +409,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
     }
 
     const markdown = await api.fileText(node.path)
-    const imported = await api.createNote(
+    const imported = await context.createNoteRecord(
       context.noteTitleFromPath(node.path),
       context.importedFolderForPath(node.path),
       markdown,
@@ -406,6 +431,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
     registerPresence,
     prunePresence,
     broadcastPresence,
+    broadcastNoteCursor,
     scheduleNoteDraftBroadcast,
     flushLiveSaveForNote,
     scheduleLiveNoteSave,

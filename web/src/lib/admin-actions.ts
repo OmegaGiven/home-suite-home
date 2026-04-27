@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from './api'
-import type { AdminSettings, Message, SessionResponse, UserProfile } from './types'
+import type { AdminSettings, Message, SessionResponse, SystemUpdateStatus, UserProfile } from './types'
 
 type AdminUserSummary = import('./types').AdminUserSummary
 type AdminStorageOverview = import('./types').AdminStorageOverview
@@ -12,6 +12,7 @@ type CreateAdminActionsContext = {
   session: SessionResponse | null
   setAdminSettings: Dispatch<SetStateAction<AdminSettings | null>>
   setAdminStorageOverview: Dispatch<SetStateAction<AdminStorageOverview | null>>
+  setSystemUpdateStatus: Dispatch<SetStateAction<SystemUpdateStatus | null>>
   setAdminUsers: Dispatch<SetStateAction<AdminUserSummary[]>>
   setSetupStatus: Dispatch<SetStateAction<SetupStatusResponse | null>>
   setComsParticipants: Dispatch<SetStateAction<UserProfile[]>>
@@ -112,11 +113,26 @@ export function createAdminActions(context: CreateAdminActionsContext) {
     )
   }
 
+  async function refreshSystemUpdateStatus() {
+    const status = await api.getSystemUpdateStatus()
+    context.setSystemUpdateStatus(status)
+    return status
+  }
+
+  async function runSystemUpdate() {
+    const status = await api.triggerSystemUpdate()
+    context.setSystemUpdateStatus(status)
+    context.showActionNotice('System update started')
+    return status
+  }
+
   return {
     saveAdminSettings,
     createAdminUser,
     resetAdminUserPassword,
     updateAdminUserAccess,
     resolveAdminUserCredentialRequest,
+    refreshSystemUpdateStatus,
+    runSystemUpdate,
   }
 }

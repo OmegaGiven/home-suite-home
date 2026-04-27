@@ -3,10 +3,12 @@ import type { CSSProperties } from 'react'
 export const demoMarkdown = `# Sweet Notes\n\n- Collaborative markdown editing\n- Live preview\n- Websocket note sync`
 
 export const NAV_ITEMS = [
-  { path: '/notes', label: 'Notes' },
   { path: '/files', label: 'Files' },
+  { path: '/notes', label: 'Notes' },
   { path: '/diagrams', label: 'Diagrams' },
   { path: '/voice', label: 'Voice' },
+  { path: '/calendar', label: 'Calendar' },
+  { path: '/tasks', label: 'Tasks' },
   { path: '/coms', label: 'Coms' },
   { path: '/admin', label: 'Admin' },
 ] as const
@@ -28,8 +30,16 @@ export type AppearanceSettings = {
   accent: string
   fontFamily: string
   background: string
-  gradientStart: string
-  gradientEnd: string
+  backgroundImage: string
+  disableGradients: boolean
+  gradientTopLeftEnabled: boolean
+  gradientTopRightEnabled: boolean
+  gradientBottomLeftEnabled: boolean
+  gradientBottomRightEnabled: boolean
+  gradientTopLeft: string
+  gradientTopRight: string
+  gradientBottomLeft: string
+  gradientBottomRight: string
   gradientStrength: number
 }
 
@@ -77,8 +87,16 @@ export const DEFAULT_APPEARANCE: AppearanceSettings = {
   accent: '#41b883',
   fontFamily: '"IBM Plex Sans", "Segoe UI", sans-serif',
   background: '#0d1520',
-  gradientStart: '#142235',
-  gradientEnd: '#0b3a2d',
+  backgroundImage: '',
+  disableGradients: false,
+  gradientTopLeftEnabled: true,
+  gradientTopRightEnabled: true,
+  gradientBottomLeftEnabled: true,
+  gradientBottomRightEnabled: true,
+  gradientTopLeft: '#142235',
+  gradientTopRight: '#0b3a2d',
+  gradientBottomLeft: '#24163a',
+  gradientBottomRight: '#123046',
   gradientStrength: 36,
 }
 
@@ -111,6 +129,8 @@ export const DEFAULT_NAV_ORDER: NavItemPath[] = [
   '/notes',
   '/diagrams',
   '/voice',
+  '/calendar',
+  '/tasks',
   '/coms',
   '/admin',
 ]
@@ -130,6 +150,26 @@ export function normalizeRoute(pathname: string): RoutePath {
 
 export function buildAppearanceStyle(appearance: AppearanceSettings): CSSProperties {
   const gradientStrength = appearance.gradientStrength / 100
+  const topCornerReach = 42 + gradientStrength * 58
+  const bottomCornerReach = 46 + gradientStrength * 54
+  const customGradientLayers = appearance.disableGradients
+    ? []
+    : [
+        appearance.gradientTopLeftEnabled
+          ? `radial-gradient(circle at top left, ${hexToRgba(appearance.gradientTopLeft, 0.16 + gradientStrength * 0.34)}, transparent ${topCornerReach}%)`
+          : null,
+        appearance.gradientTopRightEnabled
+          ? `radial-gradient(circle at top right, ${hexToRgba(appearance.gradientTopRight, 0.16 + gradientStrength * 0.34)}, transparent ${topCornerReach}%)`
+          : null,
+        appearance.gradientBottomLeftEnabled
+          ? `radial-gradient(circle at bottom left, ${hexToRgba(appearance.gradientBottomLeft, 0.12 + gradientStrength * 0.28)}, transparent ${bottomCornerReach}%)`
+          : null,
+        appearance.gradientBottomRightEnabled
+          ? `radial-gradient(circle at bottom right, ${hexToRgba(appearance.gradientBottomRight, 0.12 + gradientStrength * 0.28)}, transparent ${bottomCornerReach}%)`
+          : null,
+      ].filter((layer): layer is string => Boolean(layer))
+  const customGradient = customGradientLayers.length > 0 ? customGradientLayers.join(', ') : 'none'
+  const backgroundPhoto = appearance.backgroundImage ? `url("${appearance.backgroundImage.replace(/"/g, '\\"')}")` : 'none'
   const palette =
     appearance.mode === 'light'
       ? {
@@ -156,7 +196,7 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
             border: 'rgba(255, 255, 255, 0.1)',
             navBg: hexToRgba(mixHex(appearance.background, '#000000', 0.14), 0.95),
             shadow: '0 24px 60px rgba(0, 0, 0, 0.26)',
-            bgGradient: `radial-gradient(circle at top left, ${hexToRgba(appearance.gradientStart, 0.18 + gradientStrength * 0.42)}, transparent 42%), radial-gradient(circle at top right, ${hexToRgba(appearance.gradientEnd, 0.14 + gradientStrength * 0.38)}, transparent 38%)`,
+            bgGradient: customGradient,
           }
         : {
             bg: '#09111b',
@@ -189,6 +229,7 @@ export function buildAppearanceStyle(appearance: AppearanceSettings): CSSPropert
     ['--app-font-family' as string]: appearance.fontFamily,
     ['--bg' as string]: palette.bg,
     ['--bg-gradient' as string]: palette.bgGradient,
+    ['--bg-photo' as string]: backgroundPhoto,
     ['--text' as string]: palette.text,
     ['--muted' as string]: palette.muted,
     ['--surface' as string]: palette.surface,

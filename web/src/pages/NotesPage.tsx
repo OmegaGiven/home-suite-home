@@ -1,134 +1,39 @@
-import { useRef, useState, type FormEventHandler, type KeyboardEventHandler, type MouseEventHandler, type RefObject } from 'react'
+import { useLayoutEffect, useMemo, useState, type FormEventHandler, type KeyboardEventHandler, type MouseEventHandler, type RefObject } from 'react'
+import { ConfirmModal } from '../components/ConfirmModal'
 import { FolderPromptModal } from '../components/FolderPromptModal'
+import { FileTreeHeader, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
+import { LibraryActionBar } from '../components/LibraryActionBar'
+import { NewFolderIcon, NewNoteIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { LibraryShell } from '../components/LibraryShell'
+import { NotesFormatToolbar } from './notes/NotesFormatToolbar'
 import { NoteLibraryTreeNode } from '../components/NoteLibraryTreeNode'
 import { ensureEditorBlocks } from '../lib/markdown-editor'
 import type { NoteContextMenuState, NoteContextSubmenu, NoteEditorMode } from '../lib/app-config'
 import type { Note, ResourceVisibility } from '../lib/types'
-import type { NoteInsertKind, NoteFolderNode } from '../lib/ui-helpers'
-import { normalizeFolderPath } from '../lib/ui-helpers'
-
-function NewNoteIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M6 3.75h8.7l3.3 3.35v13.15H6z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M14.7 3.75V7.1H18"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M12 9.75v6.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8.75 13h6.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function NewFolderIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M3.75 7.25A2.25 2.25 0 0 1 6 5h4.15l1.55 1.7H18A2.25 2.25 0 0 1 20.25 9v7.75A2.25 2.25 0 0 1 18 19H6a2.25 2.25 0 0 1-2.25-2.25Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M15.75 10.25v5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M13 13h5.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function UploadIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M12 4.75v10.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
-      <path
-        d="M8.6 8.35 12 4.75l3.4 3.6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M6 15.75v1.5c0 .83.67 1.5 1.5 1.5h9c.83 0 1.5-.67 1.5-1.5v-1.5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
-
-function RenameIcon() {
-  return (
-    <svg viewBox="0 0 24 24" className="notes-new-button-icon" aria-hidden="true">
-      <path
-        d="M4.75 19.25h4.1l9.35-9.35-4.1-4.1-9.35 9.35v4.1Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinejoin="round"
-      />
-      <path
-        d="m12.95 6.95 4.1 4.1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
-}
+import type { FileTreeSortState, NoteInsertKind, NoteFolderNode, NoteToolbarAction } from '../lib/ui-helpers'
+import { filterNoteFolderNode, getCaretRectForOffset, normalizeFolderPath, toggleFileTreeSortState } from '../lib/ui-helpers'
 
 type NotePresence = {
   user: string
   seenAt: number
 }
 
+type RemoteCursor = {
+  clientId: string
+  user: string
+  offset: number
+  color: string
+}
+
+type RemoteCursorDecoration = RemoteCursor & {
+  top: number
+  left: number
+  height: number
+}
+
 type Props = {
+  noteFullscreen: boolean
+  notesSectionRef: RefObject<HTMLElement | null>
   notePersistenceState: 'saving' | 'unsaved' | 'saved' | null
   selectedNote: Note | null
   noteSaveState: 'idle' | 'saving'
@@ -147,6 +52,7 @@ type Props = {
   noteEditorMode: NoteEditorMode
   noteDraft: string
   activePresence: NotePresence[]
+  remoteCursors: RemoteCursor[]
   noteEditorRef: RefObject<HTMLDivElement | null>
   noteContextMenu: NoteContextMenuState
   noteContextMenuRef: RefObject<HTMLDivElement | null>
@@ -170,6 +76,10 @@ type Props = {
   onCloseTitleModal: () => void
   onChangeSelectedNoteTitle: (value: string) => void
   onRequestSave: () => void
+  onDeleteNote: () => void
+  confirmNoteDelete: boolean
+  onEnterFullscreen: () => void
+  onExitFullscreen: () => void
   onOpenShareDialog: (target: { resourceKey: string; label: string; visibility?: ResourceVisibility }) => void
   resourceKeyForNote: (noteId: string) => string
   onSetNoteEditorMode: (mode: NoteEditorMode) => void
@@ -184,11 +94,14 @@ type Props = {
   onSetNoteContextMenu: (state: NoteContextMenuState) => void
   onSetNoteContextSubmenu: (submenu: NoteContextSubmenu) => void
   onInsertNoteElement: (kind: NoteInsertKind) => void
+  onRunToolbarAction: (action: NoteToolbarAction) => void
   onAddTableRow: (position: 'before' | 'after') => void
   onAddTableColumn: (position: 'before' | 'after') => void
 }
 
 export function NotesPage({
+  noteFullscreen,
+  notesSectionRef,
   notePersistenceState,
   selectedNote,
   noteSaveState,
@@ -207,6 +120,7 @@ export function NotesPage({
   noteEditorMode,
   noteDraft,
   activePresence,
+  remoteCursors,
   noteEditorRef,
   noteContextMenu,
   noteContextMenuRef,
@@ -230,6 +144,10 @@ export function NotesPage({
   onCloseTitleModal,
   onChangeSelectedNoteTitle,
   onRequestSave,
+  onDeleteNote,
+  confirmNoteDelete,
+  onEnterFullscreen,
+  onExitFullscreen,
   onOpenShareDialog,
   resourceKeyForNote,
   onSetNoteEditorMode,
@@ -244,14 +162,64 @@ export function NotesPage({
   onSetNoteContextMenu,
   onSetNoteContextSubmenu,
   onInsertNoteElement,
+  onRunToolbarAction,
   onAddTableRow,
   onAddTableColumn,
 }: Props) {
-  const uploadInputRef = useRef<HTMLInputElement | null>(null)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [renameFolderOpen, setRenameFolderOpen] = useState(false)
+  const [deleteNoteOpen, setDeleteNoteOpen] = useState(false)
+  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
+  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
+  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
+  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
+    type: true,
+    size: true,
+    modified: true,
+    created: true,
+  })
   const [newFolderName, setNewFolderName] = useState('')
   const [renameFolderName, setRenameFolderName] = useState(currentLibraryFolderPath.split('/').pop() ?? '')
+  const noteRootNode = useMemo(
+    () => ({
+      name: 'Inbox',
+      path: 'Inbox',
+      children: noteTree,
+      notes: notes
+        .filter((note) => normalizeFolderPath(note.folder || 'Inbox') === 'Inbox')
+        .sort((a, b) => a.title.localeCompare(b.title)),
+    }),
+    [noteTree, notes],
+  )
+  const filteredNoteRootNode = useMemo(
+    () => filterNoteFolderNode(noteRootNode, sidebarSearchQuery),
+    [noteRootNode, sidebarSearchQuery],
+  )
+  const [remoteCursorDecorations, setRemoteCursorDecorations] = useState<RemoteCursorDecoration[]>([])
+
+  useLayoutEffect(() => {
+    if (noteEditorMode !== 'rich' || !noteEditorRef.current || remoteCursors.length === 0) {
+      setRemoteCursorDecorations([])
+      return
+    }
+
+    const editorRect = noteEditorRef.current.getBoundingClientRect()
+    const nextDecorations = remoteCursors
+      .map((cursor) => {
+        const rect = getCaretRectForOffset(noteEditorRef.current!, cursor.offset)
+        if (!rect) return null
+        return {
+          ...cursor,
+          top: rect.top - editorRect.top,
+          left: rect.left - editorRect.left,
+          height: Math.max(rect.height || 20, 20),
+        }
+      })
+      .filter((cursor): cursor is RemoteCursorDecoration => cursor !== null)
+
+    setRemoteCursorDecorations(nextDecorations)
+  }, [noteDraft, noteEditorMode, noteEditorRef, remoteCursors])
 
   return (
     <>
@@ -290,88 +258,103 @@ export function NotesPage({
           setRenameFolderName(currentLibraryFolderPath.split('/').pop() ?? '')
         }}
       />
+      {deleteNoteOpen && selectedNote ? (
+        <ConfirmModal
+          title="Delete note?"
+          confirmLabel="Delete"
+          onClose={() => setDeleteNoteOpen(false)}
+          onConfirm={() => {
+            setDeleteNoteOpen(false)
+            onDeleteNote()
+          }}
+        >
+          <p>{`Delete ${selectedNote.title || 'this note'}?`}</p>
+        </ConfirmModal>
+      ) : null}
       <LibraryShell
+        sectionRef={notesSectionRef}
+        sectionClassName={`panel notes-panel ${noteFullscreen ? 'fullscreen' : ''}`}
         managerRef={noteManagerRef}
-        managerClassName={`notes-manager ${noteDrawerOpen ? '' : 'library-hidden'} ${activeNoteSplitter ? 'resizing' : ''}`}
+        managerClassName={`notes-manager ${noteDrawerOpen ? '' : 'library-hidden'} ${activeNoteSplitter ? 'resizing' : ''} ${noteFullscreen ? 'fullscreen' : ''}`}
         drawerOpen={noteDrawerOpen}
         activeSplitter={activeNoteSplitter}
         paneSize={notePaneSize}
+        sidebarVisible={!noteFullscreen && noteDrawerOpen}
+        showSplitter={!noteFullscreen}
         sidebarClassName="notes-sidebar"
         onStartResize={() => onSetActiveNoteSplitter(true)}
         onToggleDrawer={onToggleNoteDrawer}
         sidebar={
           <>
-            <div className="file-sidebar-header-row">
-              <div className="button-row files-actions">
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={() => setCreateFolderOpen(true)}
-                  aria-label="New folder"
-                  title="New folder"
-                >
-                  <NewFolderIcon />
-                </button>
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={() => {
+            <LibraryActionBar
+              searchOpen={sidebarSearchOpen}
+              searchQuery={sidebarSearchQuery}
+              searchPlaceholder="Search notes"
+              onOpenSearch={() => setSidebarSearchOpen(true)}
+              onCloseSearch={() => {
+                setSidebarSearchOpen(false)
+                setSidebarSearchQuery('')
+              }}
+              onChangeSearchQuery={setSidebarSearchQuery}
+              metaFilterOpen={metaFilterOpen}
+              rowMetaVisibility={rowMetaVisibility}
+              onToggleMetaFilterOpen={() => setMetaFilterOpen((current) => !current)}
+              onToggleMetaVisibility={(column) =>
+                setRowMetaVisibility((current) => ({ ...current, [column]: !current[column] }))
+              }
+              rootDropPath="Inbox"
+              draggingPath={draggingPath}
+              dropTargetPath={dropTargetPath}
+              onDropTargetChange={onDropTargetChange}
+              onDropRoot={onDrop}
+              commonActions={[
+                { key: 'folder', label: 'New folder', icon: <NewFolderIcon />, onClick: () => setCreateFolderOpen(true) },
+                {
+                  key: 'rename',
+                  label: 'Rename folder',
+                  icon: <RenameIcon />,
+                  disabled: currentLibraryFolderPath === 'Inbox',
+                  onClick: () => {
                     setRenameFolderName(currentLibraryFolderPath.split('/').pop() ?? '')
                     setRenameFolderOpen(true)
-                  }}
-                  aria-label="Rename folder"
-                  title="Rename folder"
-                  disabled={currentLibraryFolderPath === 'Inbox'}
-                >
-                  <RenameIcon />
-                </button>
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={onCreateNote}
-                  aria-label="New note"
-                  title="New note"
-                >
-                  <NewNoteIcon />
-                </button>
-                <button
-                  className="button-secondary notes-new-button"
-                  onClick={() => uploadInputRef.current?.click()}
-                  aria-label="Upload note"
-                  title="Upload note"
-                >
-                  <UploadIcon />
-                </button>
-                <input
-                  ref={uploadInputRef}
-                  type="file"
-                  accept=".md,.markdown,.txt,text/markdown,text/plain"
-                  style={{ display: 'none' }}
-                  onChange={(event) => {
-                    const file = event.target.files?.[0]
-                    if (file) onUploadFile(file)
-                    event.currentTarget.value = ''
-                  }}
-                />
-              </div>
-            </div>
+                  },
+                },
+                {
+                  key: 'upload',
+                  kind: 'upload',
+                  label: 'Upload note',
+                  icon: <UploadIcon />,
+                  accept: '.md,.markdown,.txt,text/markdown,text/plain',
+                  onFileSelected: onUploadFile,
+                },
+              ]}
+              pageActions={[{ key: 'note', label: 'New note', icon: <NewNoteIcon />, onClick: onCreateNote }]}
+            />
             <div className="folder-tree file-tree notes-folder-tree">
-              <NoteLibraryTreeNode
-                node={{
-                  name: 'Inbox',
-                  path: 'Inbox',
-                  children: noteTree,
-                  notes: notes
-                    .filter((note) => normalizeFolderPath(note.folder || 'Inbox') === 'Inbox')
-                    .sort((a, b) => a.title.localeCompare(b.title)),
-                }}
-                activeFolderPath={selectedNoteFolderPath}
-                selectedNoteId={selectedNoteId}
-                draggingPath={draggingPath}
-                dropTargetPath={dropTargetPath}
-                onSelectNote={onSelectNote}
-                onDragStart={onDragStart as (event: React.DragEvent<HTMLElement>, path: string) => void}
-                onDragEnd={onDragEnd}
-                onDropTargetChange={onDropTargetChange}
-                onDrop={onDrop}
+              <FileTreeHeader
+                rowMetaVisibility={rowMetaVisibility}
+                sortState={sortState}
+                onSort={(key) => setSortState((current) => toggleFileTreeSortState(current, key))}
+              />
+              {filteredNoteRootNode ? (
+                <NoteLibraryTreeNode
+                  node={filteredNoteRootNode}
+                  activeFolderPath={selectedNoteFolderPath}
+                  selectedNoteId={selectedNoteId}
+                  hideRoot
+                  draggingPath={draggingPath}
+                  dropTargetPath={dropTargetPath}
+                  onSelectNote={onSelectNote}
+                  onDragStart={onDragStart as (event: React.DragEvent<HTMLElement>, path: string) => void}
+                  onDragEnd={onDragEnd}
+                  onDropTargetChange={onDropTargetChange}
+                  onDrop={onDrop}
+                  rowMetaVisibility={rowMetaVisibility}
+                  sortState={sortState}
                 />
+              ) : (
+                <div className="empty-state">No matching notes.</div>
+              )}
             </div>
           </>
         }
@@ -454,6 +437,26 @@ export function NotesPage({
                     </button>
                   ) : null}
                   <button
+                    type="button"
+                    className="notes-share-button"
+                    aria-label="Delete note"
+                    title="Delete note"
+                    onClick={() => {
+                      if (confirmNoteDelete) {
+                        setDeleteNoteOpen(true)
+                        return
+                      }
+                      onDeleteNote()
+                    }}
+                  >
+                    <svg viewBox="0 0 24 24" className="notes-share-button-icon" aria-hidden="true">
+                      <path d="M9 5h6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                      <path d="M10 5V4c0-.55.45-1 1-1h2c.55 0 1 .45 1 1v1" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                      <path d="M6 7h12" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                      <path d="M8 7.5v10c0 .83.67 1.5 1.5 1.5h5c.83 0 1.5-.67 1.5-1.5v-10" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                  <button
                     className="notes-share-button"
                     onClick={() =>
                       onOpenShareDialog({
@@ -503,6 +506,33 @@ export function NotesPage({
                       .txt
                     </button>
                   </div>
+                  <button
+                    type="button"
+                    className="notes-fullscreen-button"
+                    aria-label={noteFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+                    title={noteFullscreen ? 'Exit fullscreen' : 'Expand editor'}
+                    onClick={noteFullscreen ? onExitFullscreen : onEnterFullscreen}
+                  >
+                    {noteFullscreen ? (
+                      <svg viewBox="0 0 24 24" className="notes-share-button-icon" aria-hidden="true">
+                        <path d="M9 5H5v4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M15 5h4v4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M9 19H5v-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M15 19h4v-4" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    ) : (
+                      <svg viewBox="0 0 24 24" className="notes-share-button-icon" aria-hidden="true">
+                        <path d="M9 3H3v6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M15 3h6v6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M9 21H3v-6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M15 21h6v-6" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M8.5 8.5 3 3" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                        <path d="M15.5 8.5 21 3" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                        <path d="M8.5 15.5 3 21" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                        <path d="M15.5 15.5 21 21" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                      </svg>
+                    )}
+                  </button>
                 </div>
               </div>
               {isCompactViewport && noteTitleModalOpen ? (
@@ -540,6 +570,7 @@ export function NotesPage({
                 </div>
               </div>
               <div className="notes-editor-card">
+                {noteEditorMode === 'rich' ? <NotesFormatToolbar onRunAction={onRunToolbarAction} /> : null}
                 {noteEditorMode === 'rich' ? (
                   <>
                     <div
@@ -557,6 +588,22 @@ export function NotesPage({
                       onInput={handleNoteEditorInput}
                       onKeyDown={handleNoteEditorKeyDown}
                     />
+                    <div className="notes-remote-cursor-layer" aria-hidden="true">
+                      {remoteCursorDecorations.map((cursor) => (
+                        <div
+                          key={cursor.clientId}
+                          className="notes-remote-cursor"
+                          style={{
+                            top: `${cursor.top}px`,
+                            left: `${cursor.left}px`,
+                            height: `${cursor.height}px`,
+                            color: cursor.color,
+                          }}
+                        >
+                          <span className="notes-remote-cursor-label">{cursor.user}</span>
+                        </div>
+                      ))}
+                    </div>
                     {noteContextMenu ? (
                       <div
                         ref={noteContextMenuRef}

@@ -1,25 +1,37 @@
-use std::{collections::HashMap, path::Path, sync::Arc};
+use std::{collections::HashMap, io::BufReader, path::{Path, PathBuf}, sync::Arc};
 
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
-use chrono::Utc;
+use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
+use ical::IcalParser;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use tokio::sync::{RwLock, broadcast};
+use reqwest::Client;
+use serde_json::Value;
+use tokio::{process::Command, sync::{RwLock, broadcast}};
 use uuid::Uuid;
 
 use crate::{
     config::Config,
     error::{AppError, AppResult},
     models::{
-        AdminSettings, AdminStorageOverview, AdminUserSummary, ChangeCurrentUserPasswordRequest,
-        ChangePasswordRequest, CreateDiagramRequest, CreateMessageRequest, CreateNoteRequest,
-        CreateRoomRequest, CreateUserRequest, Diagram, JobStatus, Message, Note,
+        AdminSettings, AdminStorageOverview, AdminUserSummary, CalendarConnection, CalendarEvent,
+        CalendarProvider, ChangeCurrentUserPasswordRequest, ChangePasswordRequest,
+        ConnectGoogleCalendarRequest, CreateCalendarEventRequest, CreateDiagramRequest,
+        CreateIcsCalendarConnectionRequest, CreateLocalCalendarConnectionRequest,
+        CreateMessageRequest, CreateNoteRequest, CreateRoomRequest, CreateTaskRequest,
+        CreateUserRequest, Diagram, GoogleCalendarConfigResponse, JobStatus, Message,
+        MessageReaction, Note, OidcConfigResponse, OidcProviderSettings,
         PendingCredentialChangeRequest, RealtimeEvent, ResourceShare, ResourceVisibility, Room,
-        SessionResponse, SetupAdminRequest, StoredUser, TranscriptSegment, TranscriptionJob,
-        UpdateAccountCredentialsRequest, UpdateDiagramRequest, UpdateNoteRequest,
-        UpdateResourceShareRequest, UpdateUserAccessRequest, UserProfile, VoiceMemo,
+        SessionResponse, SetupAdminRequest, StoredUser, SyncBootstrapRequest, SyncConflict,
+        SyncCursorSet, SyncEntityKind, SyncEnvelope, SyncOperation, SyncPullRequest,
+        SyncPushRequest, SyncPushResponse, SyncTombstone, SystemUpdateStatus, TaskItem, TaskStatus,
+        ToggleMessageReactionRequest, TranscriptSegment, TranscriptionJob,
+        UpdateAccountCredentialsRequest, UpdateCalendarConnectionRequest,
+        UpdateCalendarEventRequest, UpdateDiagramRequest, UpdateNoteRequest,
+        UpdateResourceShareRequest, UpdateTaskRequest, UpdateUserAccessRequest, UserProfile,
+        UserToolScope, VoiceMemo,
     },
     persistence::PersistenceBackend,
     storage::BlobStorage,
@@ -32,6 +44,7 @@ pub struct AppState {
     pub realtime: broadcast::Sender<RealtimeEvent>,
     persistence: PersistenceBackend,
     inner: Arc<RwLock<StateData>>,
+    system_update: Arc<RwLock<SystemUpdateStatus>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -49,7 +62,15 @@ pub(crate) struct StateData {
     pub rooms: HashMap<Uuid, Room>,
     pub messages: HashMap<Uuid, Vec<Message>>,
     #[serde(default)]
+    pub calendar_connections: HashMap<Uuid, CalendarConnection>,
+    #[serde(default)]
+    pub calendar_events: HashMap<Uuid, Vec<CalendarEvent>>,
+    #[serde(default)]
+    pub tasks: HashMap<Uuid, TaskItem>,
+    #[serde(default)]
     pub resource_shares: HashMap<String, ResourceShare>,
+    #[serde(default)]
+    pub sync_tombstones: Vec<SyncTombstone>,
     #[serde(default)]
     pub pending_credential_changes: HashMap<Uuid, PendingCredentialChangeRequest>,
 }
@@ -205,12 +226,20 @@ impl AppState {
         }
 
         let (realtime, _) = broadcast::channel(256);
+        let system_update = load_system_update_status(
+            update_status_path(&config.storage_root),
+            &config.app_version,
+            &config.update_target,
+            config.update_command.is_some(),
+        )
+        .await;
         let app = Self {
             config,
             storage,
             realtime,
             persistence,
             inner: Arc::new(RwLock::new(initial_state)),
+            system_update: Arc::new(RwLock::new(system_update)),
         };
         app.sync_note_files().await?;
         app.sync_diagram_files().await?;
@@ -249,22 +278,1332 @@ impl AppState {
         users
     }
 
-    pub async fn oidc_login(&self, _code: &str) -> AppResult<UserProfile> {
-        let state = self.inner.read().await;
-        Ok(state.user.clone())
+    pub async fn oidc_login(&self, code: &str) -> AppResult<UserProfile> {
+        let (provider, require_email) = {
+            let state = self.inner.read().await;
+            (
+                effective_oidc_settings(&self.config, &state.admin_settings),
+                state.admin_settings.require_account_email,
+            )
+        };
+        if !provider.enabled
+            || provider.client_id.trim().is_empty()
+            || provider.client_secret.trim().is_empty()
+            || provider.token_url.trim().is_empty()
+            || provider.userinfo_url.trim().is_empty()
+        {
+            return Err(AppError::BadRequest("OIDC provider is not fully configured".into()));
+        }
+
+        let redirect_url = format!("{}/auth/oidc/callback", self.config.web_base_url);
+        let client = Client::new();
+        let token_response = client
+            .post(&provider.token_url)
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", code),
+                ("redirect_uri", redirect_url.as_str()),
+                ("client_id", provider.client_id.as_str()),
+                ("client_secret", provider.client_secret.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("OIDC token exchange failed: {error}")))?;
+
+        if !token_response.status().is_success() {
+            let body = token_response.text().await.unwrap_or_default();
+            return Err(AppError::BadRequest(format!(
+                "OIDC token exchange failed: {}",
+                body.trim()
+            )));
+        }
+
+        let token_json: Value = token_response
+            .json()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("OIDC token response was invalid: {error}")))?;
+        let access_token = token_json
+            .get("access_token")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::BadRequest("OIDC token response missing access_token".into()))?;
+
+        let userinfo_response = client
+            .get(&provider.userinfo_url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("OIDC userinfo request failed: {error}")))?;
+
+        if !userinfo_response.status().is_success() {
+            let body = userinfo_response.text().await.unwrap_or_default();
+            return Err(AppError::BadRequest(format!(
+                "OIDC userinfo request failed: {}",
+                body.trim()
+            )));
+        }
+
+        let userinfo: Value = userinfo_response
+            .json()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("OIDC userinfo response was invalid: {error}")))?;
+        let subject = userinfo
+            .get("sub")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::BadRequest("OIDC userinfo missing sub".into()))?
+            .to_string();
+        let email = userinfo
+            .get("email")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty());
+        if require_email && email.is_none() {
+            return Err(AppError::BadRequest(
+                "OIDC userinfo missing email but this organization requires account emails".into(),
+            ));
+        }
+        let username = userinfo
+            .get("preferred_username")
+            .and_then(Value::as_str)
+            .or_else(|| userinfo.get("nickname").and_then(Value::as_str))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                email.as_ref().and_then(|value| {
+                    value
+                        .split('@')
+                        .next()
+                        .map(|part| part.trim().to_string())
+                        .filter(|part| !part.is_empty())
+                })
+            })
+            .unwrap_or_else(|| format!("user-{}", Uuid::new_v4().simple()));
+        let display_name = userinfo
+            .get("name")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| username.clone());
+        let resolved_email = email.unwrap_or_else(|| format!("{username}@local.sweet"));
+
+        let mut state = self.inner.write().await;
+        if let Some(existing) = state
+            .users
+            .values_mut()
+            .find(|user| user.linked_oidc_subject.as_deref() == Some(subject.as_str()))
+        {
+            existing.linked_oidc_subject = Some(subject.clone());
+            existing.profile.username = username.clone();
+            existing.profile.display_name = display_name.clone();
+            existing.profile.email = resolved_email.clone();
+            existing.updated_at = Utc::now();
+            let profile = existing.profile.clone();
+            let snapshot = state.clone();
+            drop(state);
+            self.persist_snapshot(snapshot).await?;
+            return Ok(profile);
+        }
+
+        if let Some(existing) = state
+            .users
+            .values_mut()
+            .find(|user| user.profile.email.eq_ignore_ascii_case(&resolved_email))
+        {
+            existing.linked_oidc_subject = Some(subject.clone());
+            existing.profile.username = username.clone();
+            existing.profile.display_name = display_name.clone();
+            existing.profile.email = resolved_email.clone();
+            existing.updated_at = Utc::now();
+            let profile = existing.profile.clone();
+            let snapshot = state.clone();
+            drop(state);
+            self.persist_snapshot(snapshot).await?;
+            return Ok(profile);
+        }
+
+        let created_at = Utc::now();
+        let profile = UserProfile {
+            id: Uuid::new_v4(),
+            username,
+            email: resolved_email,
+            display_name,
+            avatar_path: None,
+            avatar_content_type: None,
+            role: "member".into(),
+            roles: vec!["member".into()],
+            must_change_password: false,
+        };
+        let stored_user = StoredUser {
+            profile: profile.clone(),
+            password_hash: hash_password(&Uuid::new_v4().to_string())?,
+            linked_oidc_subject: Some(subject),
+            storage_limit_mb: 0,
+            tool_scope: UserToolScope::default(),
+            created_at,
+            updated_at: created_at,
+        };
+        state.users.insert(profile.id, stored_user);
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(profile)
     }
 
     pub async fn setup_status(&self) -> crate::models::SetupStatusResponse {
         let state = self.inner.read().await;
+        let oidc = effective_oidc_settings(&self.config, &state.admin_settings);
         crate::models::SetupStatusResponse {
             admin_exists: state
                 .users
                 .values()
                 .any(|user| user.profile.roles.iter().any(|role| role == "admin")),
             user_count: state.users.len(),
-            sso_configured: !self.config.authentik_issuer.trim().is_empty()
-                && !self.config.authentik_client_id.trim().is_empty(),
+            sso_configured: oidc.enabled
+                && !oidc.issuer.trim().is_empty()
+                && !oidc.client_id.trim().is_empty(),
         }
+    }
+
+    pub async fn oidc_config(&self) -> OidcConfigResponse {
+        let state = self.inner.read().await;
+        let oidc = effective_oidc_settings(&self.config, &state.admin_settings);
+        OidcConfigResponse {
+            enabled: oidc.enabled,
+            provider: oidc.provider,
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id,
+            authorization_url: oidc.authorization_url,
+            token_url: oidc.token_url,
+            userinfo_url: oidc.userinfo_url,
+            scopes: oidc.scopes,
+            redirect_url: format!("{}/auth/oidc/callback", self.config.web_base_url),
+        }
+    }
+
+    pub async fn google_calendar_config(&self) -> GoogleCalendarConfigResponse {
+        let state = self.inner.read().await;
+        GoogleCalendarConfigResponse {
+            enabled: state.admin_settings.google_calendar_enabled
+                && !state.admin_settings.google_calendar_client_id.trim().is_empty()
+                && !state.admin_settings.google_calendar_client_secret.trim().is_empty(),
+            client_id: state.admin_settings.google_calendar_client_id.clone(),
+            redirect_url: format!("{}/calendar", self.config.web_base_url.trim_end_matches('/')),
+            scope: "https://www.googleapis.com/auth/calendar.readonly".into(),
+        }
+    }
+
+    pub async fn sync_bootstrap(
+        &self,
+        user: UserProfile,
+        payload: SyncBootstrapRequest,
+    ) -> AppResult<SyncEnvelope> {
+        self.build_sync_envelope(&user, None, payload.include_file_tree).await
+    }
+
+    pub async fn sync_pull(&self, user: UserProfile, payload: SyncPullRequest) -> AppResult<SyncEnvelope> {
+        self.build_sync_envelope(&user, payload.cursors, payload.include_file_tree).await
+    }
+
+    pub async fn sync_push(&self, user: UserProfile, payload: SyncPushRequest) -> AppResult<SyncPushResponse> {
+        let mut conflicts = Vec::new();
+        for operation in payload.operations {
+            let entity = match &operation {
+                SyncOperation::CreateNote { .. } | SyncOperation::UpdateNote { .. } | SyncOperation::DeleteNote { .. } => {
+                    SyncEntityKind::Notes
+                }
+                SyncOperation::CreateDiagram { .. } | SyncOperation::UpdateDiagram { .. } => SyncEntityKind::Diagrams,
+                SyncOperation::CreateTask { .. } | SyncOperation::UpdateTask { .. } | SyncOperation::DeleteTask { .. } => {
+                    SyncEntityKind::Tasks
+                }
+                SyncOperation::CreateLocalCalendar { .. }
+                | SyncOperation::RenameCalendar { .. }
+                | SyncOperation::DeleteCalendar { .. } => SyncEntityKind::CalendarConnections,
+                SyncOperation::CreateCalendarEvent { .. }
+                | SyncOperation::UpdateCalendarEvent { .. }
+                | SyncOperation::DeleteCalendarEvent { .. } => SyncEntityKind::CalendarEvents,
+                SyncOperation::CreateManagedFolder { .. }
+                | SyncOperation::MoveManagedPath { .. }
+                | SyncOperation::RenameManagedPath { .. }
+                | SyncOperation::DeleteManagedPath { .. } => SyncEntityKind::FileTree,
+                SyncOperation::CreateMessage { .. } | SyncOperation::ToggleMessageReaction { .. } => SyncEntityKind::Messages,
+            };
+            let operation_id = operation_id_string(&operation);
+            let result = match operation.clone() {
+                SyncOperation::CreateNote { client_generated_id, title, folder, markdown } => {
+                    self.create_note_with_id(CreateNoteRequest { title, folder, markdown }, Some(client_generated_id))
+                        .await
+                        .map(|_| ())
+                }
+                SyncOperation::CreateDiagram { client_generated_id, title, xml } => {
+                    self.create_diagram_with_id(CreateDiagramRequest { title, xml }, Some(client_generated_id))
+                        .await
+                        .map(|_| ())
+                }
+                SyncOperation::UpdateDiagram { id, title, xml, revision } => {
+                    self.update_diagram(id, UpdateDiagramRequest { title, xml, revision }).await.map(|_| ())
+                }
+                SyncOperation::UpdateNote { id, title, folder, markdown, revision } => {
+                    self.update_note(id, UpdateNoteRequest { title, folder, markdown, revision }).await.map(|_| ())
+                }
+                SyncOperation::DeleteNote { id } => self.delete_note(id).await,
+                SyncOperation::CreateTask { client_generated_id, title, description, start_at, end_at, all_day, calendar_connection_id } => {
+                    self.create_task_with_id(
+                        user.clone(),
+                        CreateTaskRequest { title, description, start_at, end_at, all_day, calendar_connection_id },
+                        Some(client_generated_id),
+                    )
+                    .await
+                    .map(|_| ())
+                }
+                SyncOperation::UpdateTask { id, title, description, status, start_at, end_at, all_day, calendar_connection_id } => {
+                    self.update_task(user.clone(), id, UpdateTaskRequest { title, description, status, start_at, end_at, all_day, calendar_connection_id }).await.map(|_| ())
+                }
+                SyncOperation::DeleteTask { id } => self.delete_task(user.clone(), id).await,
+                SyncOperation::CreateLocalCalendar { client_generated_id, title } => {
+                    self.create_local_calendar_connection_with_id(
+                        user.clone(),
+                        CreateLocalCalendarConnectionRequest { title },
+                        Some(client_generated_id),
+                    )
+                    .await
+                    .map(|_| ())
+                }
+                SyncOperation::RenameCalendar { id, title } => {
+                    self.update_calendar_connection(user.clone(), id, UpdateCalendarConnectionRequest { title }).await.map(|_| ())
+                }
+                SyncOperation::DeleteCalendar { id } => self.delete_calendar_connection(user.clone(), id).await,
+                SyncOperation::CreateCalendarEvent { client_generated_id, connection_id, title, description, location, start_at, end_at, all_day } => {
+                    self.create_calendar_event_with_id(
+                        user.clone(),
+                        connection_id,
+                        CreateCalendarEventRequest { title, description, location, start_at, end_at, all_day },
+                        Some(client_generated_id),
+                    )
+                    .await
+                    .map(|_| ())
+                }
+                SyncOperation::UpdateCalendarEvent { connection_id, event_id, title, description, location, start_at, end_at, all_day } => {
+                    self.update_calendar_event(user.clone(), connection_id, &event_id, UpdateCalendarEventRequest { title, description, location, start_at, end_at, all_day }).await.map(|_| ())
+                }
+                SyncOperation::DeleteCalendarEvent { connection_id, event_id } => {
+                    self.delete_calendar_event(user.clone(), connection_id, &event_id).await
+                }
+                SyncOperation::CreateMessage { client_generated_id, room_id, body } => {
+                    self.create_message_with_id(room_id, CreateMessageRequest { body }, user.clone(), Some(client_generated_id))
+                        .await
+                        .map(|_| ())
+                }
+                SyncOperation::CreateManagedFolder { path } => self.create_managed_folder(path).await.map(|_| ()),
+                SyncOperation::MoveManagedPath { source_path, destination_dir } => {
+                    self.move_drive_path(source_path, destination_dir).await.map(|_| ())
+                }
+                SyncOperation::RenameManagedPath { path, new_name } => {
+                    self.rename_managed_path(path, new_name).await.map(|_| ())
+                }
+                SyncOperation::DeleteManagedPath { path } => self.delete_managed_path(path).await,
+                SyncOperation::ToggleMessageReaction { room_id, message_id, emoji } => {
+                    self.toggle_message_reaction(
+                        room_id,
+                        message_id,
+                        ToggleMessageReactionRequest { emoji },
+                        user.clone(),
+                    )
+                    .await
+                    .map(|_| ())
+                }
+            };
+
+            if let Err(error) = result {
+                conflicts.push(self.build_sync_conflict(&operation, entity, operation_id, &error).await);
+            }
+        }
+
+        let envelope = self.build_sync_envelope(&user, None, true).await?;
+        Ok(SyncPushResponse { envelope, conflicts })
+    }
+
+    async fn build_sync_conflict(
+        &self,
+        operation: &SyncOperation,
+        entity: SyncEntityKind,
+        id: String,
+        error: &AppError,
+    ) -> SyncConflict {
+        let mut conflict = SyncConflict {
+            entity,
+            id,
+            reason: error.to_string(),
+            field: String::new(),
+            local_value: String::new(),
+            remote_value: String::new(),
+        };
+
+        match operation {
+            SyncOperation::CreateNote { title, folder, .. } => {
+                conflict.field = if title.trim().is_empty() { "title".into() } else { "folder".into() };
+                conflict.local_value = if title.trim().is_empty() {
+                    title.clone()
+                } else {
+                    folder.clone().unwrap_or_else(|| "Inbox".into())
+                };
+            }
+            SyncOperation::UpdateNote { id, revision, title, folder, .. } => {
+                conflict.field = "revision".into();
+                conflict.local_value = revision.to_string();
+                let state = self.inner.read().await;
+                if let Some(note) = state.notes.get(id) {
+                    conflict.remote_value = note.revision.to_string();
+                    if matches!(error, AppError::BadRequest(message) if message == "revision mismatch") {
+                        conflict.reason = format!("{} for {}", error, note.title);
+                    }
+                }
+                if conflict.remote_value.is_empty() && (title.is_some() || folder.is_some()) {
+                    conflict.field = if title.is_some() { "title".into() } else { "folder".into() };
+                    conflict.local_value = title
+                        .clone()
+                        .or_else(|| folder.clone())
+                        .unwrap_or_default();
+                }
+            }
+            SyncOperation::DeleteNote { id } => {
+                conflict.field = "note_id".into();
+                conflict.local_value = id.to_string();
+            }
+            SyncOperation::CreateTask { title, start_at, end_at, calendar_connection_id, .. }
+            | SyncOperation::UpdateTask { title, start_at, end_at, calendar_connection_id, .. } => {
+                if title.trim().is_empty() {
+                    conflict.field = "title".into();
+                    conflict.local_value = title.clone();
+                } else if let (Some(start_at), Some(end_at)) = (start_at, end_at) {
+                    if end_at <= start_at {
+                        conflict.field = "time_range".into();
+                        conflict.local_value = format!("{} -> {}", start_at.to_rfc3339(), end_at.to_rfc3339());
+                    }
+                } else if let Some(calendar_connection_id) = calendar_connection_id {
+                    conflict.field = "calendar_connection_id".into();
+                    conflict.local_value = calendar_connection_id.to_string();
+                }
+            }
+            SyncOperation::DeleteTask { id } => {
+                conflict.field = "task_id".into();
+                conflict.local_value = id.to_string();
+            }
+            SyncOperation::CreateManagedFolder { path } | SyncOperation::DeleteManagedPath { path } => {
+                conflict.field = "path".into();
+                conflict.local_value = path.clone();
+            }
+            SyncOperation::MoveManagedPath { source_path, destination_dir } => {
+                conflict.field = "path".into();
+                conflict.local_value = source_path.clone();
+                conflict.remote_value = destination_dir.clone();
+            }
+            SyncOperation::RenameManagedPath { path, new_name } => {
+                conflict.field = "path".into();
+                conflict.local_value = path.clone();
+                conflict.remote_value = new_name.clone();
+            }
+            SyncOperation::CreateLocalCalendar { title, .. } | SyncOperation::RenameCalendar { title, .. } => {
+                conflict.field = "title".into();
+                conflict.local_value = title.clone();
+            }
+            SyncOperation::DeleteCalendar { id } => {
+                conflict.field = "calendar_id".into();
+                conflict.local_value = id.to_string();
+            }
+            SyncOperation::CreateCalendarEvent { title, start_at, end_at, .. }
+            | SyncOperation::UpdateCalendarEvent { title, start_at, end_at, .. } => {
+                conflict.field = "event".into();
+                conflict.local_value = format!("{title} ({} -> {})", start_at.to_rfc3339(), end_at.to_rfc3339());
+            }
+            SyncOperation::DeleteCalendarEvent { event_id, .. } => {
+                conflict.field = "event_id".into();
+                conflict.local_value = event_id.clone();
+            }
+            SyncOperation::CreateMessage { room_id, body, .. } => {
+                conflict.field = "message".into();
+                conflict.local_value = format!("{room_id}: {}", body.trim());
+            }
+            SyncOperation::ToggleMessageReaction { emoji, message_id, .. } => {
+                conflict.field = "reaction".into();
+                conflict.local_value = format!("{emoji} on {message_id}");
+            }
+            SyncOperation::CreateDiagram { title, .. } => {
+                conflict.field = "title".into();
+                conflict.local_value = title.clone();
+            }
+            SyncOperation::UpdateDiagram { id, revision, title, .. } => {
+                conflict.field = "revision".into();
+                conflict.local_value = revision.to_string();
+                let state = self.inner.read().await;
+                if let Some(diagram) = state.diagrams.get(id) {
+                    conflict.remote_value = diagram.revision.to_string();
+                } else if let Some(title) = title {
+                    conflict.field = "title".into();
+                    conflict.local_value = title.clone();
+                }
+            }
+        }
+
+        conflict
+    }
+
+    async fn build_sync_envelope(
+        &self,
+        user: &UserProfile,
+        cursors: Option<SyncCursorSet>,
+        include_file_tree: bool,
+    ) -> AppResult<SyncEnvelope> {
+        let state = self.inner.read().await;
+        let notes_since = cursors.as_ref().and_then(|entry| entry.notes);
+        let diagrams_since = cursors.as_ref().and_then(|entry| entry.diagrams);
+        let voice_since = cursors.as_ref().and_then(|entry| entry.voice_memos);
+        let rooms_since = cursors.as_ref().and_then(|entry| entry.rooms);
+        let messages_since = cursors.as_ref().and_then(|entry| entry.messages);
+        let calendar_connections_since = cursors.as_ref().and_then(|entry| entry.calendar_connections);
+        let calendar_events_since = cursors.as_ref().and_then(|entry| entry.calendar_events);
+        let tasks_since = cursors.as_ref().and_then(|entry| entry.tasks);
+        let shares_since = cursors.as_ref().and_then(|entry| entry.resource_shares);
+
+        let notes = state
+            .notes
+            .values()
+            .filter(|note| newer_than(note.updated_at, notes_since))
+            .cloned()
+            .collect::<Vec<_>>();
+        let diagrams = state
+            .diagrams
+            .values()
+            .filter(|diagram| newer_than(diagram.updated_at, diagrams_since))
+            .cloned()
+            .collect::<Vec<_>>();
+        let voice_memos = state
+            .memos
+            .values()
+            .filter(|memo| memo.owner_id == user.id && newer_than(memo.updated_at, voice_since))
+            .cloned()
+            .collect::<Vec<_>>();
+        let visible_rooms = state
+            .rooms
+            .values()
+            .filter(|room| room.kind == crate::models::RoomKind::Channel || room.participant_ids.contains(&user.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let rooms = visible_rooms
+            .iter()
+            .filter(|room| newer_than(room.created_at, rooms_since))
+            .map(|room| Self::decorate_room(&state, room))
+            .collect::<Vec<_>>();
+        let room_ids = visible_rooms.iter().map(|room| room.id).collect::<Vec<_>>();
+        let messages = room_ids
+            .iter()
+            .flat_map(|room_id| state.messages.get(room_id).cloned().unwrap_or_default())
+            .filter(|message| newer_than(message.created_at, messages_since))
+            .collect::<Vec<_>>();
+        let calendar_connections = state
+            .calendar_connections
+            .values()
+            .filter(|connection| calendar_connection_visible_to_user(&state, connection, user.id))
+            .filter(|connection| newer_than(connection.updated_at, calendar_connections_since))
+            .cloned()
+            .collect::<Vec<_>>();
+        let visible_calendar_ids = state
+            .calendar_connections
+            .values()
+            .filter(|connection| calendar_connection_visible_to_user(&state, connection, user.id))
+            .map(|connection| connection.id)
+            .collect::<Vec<_>>();
+        let calendar_events = visible_calendar_ids
+            .iter()
+            .flat_map(|connection_id| state.calendar_events.get(connection_id).cloned().unwrap_or_default())
+            .filter(|event| newer_than(event.updated_at.unwrap_or(event.end_at), calendar_events_since))
+            .collect::<Vec<_>>();
+        let tasks = state
+            .tasks
+            .values()
+            .filter(|task| task.owner_id == user.id)
+            .filter(|task| newer_than(task.updated_at, tasks_since))
+            .cloned()
+            .collect::<Vec<_>>();
+        let resource_shares = state
+            .resource_shares
+            .values()
+            .filter(|share| {
+                share.updated_by == user.id
+                    || share.visibility == ResourceVisibility::Org
+                    || share.user_ids.contains(&user.id)
+            })
+            .filter(|share| newer_than(share.updated_at, shares_since))
+            .cloned()
+            .collect::<Vec<_>>();
+        let tombstones = state
+            .sync_tombstones
+            .iter()
+            .filter(|tombstone| {
+                let cursor = match tombstone.entity {
+                    SyncEntityKind::Notes => notes_since,
+                    SyncEntityKind::Diagrams => diagrams_since,
+                    SyncEntityKind::VoiceMemos => voice_since,
+                    SyncEntityKind::Rooms => rooms_since,
+                    SyncEntityKind::Messages => messages_since,
+                    SyncEntityKind::CalendarConnections => calendar_connections_since,
+                    SyncEntityKind::CalendarEvents => calendar_events_since,
+                    SyncEntityKind::Tasks => tasks_since,
+                    SyncEntityKind::FileTree => cursors.as_ref().and_then(|entry| entry.file_tree),
+                    SyncEntityKind::ResourceShares => shares_since,
+                };
+                newer_than(tombstone.deleted_at, cursor)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let generated_at = Utc::now();
+        drop(state);
+        let file_tree = if include_file_tree { self.list_files().await? } else { Vec::new() };
+        Ok(SyncEnvelope {
+            cursors: SyncCursorSet {
+                generated_at,
+                notes: max_optional_datetime(notes.iter().map(|note| note.updated_at)),
+                diagrams: max_optional_datetime(diagrams.iter().map(|diagram| diagram.updated_at)),
+                voice_memos: max_optional_datetime(voice_memos.iter().map(|memo| memo.updated_at)),
+                rooms: max_optional_datetime(visible_rooms.iter().map(|room| room.created_at)),
+                messages: max_optional_datetime(messages.iter().map(|message| message.created_at)),
+                calendar_connections: max_optional_datetime(calendar_connections.iter().map(|connection| connection.updated_at)),
+                calendar_events: max_optional_datetime(calendar_events.iter().map(|event| event.updated_at.unwrap_or(event.end_at))),
+                tasks: max_optional_datetime(tasks.iter().map(|task| task.updated_at)),
+                file_tree: Some(generated_at),
+                resource_shares: max_optional_datetime(resource_shares.iter().map(|share| share.updated_at)),
+            },
+            notes,
+            diagrams,
+            voice_memos,
+            rooms,
+            messages,
+            calendar_connections,
+            calendar_events,
+            tasks,
+            file_tree,
+            resource_shares,
+            tombstones,
+        })
+    }
+
+    pub async fn list_calendar_connections(&self, user: UserProfile) -> Vec<CalendarConnection> {
+        let state = self.inner.read().await;
+        let mut connections = state
+            .calendar_connections
+            .values()
+            .filter(|connection| calendar_connection_visible_to_user(&state, connection, user.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        connections.sort_by(|left, right| {
+            (left.owner_id != user.id, left.title.to_lowercase(), left.created_at).cmp(&(
+                right.owner_id != user.id,
+                right.title.to_lowercase(),
+                right.created_at,
+            ))
+        });
+        connections
+    }
+
+    pub async fn connect_google_calendar(
+        &self,
+        user: UserProfile,
+        payload: ConnectGoogleCalendarRequest,
+    ) -> AppResult<CalendarConnection> {
+        let settings = {
+            let state = self.inner.read().await;
+            state.admin_settings.clone()
+        };
+
+        if !settings.google_calendar_enabled
+            || settings.google_calendar_client_id.trim().is_empty()
+            || settings.google_calendar_client_secret.trim().is_empty()
+        {
+            return Err(AppError::BadRequest(
+                "Google Calendar is not configured by an admin".into(),
+            ));
+        }
+
+        let redirect_url = payload.redirect_url.trim();
+        if redirect_url.is_empty() {
+            return Err(AppError::BadRequest("missing redirect url".into()));
+        }
+
+        let client = Client::new();
+        let token_response = client
+            .post("https://oauth2.googleapis.com/token")
+            .form(&[
+                ("grant_type", "authorization_code"),
+                ("code", payload.code.as_str()),
+                ("redirect_uri", redirect_url),
+                ("client_id", settings.google_calendar_client_id.as_str()),
+                ("client_secret", settings.google_calendar_client_secret.as_str()),
+            ])
+            .send()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("Google token exchange failed: {error}")))?;
+
+        if !token_response.status().is_success() {
+            let body = token_response.text().await.unwrap_or_default();
+            return Err(AppError::BadRequest(format!(
+                "Google token exchange failed: {}",
+                body.trim()
+            )));
+        }
+
+        let token_json: Value = token_response
+            .json()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("Google token response was invalid: {error}")))?;
+        let access_token = token_json
+            .get("access_token")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::BadRequest("Google token response missing access_token".into()))?
+            .to_string();
+        let refresh_token = token_json
+            .get("refresh_token")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let expires_in = token_json
+            .get("expires_in")
+            .and_then(Value::as_i64)
+            .unwrap_or(3600)
+            .max(60);
+        let token_expires_at = Some(Utc::now() + Duration::seconds(expires_in));
+
+        let calendar_list_response = client
+            .get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("Google calendar lookup failed: {error}")))?;
+
+        if !calendar_list_response.status().is_success() {
+            let body = calendar_list_response.text().await.unwrap_or_default();
+            return Err(AppError::BadRequest(format!(
+                "Google calendar lookup failed: {}",
+                body.trim()
+            )));
+        }
+
+        let calendar_list: Value = calendar_list_response
+            .json()
+            .await
+            .map_err(|error| AppError::BadRequest(format!("Google calendar list was invalid: {error}")))?;
+        let selected_calendar = calendar_list
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter()
+                    .find(|item| item.get("primary").and_then(Value::as_bool).unwrap_or(false))
+                    .or_else(|| items.first())
+            })
+            .ok_or_else(|| AppError::BadRequest("No Google calendars were returned".into()))?;
+        let calendar_id = selected_calendar
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("primary")
+            .to_string();
+        let account_label = selected_calendar
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or("Google Calendar")
+            .to_string();
+
+        let mut state = self.inner.write().await;
+        let owner_display_name = state
+            .users
+            .get(&user.id)
+            .map(|stored| stored.profile.display_name.clone())
+            .unwrap_or_else(|| user.display_name.clone());
+        let existing_id = state
+            .calendar_connections
+            .values()
+            .find(|connection| {
+                connection.owner_id == user.id
+                    && connection.provider == CalendarProvider::Google
+                    && connection.calendar_id == calendar_id
+            })
+            .map(|connection| connection.id);
+
+        let connection = CalendarConnection {
+            id: existing_id.unwrap_or_else(Uuid::new_v4),
+            owner_id: user.id,
+            owner_display_name,
+            title: account_label.clone(),
+            provider: CalendarProvider::Google,
+            external_id: calendar_id.clone(),
+            calendar_id,
+            account_label,
+            access_token: Some(access_token),
+            refresh_token,
+            token_expires_at,
+            ics_url: None,
+            created_at: existing_id
+                .and_then(|id| state.calendar_connections.get(&id).map(|entry| entry.created_at))
+                .unwrap_or_else(Utc::now),
+            updated_at: Utc::now(),
+        };
+        state.calendar_connections.insert(connection.id, connection.clone());
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(connection)
+    }
+
+    pub async fn create_ics_calendar_connection(
+        &self,
+        user: UserProfile,
+        payload: CreateIcsCalendarConnectionRequest,
+    ) -> AppResult<CalendarConnection> {
+        let title = payload.title.trim();
+        let raw_url = payload.url.trim();
+        if title.is_empty() || raw_url.is_empty() {
+            return Err(AppError::BadRequest("title and url are required".into()));
+        }
+
+        let normalized_url = normalize_calendar_feed_url(raw_url)?;
+        let preview_events = fetch_ics_calendar_events_from_url(&normalized_url, Utc::now(), Utc::now() + Duration::days(30)).await?;
+        if preview_events.is_empty() {
+            return Err(AppError::BadRequest(
+                "That feed did not return any upcoming calendar events".into(),
+            ));
+        }
+
+        let mut state = self.inner.write().await;
+        let owner_display_name = state
+            .users
+            .get(&user.id)
+            .map(|stored| stored.profile.display_name.clone())
+            .unwrap_or_else(|| user.display_name.clone());
+        let existing_id = state
+            .calendar_connections
+            .values()
+            .find(|connection| {
+                connection.owner_id == user.id
+                    && connection.provider == CalendarProvider::Ics
+                    && connection.ics_url.as_deref() == Some(normalized_url.as_str())
+            })
+            .map(|connection| connection.id);
+        let connection = CalendarConnection {
+            id: existing_id.unwrap_or_else(Uuid::new_v4),
+            owner_id: user.id,
+            owner_display_name,
+            title: title.to_string(),
+            provider: CalendarProvider::Ics,
+            external_id: normalized_url.clone(),
+            calendar_id: normalized_url.clone(),
+            account_label: "Apple/iCloud feed".into(),
+            access_token: None,
+            refresh_token: None,
+            token_expires_at: None,
+            ics_url: Some(normalized_url),
+            created_at: existing_id
+                .and_then(|id| state.calendar_connections.get(&id).map(|entry| entry.created_at))
+                .unwrap_or_else(Utc::now),
+            updated_at: Utc::now(),
+        };
+        state.calendar_connections.insert(connection.id, connection.clone());
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(connection)
+    }
+
+    pub async fn create_local_calendar_connection(
+        &self,
+        user: UserProfile,
+        payload: CreateLocalCalendarConnectionRequest,
+    ) -> AppResult<CalendarConnection> {
+        self.create_local_calendar_connection_with_id(user, payload, None).await
+    }
+
+    async fn create_local_calendar_connection_with_id(
+        &self,
+        user: UserProfile,
+        payload: CreateLocalCalendarConnectionRequest,
+        forced_id: Option<Uuid>,
+    ) -> AppResult<CalendarConnection> {
+        let title = payload.title.trim();
+        if title.is_empty() {
+            return Err(AppError::BadRequest("title is required".into()));
+        }
+
+        let mut state = self.inner.write().await;
+        let owner_display_name = state
+            .users
+            .get(&user.id)
+            .map(|stored| stored.profile.display_name.clone())
+            .unwrap_or_else(|| user.display_name.clone());
+        let connection_id = forced_id.unwrap_or_else(Uuid::new_v4);
+        let connection = CalendarConnection {
+            id: connection_id,
+            owner_id: user.id,
+            owner_display_name,
+            title: title.to_string(),
+            provider: CalendarProvider::Sweet,
+            external_id: String::new(),
+            calendar_id: format!("sweet:{}", connection_id),
+            account_label: "Sweet calendar".into(),
+            access_token: None,
+            refresh_token: None,
+            token_expires_at: None,
+            ics_url: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        state.calendar_connections.insert(connection.id, connection.clone());
+        state.calendar_events.entry(connection.id).or_default();
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(connection)
+    }
+
+    pub async fn update_calendar_connection(
+        &self,
+        user: UserProfile,
+        connection_id: Uuid,
+        payload: UpdateCalendarConnectionRequest,
+    ) -> AppResult<CalendarConnection> {
+        let title = payload.title.trim();
+        if title.is_empty() {
+            return Err(AppError::BadRequest("title is required".into()));
+        }
+
+        let mut state = self.inner.write().await;
+        let connection = state
+            .calendar_connections
+            .get_mut(&connection_id)
+            .ok_or(AppError::NotFound)?;
+        if connection.owner_id != user.id {
+            return Err(AppError::Unauthorized);
+        }
+        connection.title = title.to_string();
+        connection.updated_at = Utc::now();
+        let updated = connection.clone();
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(updated)
+    }
+
+    pub async fn delete_calendar_connection(
+        &self,
+        user: UserProfile,
+        connection_id: Uuid,
+    ) -> AppResult<()> {
+        let mut state = self.inner.write().await;
+        let connection = state
+            .calendar_connections
+            .get(&connection_id)
+            .cloned()
+            .ok_or(AppError::NotFound)?;
+        if connection.owner_id != user.id {
+            return Err(AppError::Unauthorized);
+        }
+        state.calendar_connections.remove(&connection_id);
+        state.calendar_events.remove(&connection_id);
+        state.sync_tombstones.push(SyncTombstone {
+            entity: SyncEntityKind::CalendarConnections,
+            id: connection_id.to_string(),
+            deleted_at: Utc::now(),
+        });
+        for task in state.tasks.values_mut() {
+            if task.calendar_connection_id == Some(connection_id) {
+                task.calendar_connection_id = None;
+                task.updated_at = Utc::now();
+            }
+        }
+        state
+            .resource_shares
+            .remove(&calendar_resource_key(connection_id));
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(())
+    }
+
+    pub async fn create_calendar_event(
+        &self,
+        user: UserProfile,
+        connection_id: Uuid,
+        payload: CreateCalendarEventRequest,
+    ) -> AppResult<CalendarEvent> {
+        self.create_calendar_event_with_id(user, connection_id, payload, None).await
+    }
+
+    async fn create_calendar_event_with_id(
+        &self,
+        user: UserProfile,
+        connection_id: Uuid,
+        payload: CreateCalendarEventRequest,
+        forced_id: Option<String>,
+    ) -> AppResult<CalendarEvent> {
+        if payload.title.trim().is_empty() {
+            return Err(AppError::BadRequest("title is required".into()));
+        }
+        if payload.end_at <= payload.start_at {
+            return Err(AppError::BadRequest("end time must be after start time".into()));
+        }
+
+        let mut state = self.inner.write().await;
+        let connection = state
+            .calendar_connections
+            .get(&connection_id)
+            .cloned()
+            .ok_or(AppError::NotFound)?;
+        if connection.owner_id != user.id || connection.provider != CalendarProvider::Sweet {
+            return Err(AppError::Unauthorized);
+        }
+
+        let event = CalendarEvent {
+            id: forced_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
+            connection_id,
+            title: payload.title.trim().to_string(),
+            description: payload.description.trim().to_string(),
+            location: payload.location.trim().to_string(),
+            start_at: payload.start_at,
+            end_at: payload.end_at,
+            all_day: payload.all_day,
+            source_url: String::new(),
+            organizer: user.display_name.clone(),
+            updated_at: Some(Utc::now()),
+        };
+        state
+            .calendar_events
+            .entry(connection_id)
+            .or_default()
+            .push(event.clone());
+        if let Some(stored) = state.calendar_connections.get_mut(&connection_id) {
+            stored.updated_at = Utc::now();
+        }
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(event)
+    }
+
+    pub async fn update_calendar_event(
+        &self,
+        user: UserProfile,
+        connection_id: Uuid,
+        event_id: &str,
+        payload: UpdateCalendarEventRequest,
+    ) -> AppResult<CalendarEvent> {
+        if payload.title.trim().is_empty() {
+            return Err(AppError::BadRequest("title is required".into()));
+        }
+        if payload.end_at <= payload.start_at {
+            return Err(AppError::BadRequest("end time must be after start time".into()));
+        }
+
+        let mut state = self.inner.write().await;
+        let connection = state
+            .calendar_connections
+            .get(&connection_id)
+            .cloned()
+            .ok_or(AppError::NotFound)?;
+        if connection.owner_id != user.id || connection.provider != CalendarProvider::Sweet {
+            return Err(AppError::Unauthorized);
+        }
+
+        let event = state
+            .calendar_events
+            .get_mut(&connection_id)
+            .and_then(|events| events.iter_mut().find(|event| event.id == event_id))
+            .ok_or(AppError::NotFound)?;
+        event.title = payload.title.trim().to_string();
+        event.description = payload.description.trim().to_string();
+        event.location = payload.location.trim().to_string();
+        event.start_at = payload.start_at;
+        event.end_at = payload.end_at;
+        event.all_day = payload.all_day;
+        event.updated_at = Some(Utc::now());
+        let updated = event.clone();
+        if let Some(stored) = state.calendar_connections.get_mut(&connection_id) {
+            stored.updated_at = Utc::now();
+        }
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(updated)
+    }
+
+    pub async fn delete_calendar_event(
+        &self,
+        user: UserProfile,
+        connection_id: Uuid,
+        event_id: &str,
+    ) -> AppResult<()> {
+        let mut state = self.inner.write().await;
+        let connection = state
+            .calendar_connections
+            .get(&connection_id)
+            .cloned()
+            .ok_or(AppError::NotFound)?;
+        if connection.owner_id != user.id || connection.provider != CalendarProvider::Sweet {
+            return Err(AppError::Unauthorized);
+        }
+
+        let events = state
+            .calendar_events
+            .get_mut(&connection_id)
+            .ok_or(AppError::NotFound)?;
+        let before = events.len();
+        events.retain(|event| event.id != event_id);
+        if events.len() == before {
+            return Err(AppError::NotFound);
+        }
+        state.sync_tombstones.push(SyncTombstone {
+            entity: SyncEntityKind::CalendarEvents,
+            id: event_id.to_string(),
+            deleted_at: Utc::now(),
+        });
+        if let Some(stored) = state.calendar_connections.get_mut(&connection_id) {
+            stored.updated_at = Utc::now();
+        }
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(())
+    }
+
+    pub async fn list_tasks(&self, user: UserProfile) -> Vec<TaskItem> {
+        let state = self.inner.read().await;
+        let mut tasks = state
+            .tasks
+            .values()
+            .filter(|task| task.owner_id == user.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks.sort_by(|left, right| {
+            (
+                left.status == TaskStatus::Completed,
+                left.start_at.unwrap_or(left.created_at),
+                left.title.to_lowercase(),
+            )
+                .cmp(&(
+                    right.status == TaskStatus::Completed,
+                    right.start_at.unwrap_or(right.created_at),
+                    right.title.to_lowercase(),
+                ))
+        });
+        tasks
+    }
+
+    pub async fn create_task(&self, user: UserProfile, payload: CreateTaskRequest) -> AppResult<TaskItem> {
+        self.create_task_with_id(user, payload, None).await
+    }
+
+    async fn create_task_with_id(
+        &self,
+        user: UserProfile,
+        payload: CreateTaskRequest,
+        forced_id: Option<Uuid>,
+    ) -> AppResult<TaskItem> {
+        let title = payload.title.trim();
+        if title.is_empty() {
+            return Err(AppError::BadRequest("title is required".into()));
+        }
+        if let (Some(start_at), Some(end_at)) = (payload.start_at, payload.end_at) {
+            if end_at <= start_at {
+                return Err(AppError::BadRequest("end time must be after start time".into()));
+            }
+        }
+
+        let mut state = self.inner.write().await;
+        if let Some(calendar_connection_id) = payload.calendar_connection_id {
+            let connection = state
+                .calendar_connections
+                .get(&calendar_connection_id)
+                .ok_or(AppError::NotFound)?;
+            if connection.owner_id != user.id || connection.provider != CalendarProvider::Sweet {
+                return Err(AppError::Unauthorized);
+            }
+        }
+        let owner_display_name = state
+            .users
+            .get(&user.id)
+            .map(|stored| stored.profile.display_name.clone())
+            .unwrap_or_else(|| user.display_name.clone());
+        let task = TaskItem {
+            id: forced_id.unwrap_or_else(Uuid::new_v4),
+            owner_id: user.id,
+            owner_display_name,
+            title: title.to_string(),
+            description: payload.description.trim().to_string(),
+            status: TaskStatus::Open,
+            start_at: payload.start_at,
+            end_at: payload.end_at,
+            all_day: payload.all_day,
+            calendar_connection_id: payload.calendar_connection_id,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            completed_at: None,
+        };
+        state.tasks.insert(task.id, task.clone());
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(task)
+    }
+
+    pub async fn update_task(
+        &self,
+        user: UserProfile,
+        task_id: Uuid,
+        payload: UpdateTaskRequest,
+    ) -> AppResult<TaskItem> {
+        let title = payload.title.trim();
+        if title.is_empty() {
+            return Err(AppError::BadRequest("title is required".into()));
+        }
+        if let (Some(start_at), Some(end_at)) = (payload.start_at, payload.end_at) {
+            if end_at <= start_at {
+                return Err(AppError::BadRequest("end time must be after start time".into()));
+            }
+        }
+
+        let mut state = self.inner.write().await;
+        if let Some(calendar_connection_id) = payload.calendar_connection_id {
+            let connection = state
+                .calendar_connections
+                .get(&calendar_connection_id)
+                .ok_or(AppError::NotFound)?;
+            if connection.owner_id != user.id || connection.provider != CalendarProvider::Sweet {
+                return Err(AppError::Unauthorized);
+            }
+        }
+        let task = state.tasks.get_mut(&task_id).ok_or(AppError::NotFound)?;
+        if task.owner_id != user.id {
+            return Err(AppError::Unauthorized);
+        }
+        task.title = title.to_string();
+        task.description = payload.description.trim().to_string();
+        task.status = payload.status;
+        task.start_at = payload.start_at;
+        task.end_at = payload.end_at;
+        task.all_day = payload.all_day;
+        task.calendar_connection_id = payload.calendar_connection_id;
+        task.updated_at = Utc::now();
+        task.completed_at = if task.status == TaskStatus::Completed {
+            Some(task.completed_at.unwrap_or_else(Utc::now))
+        } else {
+            None
+        };
+        let updated = task.clone();
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(updated)
+    }
+
+    pub async fn delete_task(&self, user: UserProfile, task_id: Uuid) -> AppResult<()> {
+        let mut state = self.inner.write().await;
+        let task = state.tasks.get(&task_id).cloned().ok_or(AppError::NotFound)?;
+        if task.owner_id != user.id {
+            return Err(AppError::Unauthorized);
+        }
+        state.tasks.remove(&task_id);
+        state.sync_tombstones.push(SyncTombstone {
+            entity: SyncEntityKind::Tasks,
+            id: task_id.to_string(),
+            deleted_at: Utc::now(),
+        });
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(())
+    }
+
+    pub async fn list_calendar_events(
+        &self,
+        user: UserProfile,
+        connection_id: Uuid,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> AppResult<Vec<CalendarEvent>> {
+        let (settings, mut connection) = {
+            let state = self.inner.read().await;
+            let connection = state
+                .calendar_connections
+                .get(&connection_id)
+                .cloned()
+                .ok_or(AppError::NotFound)?;
+            if !calendar_connection_visible_to_user(&state, &connection, user.id) {
+                return Err(AppError::Unauthorized);
+            }
+            (state.admin_settings.clone(), connection)
+        };
+
+        let events = match connection.provider {
+            CalendarProvider::Google => {
+                let access_token = ensure_google_calendar_access_token(&settings, &mut connection).await?;
+                let events = fetch_google_calendar_events(&connection, &access_token, start, end).await?;
+                let mut state = self.inner.write().await;
+                if let Some(stored) = state.calendar_connections.get_mut(&connection_id) {
+                    stored.access_token = connection.access_token.clone();
+                    stored.refresh_token = connection.refresh_token.clone();
+                    stored.token_expires_at = connection.token_expires_at;
+                    stored.updated_at = Utc::now();
+                }
+                let snapshot = state.clone();
+                drop(state);
+                self.persist_snapshot(snapshot).await?;
+                events
+            }
+            CalendarProvider::Ics => {
+                let url = connection
+                    .ics_url
+                    .clone()
+                    .ok_or_else(|| AppError::BadRequest("calendar feed url missing".into()))?;
+                fetch_ics_calendar_events_from_url(&url, start, end).await?
+                    .into_iter()
+                    .map(|mut event| {
+                        event.connection_id = connection.id;
+                        event
+                    })
+                    .collect()
+            }
+            CalendarProvider::Sweet => {
+                let state = self.inner.read().await;
+                let mut events = state
+                    .calendar_events
+                    .get(&connection_id)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|event| event.end_at >= start && event.start_at <= end)
+                    .collect::<Vec<_>>();
+                events.extend(state.tasks.values().filter(|task| task.calendar_connection_id == Some(connection_id)).filter_map(|task| {
+                    let start_at = task.start_at?;
+                    let end_at = task.end_at.unwrap_or(start_at + Duration::hours(1));
+                    if end_at < start || start_at > end {
+                        return None;
+                    }
+                    Some(CalendarEvent {
+                        id: format!("task:{}", task.id),
+                        connection_id,
+                        title: task.title.clone(),
+                        description: task.description.clone(),
+                        location: String::new(),
+                        start_at,
+                        end_at,
+                        all_day: task.all_day,
+                        source_url: String::new(),
+                        organizer: task.owner_display_name.clone(),
+                        updated_at: Some(task.updated_at),
+                    })
+                }));
+                events.sort_by(|left, right| {
+                    (left.start_at, left.title.to_lowercase())
+                        .cmp(&(right.start_at, right.title.to_lowercase()))
+                });
+                events
+            }
+        };
+
+        Ok(events)
     }
 
     pub async fn setup_admin(&self, payload: SetupAdminRequest) -> AppResult<UserProfile> {
@@ -681,6 +2020,104 @@ impl AppState {
         Ok(next_settings)
     }
 
+    pub async fn ensure_manage_org_settings(&self, user_id: Uuid) -> AppResult<()> {
+        let state = self.inner.read().await;
+        let user = state.users.get(&user_id).ok_or(AppError::Unauthorized)?;
+        let roles = normalize_user_roles(user.profile.role.clone(), &user.profile.roles);
+        let allowed = roles
+            .iter()
+            .any(|role| state.admin_settings.role_policies.get(role).map(|policy| policy.manage_org_settings).unwrap_or(false));
+        if allowed {
+            Ok(())
+        } else {
+            Err(AppError::Unauthorized)
+        }
+    }
+
+    pub async fn system_update_status(&self) -> SystemUpdateStatus {
+        let mut status = self.system_update.read().await.clone();
+        status.current_version = self.config.app_version.clone();
+        status.update_target = self.config.update_target.clone();
+        status.update_enabled = self.config.update_command.is_some();
+        status
+    }
+
+    pub async fn trigger_system_update(&self) -> AppResult<SystemUpdateStatus> {
+        let command = self
+            .config
+            .update_command
+            .clone()
+            .ok_or_else(|| AppError::BadRequest("update command is not configured".into()))?;
+
+        {
+            let mut status = self.system_update.write().await;
+            if status.update_in_progress {
+                return Err(AppError::BadRequest("an update is already in progress".into()));
+            }
+            status.current_version = self.config.app_version.clone();
+            status.update_target = self.config.update_target.clone();
+            status.update_enabled = true;
+            status.update_in_progress = true;
+            status.last_started_at = Some(Utc::now());
+            status.last_finished_at = None;
+            status.last_exit_code = None;
+            status.last_error = None;
+            status.last_message = "Update command started.".into();
+        }
+        self.persist_system_update_status().await;
+
+        let update_status = self.system_update.clone();
+        let version = self.config.app_version.clone();
+        let target = self.config.update_target.clone();
+        let enabled = self.config.update_command.is_some();
+        let status_path = update_status_path(&self.config.storage_root);
+
+        tokio::spawn(async move {
+            let outcome = Command::new("sh").arg("-lc").arg(&command).output().await;
+            let mut status = update_status.write().await;
+            status.current_version = version;
+            status.update_target = target;
+            status.update_enabled = enabled;
+            status.update_in_progress = false;
+            status.last_finished_at = Some(Utc::now());
+            match outcome {
+                Ok(output) => {
+                    status.last_exit_code = output.status.code();
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let combined = if !stderr.is_empty() { stderr } else { stdout };
+                    if output.status.success() {
+                        status.last_error = None;
+                        status.last_message = truncate_status_message(
+                            if combined.is_empty() {
+                                "Update command completed.".to_string()
+                            } else {
+                                combined
+                            },
+                        );
+                    } else {
+                        status.last_error = Some(truncate_status_message(if combined.is_empty() {
+                            "Update command failed.".to_string()
+                        } else {
+                            combined.clone()
+                        }));
+                        status.last_message = "Update command failed.".into();
+                    }
+                }
+                Err(error) => {
+                    status.last_exit_code = None;
+                    status.last_error = Some(truncate_status_message(error.to_string()));
+                    status.last_message = "Could not launch update command.".into();
+                }
+            }
+            let snapshot = status.clone();
+            drop(status);
+            persist_system_update_status_file(status_path, &snapshot).await;
+        });
+
+        Ok(self.system_update_status().await)
+    }
+
     pub async fn session_response(&self, user: UserProfile) -> AppResult<SessionResponse> {
         let claims = JwtClaims {
             sub: user.id.to_string(),
@@ -790,6 +2227,11 @@ impl AppState {
             .ok_or(AppError::Unauthorized)
     }
 
+    async fn persist_system_update_status(&self) {
+        let snapshot = self.system_update.read().await.clone();
+        persist_system_update_status_file(update_status_path(&self.config.storage_root), &snapshot).await;
+    }
+
     pub async fn list_notes(&self) -> Vec<Note> {
         if let Ok(Some(notes)) = self.persistence.list_notes().await {
             let mut state = self.inner.write().await;
@@ -824,7 +2266,10 @@ impl AppState {
         if resource_key.is_empty() {
             return Err(AppError::BadRequest("missing resource key".into()));
         }
-        if !resource_key.starts_with("file:") && !resource_key.starts_with("note:") {
+        if !resource_key.starts_with("file:")
+            && !resource_key.starts_with("note:")
+            && !resource_key.starts_with("calendar:")
+        {
             return Err(AppError::BadRequest("invalid resource key".into()));
         }
 
@@ -833,6 +2278,17 @@ impl AppState {
         user_ids.dedup();
 
         let mut state = self.inner.write().await;
+        if let Some(connection_id) = resource_key.strip_prefix("calendar:") {
+            let parsed_connection_id = Uuid::parse_str(connection_id)
+                .map_err(|_| AppError::BadRequest("invalid calendar resource key".into()))?;
+            let connection = state
+                .calendar_connections
+                .get(&parsed_connection_id)
+                .ok_or(AppError::NotFound)?;
+            if connection.owner_id != user.id {
+                return Err(AppError::Unauthorized);
+            }
+        }
         user_ids.retain(|id| state.users.contains_key(id));
         let share = ResourceShare {
             resource_key: resource_key.to_string(),
@@ -851,6 +2307,10 @@ impl AppState {
     }
 
     pub async fn create_note(&self, payload: CreateNoteRequest) -> AppResult<Note> {
+        self.create_note_with_id(payload, None).await
+    }
+
+    async fn create_note_with_id(&self, payload: CreateNoteRequest, forced_id: Option<Uuid>) -> AppResult<Note> {
         let mut state = self.inner.write().await;
         let now = Utc::now();
         let markdown = payload
@@ -861,7 +2321,7 @@ impl AppState {
         let projected_used = current_used.saturating_add(markdown.len() as u64);
         enforce_storage_limit(&state, author_id, current_used, projected_used, true)?;
         let note = Note {
-            id: Uuid::new_v4(),
+            id: forced_id.unwrap_or_else(Uuid::new_v4),
             title: payload.title,
             folder: payload.folder.unwrap_or_else(|| "Inbox".into()),
             markdown,
@@ -938,6 +2398,29 @@ impl AppState {
         Ok(note_snapshot)
     }
 
+    pub async fn delete_note(&self, id: Uuid) -> AppResult<()> {
+        let mut state = self.inner.write().await;
+        let note = state.notes.remove(&id).ok_or(AppError::NotFound)?;
+        state.sync_tombstones.push(SyncTombstone {
+            entity: SyncEntityKind::Notes,
+            id: note.id.to_string(),
+            deleted_at: Utc::now(),
+        });
+        let uses_postgres = self.persistence.uses_postgres();
+        if uses_postgres {
+            self.persistence.delete_note(note.id).await?;
+        }
+        self.storage
+            .delete_note_markdown(&note.folder, &note.title, note.id)
+            .await?;
+        let snapshot = state.clone();
+        drop(state);
+        if !uses_postgres {
+            self.persist_snapshot(snapshot).await?;
+        }
+        Ok(())
+    }
+
     pub async fn list_diagrams(&self) -> Vec<Diagram> {
         if let Ok(Some(diagrams)) = self.persistence.list_diagrams().await {
             let mut state = self.inner.write().await;
@@ -952,6 +2435,14 @@ impl AppState {
     }
 
     pub async fn create_diagram(&self, payload: CreateDiagramRequest) -> AppResult<Diagram> {
+        self.create_diagram_with_id(payload, None).await
+    }
+
+    async fn create_diagram_with_id(
+        &self,
+        payload: CreateDiagramRequest,
+        forced_id: Option<Uuid>,
+    ) -> AppResult<Diagram> {
         let mut state = self.inner.write().await;
         let now = Utc::now();
         let xml = payload
@@ -962,7 +2453,7 @@ impl AppState {
         let projected_used = current_used.saturating_add(xml.len() as u64);
         enforce_storage_limit(&state, author_id, current_used, projected_used, true)?;
         let diagram = Diagram {
-            id: Uuid::new_v4(),
+            id: forced_id.unwrap_or_else(Uuid::new_v4),
             title: payload.title,
             xml,
             revision: 1,
@@ -1130,6 +2621,25 @@ impl AppState {
         Ok(memo)
     }
 
+    pub async fn update_voice_memo(
+        &self,
+        memo_id: Uuid,
+        payload: crate::models::UpdateVoiceMemoRequest,
+    ) -> AppResult<VoiceMemo> {
+        let mut state = self.inner.write().await;
+        let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+        memo.title = payload.title.trim().to_string();
+        if memo.title.is_empty() {
+            return Err(AppError::BadRequest("title cannot be empty".into()));
+        }
+        memo.updated_at = Utc::now();
+        let memo_snapshot = memo.clone();
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(memo_snapshot)
+    }
+
     pub async fn memo_job(&self, memo_id: Uuid) -> AppResult<TranscriptionJob> {
         let state = self.inner.read().await;
         state
@@ -1280,6 +2790,7 @@ impl AppState {
         let room = Room {
             id: Uuid::new_v4(),
             name: payload.name,
+            folder: payload.folder.unwrap_or_default(),
             kind: payload.kind,
             created_at: Utc::now(),
             participant_ids,
@@ -1312,6 +2823,9 @@ impl AppState {
             return Err(AppError::Unauthorized);
         }
         room.name = payload.name;
+        if let Some(folder) = payload.folder {
+            room.folder = folder;
+        }
         if room.kind == crate::models::RoomKind::Direct {
             if let Some(mut participant_ids) = payload.participant_ids {
                 participant_ids.push(actor.id);
@@ -1396,6 +2910,16 @@ impl AppState {
         payload: CreateMessageRequest,
         author: UserProfile,
     ) -> AppResult<Message> {
+        self.create_message_with_id(room_id, payload, author, None).await
+    }
+
+    async fn create_message_with_id(
+        &self,
+        room_id: Uuid,
+        payload: CreateMessageRequest,
+        author: UserProfile,
+        forced_id: Option<Uuid>,
+    ) -> AppResult<Message> {
         let mut state = self.inner.write().await;
         let Some(room) = state.rooms.get(&room_id) else {
             return Err(AppError::NotFound);
@@ -1406,11 +2930,12 @@ impl AppState {
             return Err(AppError::Unauthorized);
         }
         let message = Message {
-            id: Uuid::new_v4(),
+            id: forced_id.unwrap_or_else(Uuid::new_v4),
             room_id,
             author,
             body: payload.body,
             created_at: Utc::now(),
+            reactions: Vec::new(),
         };
         let uses_postgres = self.persistence.uses_postgres();
         if uses_postgres {
@@ -1427,6 +2952,71 @@ impl AppState {
             self.persist_snapshot(snapshot).await?;
         }
         Ok(message)
+    }
+
+    pub async fn toggle_message_reaction(
+        &self,
+        room_id: Uuid,
+        message_id: Uuid,
+        payload: ToggleMessageReactionRequest,
+        user: UserProfile,
+    ) -> AppResult<Message> {
+        let emoji = payload.emoji.trim();
+        if emoji.is_empty() || emoji.chars().count() > 8 {
+            return Err(AppError::BadRequest("invalid emoji".into()));
+        }
+
+        let mut state = self.inner.write().await;
+        let Some(room) = state.rooms.get(&room_id) else {
+            return Err(AppError::NotFound);
+        };
+        if room.kind == crate::models::RoomKind::Direct
+            && !room.participant_ids.contains(&user.id)
+        {
+            return Err(AppError::Unauthorized);
+        }
+        let Some(room_messages) = state.messages.get_mut(&room_id) else {
+            return Err(AppError::NotFound);
+        };
+        let Some(message) = room_messages.iter_mut().find(|message| message.id == message_id) else {
+            return Err(AppError::NotFound);
+        };
+
+        if let Some(reaction) = message
+            .reactions
+            .iter_mut()
+            .find(|reaction| reaction.emoji == emoji)
+        {
+            if let Some(index) = reaction.user_ids.iter().position(|id| *id == user.id) {
+                reaction.user_ids.remove(index);
+            } else {
+                reaction.user_ids.push(user.id);
+            }
+        } else {
+            message.reactions.push(MessageReaction {
+                emoji: emoji.to_string(),
+                user_ids: vec![user.id],
+            });
+        }
+
+        message.reactions.retain(|reaction| !reaction.user_ids.is_empty());
+        message
+            .reactions
+            .sort_by(|left, right| left.emoji.cmp(&right.emoji));
+
+        let updated = message.clone();
+        let uses_postgres = self.persistence.uses_postgres();
+        if uses_postgres {
+            self.persistence
+                .update_message_reactions(message_id, &updated.reactions)
+                .await?;
+        }
+        let snapshot = state.clone();
+        drop(state);
+        if !uses_postgres {
+            self.persist_snapshot(snapshot).await?;
+        }
+        Ok(updated)
     }
 
     pub async fn list_files(&self) -> AppResult<Vec<crate::models::FileNode>> {
@@ -2619,6 +4209,342 @@ fn effective_storage_limit_mb(state: &StateData, user_id: Uuid) -> u64 {
         .unwrap_or(state.admin_settings.per_user_storage_mb)
 }
 
+fn calendar_resource_key(connection_id: Uuid) -> String {
+    format!("calendar:{connection_id}")
+}
+
+fn calendar_connection_visible_to_user(
+    state: &StateData,
+    connection: &CalendarConnection,
+    user_id: Uuid,
+) -> bool {
+    if connection.owner_id == user_id {
+        return true;
+    }
+    match state
+        .resource_shares
+        .get(&calendar_resource_key(connection.id))
+        .map(|share| &share.visibility)
+    {
+        Some(ResourceVisibility::Org) => true,
+        Some(ResourceVisibility::Users) => state
+            .resource_shares
+            .get(&calendar_resource_key(connection.id))
+            .map(|share| share.user_ids.contains(&user_id))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+fn normalize_calendar_feed_url(raw_url: &str) -> AppResult<String> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest("missing calendar feed url".into()));
+    }
+    let normalized = if let Some(rest) = trimmed.strip_prefix("webcal://") {
+        format!("https://{rest}")
+    } else {
+        trimmed.to_string()
+    };
+    let parsed = reqwest::Url::parse(&normalized)
+        .map_err(|_| AppError::BadRequest("calendar feed url is invalid".into()))?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(parsed.to_string()),
+        _ => Err(AppError::BadRequest(
+            "calendar feed url must use http, https, or webcal".into(),
+        )),
+    }
+}
+
+async fn ensure_google_calendar_access_token(
+    settings: &AdminSettings,
+    connection: &mut CalendarConnection,
+) -> AppResult<String> {
+    let token_is_fresh = connection
+        .token_expires_at
+        .map(|expires_at| expires_at > Utc::now() + Duration::minutes(1))
+        .unwrap_or(false);
+    if token_is_fresh {
+        if let Some(access_token) = connection.access_token.clone() {
+            return Ok(access_token);
+        }
+    }
+
+    let refresh_token = connection
+        .refresh_token
+        .clone()
+        .ok_or_else(|| AppError::BadRequest("Google calendar connection is missing a refresh token".into()))?;
+
+    let token_response = Client::new()
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+            ("client_id", settings.google_calendar_client_id.as_str()),
+            ("client_secret", settings.google_calendar_client_secret.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Google token refresh failed: {error}")))?;
+
+    if !token_response.status().is_success() {
+        let body = token_response.text().await.unwrap_or_default();
+        return Err(AppError::BadRequest(format!(
+            "Google token refresh failed: {}",
+            body.trim()
+        )));
+    }
+
+    let token_json: Value = token_response
+        .json()
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Google token refresh response was invalid: {error}")))?;
+    let access_token = token_json
+        .get("access_token")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::BadRequest("Google token refresh missing access_token".into()))?
+        .to_string();
+    let expires_in = token_json
+        .get("expires_in")
+        .and_then(Value::as_i64)
+        .unwrap_or(3600)
+        .max(60);
+    connection.access_token = Some(access_token.clone());
+    connection.token_expires_at = Some(Utc::now() + Duration::seconds(expires_in));
+    if let Some(next_refresh_token) = token_json.get("refresh_token").and_then(Value::as_str) {
+        connection.refresh_token = Some(next_refresh_token.to_string());
+    }
+    Ok(access_token)
+}
+
+async fn fetch_google_calendar_events(
+    connection: &CalendarConnection,
+    access_token: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> AppResult<Vec<CalendarEvent>> {
+    let url = reqwest::Url::parse_with_params(
+        &format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events",
+            urlencoding::encode(&connection.calendar_id)
+        ),
+        &[
+            ("singleEvents", "true"),
+            ("orderBy", "startTime"),
+            ("timeMin", &start.to_rfc3339()),
+            ("timeMax", &end.to_rfc3339()),
+        ],
+    )
+    .map_err(|err| AppError::Internal(err.to_string()))?;
+
+    let response = Client::new()
+        .get(url)
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Google calendar fetch failed: {error}")))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(AppError::BadRequest(format!(
+            "Google calendar fetch failed: {}",
+            body.trim()
+        )));
+    }
+
+    let payload: Value = response
+        .json()
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Google calendar response was invalid: {error}")))?;
+
+    let mut events = payload
+        .get("items")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.to_string();
+            let title = item
+                .get("summary")
+                .and_then(Value::as_str)
+                .unwrap_or("Untitled event")
+                .to_string();
+            let description = item
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let location = item
+                .get("location")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let source_url = item.get("htmlLink").and_then(Value::as_str).unwrap_or_default().to_string();
+            let organizer = item
+                .get("organizer")
+                .and_then(|value| value.get("email"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let updated_at = item
+                .get("updated")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            let (start_at, all_day) = parse_google_event_time(item.get("start")?)?;
+            let (end_at, _) = parse_google_event_time(item.get("end")?)?;
+            Some(CalendarEvent {
+                id,
+                connection_id: connection.id,
+                title,
+                description,
+                location,
+                start_at,
+                end_at,
+                all_day,
+                source_url,
+                organizer,
+                updated_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    events.sort_by(|left, right| (left.start_at, left.title.to_lowercase()).cmp(&(right.start_at, right.title.to_lowercase())));
+    Ok(events)
+}
+
+fn parse_google_event_time(value: &Value) -> Option<(DateTime<Utc>, bool)> {
+    if let Some(date_time) = value.get("dateTime").and_then(Value::as_str) {
+        return DateTime::parse_from_rfc3339(date_time)
+            .ok()
+            .map(|value| (value.with_timezone(&Utc), false));
+    }
+    let date = value.get("date").and_then(Value::as_str)?;
+    let parsed = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
+    Some((Utc.from_utc_datetime(&parsed.and_hms_opt(0, 0, 0)?), true))
+}
+
+async fn fetch_ics_calendar_events_from_url(
+    url: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> AppResult<Vec<CalendarEvent>> {
+    let body = Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Calendar feed fetch failed: {error}")))?
+        .text()
+        .await
+        .map_err(|error| AppError::BadRequest(format!("Calendar feed body could not be read: {error}")))?;
+
+    parse_ics_calendar_events(body.as_bytes(), start, end)
+}
+
+fn parse_ics_calendar_events(
+    bytes: &[u8],
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+) -> AppResult<Vec<CalendarEvent>> {
+    let reader = BufReader::new(bytes);
+    let parser = IcalParser::new(reader);
+    let mut events = Vec::new();
+
+    for calendar in parser {
+        let calendar = calendar.map_err(|error| AppError::BadRequest(format!("Calendar feed parse failed: {error}")))?;
+        for event in calendar.events {
+            let mut id = String::new();
+            let mut title = "Untitled event".to_string();
+            let mut description = String::new();
+            let mut location = String::new();
+            let mut source_url = String::new();
+            let mut organizer = String::new();
+            let mut updated_at = None;
+            let mut start_at = None;
+            let mut end_at = None;
+            let mut all_day = false;
+
+            for property in event.properties {
+                let name = property.name.to_uppercase();
+                let value = property.value.unwrap_or_default();
+                match name.as_str() {
+                    "UID" => id = value,
+                    "SUMMARY" => title = value,
+                    "DESCRIPTION" => description = value,
+                    "LOCATION" => location = value,
+                    "URL" => source_url = value,
+                    "ORGANIZER" => organizer = value.replace("mailto:", ""),
+                    "LAST-MODIFIED" => {
+                        updated_at = parse_ics_datetime(&value)
+                            .ok()
+                            .map(|(timestamp, _)| timestamp)
+                    }
+                    "DTSTART" => {
+                        if let Ok((timestamp, date_only)) = parse_ics_datetime(&value) {
+                            start_at = Some(timestamp);
+                            all_day = date_only;
+                        }
+                    }
+                    "DTEND" => {
+                        if let Ok((timestamp, _)) = parse_ics_datetime(&value) {
+                            end_at = Some(timestamp);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let Some(start_at) = start_at else {
+                continue;
+            };
+            let end_at = end_at.unwrap_or_else(|| {
+                if all_day {
+                    start_at + Duration::days(1)
+                } else {
+                    start_at + Duration::hours(1)
+                }
+            });
+            if end_at < range_start || start_at > range_end {
+                continue;
+            }
+            events.push(CalendarEvent {
+                id: if id.is_empty() { format!("ics-{}", events.len() + 1) } else { id },
+                connection_id: Uuid::nil(),
+                title,
+                description,
+                location,
+                start_at,
+                end_at,
+                all_day,
+                source_url,
+                organizer,
+                updated_at,
+            });
+        }
+    }
+
+    events.sort_by(|left, right| (left.start_at, left.title.to_lowercase()).cmp(&(right.start_at, right.title.to_lowercase())));
+    Ok(events)
+}
+
+fn parse_ics_datetime(value: &str) -> AppResult<(DateTime<Utc>, bool)> {
+    let trimmed = value.trim();
+    if trimmed.len() == 8 {
+        let parsed = NaiveDate::parse_from_str(trimmed, "%Y%m%d")
+            .map_err(|error| AppError::BadRequest(format!("Unsupported calendar date: {error}")))?;
+        let datetime = parsed
+            .and_hms_opt(0, 0, 0)
+            .ok_or_else(|| AppError::BadRequest("Invalid calendar date".into()))?;
+        return Ok((Utc.from_utc_datetime(&datetime), true));
+    }
+    if let Ok(parsed) = DateTime::parse_from_str(trimmed, "%Y%m%dT%H%M%S%z") {
+        return Ok((parsed.with_timezone(&Utc), false));
+    }
+    if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y%m%dT%H%M%S") {
+        return Ok((Utc.from_utc_datetime(&parsed), false));
+    }
+    Err(AppError::BadRequest("Unsupported calendar timestamp".into()))
+}
+
 fn enforce_storage_limit(
     state: &StateData,
     user_id: Uuid,
@@ -2794,6 +4720,7 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
     let general_room = Room {
         id: Uuid::new_v4(),
         name: "general".into(),
+        folder: String::new(),
         kind: crate::models::RoomKind::Channel,
         created_at: Utc::now(),
         participant_ids: Vec::new(),
@@ -2830,11 +4757,54 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         author: user.clone(),
         body: "Sweet is up. Use this room for internal chat and signaling tests.".into(),
         created_at: Utc::now(),
+        reactions: Vec::new(),
     };
 
     Ok(StateData {
         users: HashMap::from([(stored_user.profile.id, stored_user)]),
-        admin_settings: AdminSettings::default(),
+        admin_settings: AdminSettings {
+            oidc_providers: if !config.authentik_issuer.trim().is_empty()
+                && !config.authentik_client_id.trim().is_empty()
+            {
+                vec![OidcProviderSettings {
+                    id: "authentik".into(),
+                    title: "Authentik".into(),
+                    enabled: true,
+                    provider: "authentik".into(),
+                    issuer: config.authentik_issuer.trim().trim_end_matches('/').to_string(),
+                    client_id: config.authentik_client_id.clone(),
+                    client_secret: config.authentik_client_secret.clone(),
+                    authorization_url: String::new(),
+                    token_url: String::new(),
+                    userinfo_url: String::new(),
+                    scopes: "openid profile email".into(),
+                }]
+            } else {
+                Vec::new()
+            },
+            active_oidc_provider_id: if !config.authentik_issuer.trim().is_empty()
+                && !config.authentik_client_id.trim().is_empty()
+            {
+                "authentik".into()
+            } else {
+                String::new()
+            },
+            oidc: OidcProviderSettings {
+                id: "authentik".into(),
+                title: "Authentik".into(),
+                enabled: !config.authentik_issuer.trim().is_empty()
+                    && !config.authentik_client_id.trim().is_empty(),
+                provider: "authentik".into(),
+                issuer: config.authentik_issuer.trim().trim_end_matches('/').to_string(),
+                client_id: config.authentik_client_id.clone(),
+                client_secret: config.authentik_client_secret.clone(),
+                authorization_url: String::new(),
+                token_url: String::new(),
+                userinfo_url: String::new(),
+                scopes: "openid profile email".into(),
+            },
+            ..AdminSettings::default()
+        },
         user,
         password_hash,
         notes: HashMap::from([(welcome_note.id, welcome_note)]),
@@ -2843,9 +4813,155 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         jobs: HashMap::new(),
         rooms: HashMap::from([(general_room.id, general_room)]),
         messages: HashMap::from([(welcome_message.room_id, vec![welcome_message])]),
+        calendar_connections: HashMap::new(),
+        calendar_events: HashMap::new(),
+        tasks: HashMap::new(),
         resource_shares: HashMap::new(),
+        sync_tombstones: Vec::new(),
         pending_credential_changes: HashMap::new(),
     })
+}
+
+fn effective_oidc_settings(config: &Config, settings: &AdminSettings) -> OidcProviderSettings {
+    let mut oidc = settings
+        .oidc_providers
+        .iter()
+        .find(|provider| {
+            provider.id == settings.active_oidc_provider_id && !provider.id.trim().is_empty()
+        })
+        .cloned()
+        .or_else(|| settings.oidc_providers.iter().find(|provider| provider.enabled).cloned())
+        .or_else(|| settings.oidc_providers.first().cloned())
+        .unwrap_or_else(|| settings.oidc.clone());
+
+    if oidc.id.trim().is_empty() {
+        oidc.id = oidc.provider.clone();
+    }
+    if oidc.title.trim().is_empty() {
+        oidc.title = match oidc.provider.trim() {
+            "authentik" => "Authentik".into(),
+            "generic" => "Generic OIDC".into(),
+            _ => "Authentication".into(),
+        };
+    }
+    if oidc.issuer.trim().is_empty()
+        && !config.authentik_issuer.trim().is_empty()
+        && !config.authentik_client_id.trim().is_empty()
+    {
+        oidc.enabled = true;
+        if oidc.id.trim().is_empty() {
+            oidc.id = "authentik".into();
+        }
+        if oidc.title.trim().is_empty() {
+            oidc.title = "Authentik".into();
+        }
+        oidc.provider = "authentik".into();
+        oidc.issuer = config.authentik_issuer.trim().trim_end_matches('/').to_string();
+        oidc.client_id = config.authentik_client_id.clone();
+        oidc.client_secret = config.authentik_client_secret.clone();
+    }
+    oidc.issuer = oidc.issuer.trim().trim_end_matches('/').to_string();
+    if oidc.authorization_url.trim().is_empty() && !oidc.issuer.is_empty() {
+        oidc.authorization_url = format!("{}/authorize", oidc.issuer);
+    }
+    if oidc.token_url.trim().is_empty() && !oidc.issuer.is_empty() {
+        oidc.token_url = format!("{}/token", oidc.issuer);
+    }
+    if oidc.userinfo_url.trim().is_empty() && !oidc.issuer.is_empty() {
+        oidc.userinfo_url = format!("{}/userinfo", oidc.issuer);
+    }
+    if oidc.scopes.trim().is_empty() {
+        oidc.scopes = "openid profile email".into();
+    }
+    oidc
+}
+
+fn newer_than(value: DateTime<Utc>, cursor: Option<DateTime<Utc>>) -> bool {
+    match cursor {
+        Some(cursor) => value > cursor,
+        None => true,
+    }
+}
+
+fn max_optional_datetime<I>(iter: I) -> Option<DateTime<Utc>>
+where
+    I: IntoIterator<Item = DateTime<Utc>>,
+{
+    iter.into_iter().max()
+}
+
+fn operation_id_string(operation: &SyncOperation) -> String {
+    match operation {
+        SyncOperation::CreateNote { title, .. } => format!("create-note:{title}"),
+        SyncOperation::UpdateNote { id, .. } | SyncOperation::DeleteNote { id } => id.to_string(),
+        SyncOperation::CreateDiagram { title, .. } => format!("create-diagram:{title}"),
+        SyncOperation::UpdateDiagram { id, .. } => id.to_string(),
+        SyncOperation::CreateTask { title, .. } => format!("create-task:{title}"),
+        SyncOperation::UpdateTask { id, .. } | SyncOperation::DeleteTask { id } => id.to_string(),
+        SyncOperation::CreateLocalCalendar { title, .. } => format!("create-calendar:{title}"),
+        SyncOperation::RenameCalendar { id, .. } | SyncOperation::DeleteCalendar { id } => id.to_string(),
+        SyncOperation::CreateCalendarEvent { connection_id, title, .. } => format!("{connection_id}:{title}"),
+        SyncOperation::UpdateCalendarEvent { event_id, .. } | SyncOperation::DeleteCalendarEvent { event_id, .. } => event_id.clone(),
+        SyncOperation::CreateMessage { room_id, body, .. } => format!("{room_id}:{body}"),
+        SyncOperation::CreateManagedFolder { path } => format!("create-folder:{path}"),
+        SyncOperation::MoveManagedPath { source_path, destination_dir } => {
+            format!("move-path:{source_path}:{destination_dir}")
+        }
+        SyncOperation::RenameManagedPath { path, new_name } => {
+            format!("rename-path:{path}:{new_name}")
+        }
+        SyncOperation::DeleteManagedPath { path } => format!("delete-path:{path}"),
+        SyncOperation::ToggleMessageReaction { room_id, message_id, emoji } => {
+            format!("{room_id}:{message_id}:{emoji}")
+        }
+    }
+}
+
+fn update_status_path(storage_root: &Path) -> PathBuf {
+    storage_root.join("system-update-status.json")
+}
+
+async fn load_system_update_status(
+    path: PathBuf,
+    current_version: &str,
+    update_target: &str,
+    update_enabled: bool,
+) -> SystemUpdateStatus {
+    let mut status = tokio::fs::read(&path)
+        .await
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<SystemUpdateStatus>(&bytes).ok())
+        .unwrap_or_default();
+    status.current_version = current_version.to_string();
+    status.update_target = update_target.to_string();
+    status.update_enabled = update_enabled;
+    status.update_in_progress = false;
+    if status.last_message.trim().is_empty() {
+        status.last_message = if update_enabled {
+            "Update system ready.".into()
+        } else {
+            "Update command is not configured.".into()
+        };
+    }
+    status
+}
+
+async fn persist_system_update_status_file(path: PathBuf, status: &SystemUpdateStatus) {
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if let Ok(bytes) = serde_json::to_vec_pretty(status) {
+        let _ = tokio::fs::write(path, bytes).await;
+    }
+}
+
+fn truncate_status_message(message: String) -> String {
+    const MAX_LEN: usize = 700;
+    let trimmed = message.trim();
+    if trimmed.len() <= MAX_LEN {
+        return trimmed.to_string();
+    }
+    format!("{}…", &trimmed[..MAX_LEN])
 }
 
 #[cfg(test)]
