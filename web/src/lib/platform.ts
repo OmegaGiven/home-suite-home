@@ -20,6 +20,7 @@ declare global {
 }
 
 const SESSION_KEY = 'sweet.session'
+const SERVER_BASE_KEY = 'sweet.serverBaseUrl'
 
 function getPreferencesPlugin(): PreferencesPlugin | null {
   if (typeof window === 'undefined') return null
@@ -63,6 +64,42 @@ export const sessionStore = {
       return
     }
     window.localStorage.removeItem(SESSION_KEY)
+  },
+}
+
+function normalizeServerBaseUrl(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  return trimmed.replace(/\/+$/, '')
+}
+
+export const serverBaseStore = {
+  async get(): Promise<string | null> {
+    const preferences = getPreferencesPlugin()
+    const raw = preferences
+      ? (await preferences.get({ key: SERVER_BASE_KEY })).value
+      : window.localStorage.getItem(SERVER_BASE_KEY)
+    const normalized = normalizeServerBaseUrl(raw ?? '')
+    return normalized || null
+  },
+
+  async set(value: string) {
+    const normalized = normalizeServerBaseUrl(value)
+    const preferences = getPreferencesPlugin()
+    if (preferences) {
+      await preferences.set({ key: SERVER_BASE_KEY, value: normalized })
+      return
+    }
+    window.localStorage.setItem(SERVER_BASE_KEY, normalized)
+  },
+
+  async clear() {
+    const preferences = getPreferencesPlugin()
+    if (preferences) {
+      await preferences.remove({ key: SERVER_BASE_KEY })
+      return
+    }
+    window.localStorage.removeItem(SERVER_BASE_KEY)
   },
 }
 

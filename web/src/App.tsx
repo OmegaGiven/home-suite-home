@@ -30,7 +30,7 @@ import { createOptimisticDirectoryNode, insertFileTreeNode, moveFileTreeNode, re
 import { offlineDb } from './lib/offline-db'
 import { pendingManagedUploadToFileNode } from './lib/pending-managed-uploads'
 import { pendingVoiceUploadToFileNode, pendingVoiceUploadToMemo } from './lib/pending-voice'
-import { sessionStore, subscribeToConnectivity, getConnectivityState } from './lib/platform'
+import { isNativePlatform, serverBaseStore, sessionStore, subscribeToConnectivity, getConnectivityState } from './lib/platform'
 import {
   discardQueuedSyncConflict,
   flushQueuedOperations,
@@ -208,7 +208,8 @@ function upsertVoiceMemo(records: VoiceMemo[], nextRecord: VoiceMemo) {
 function App() {
   const [route, setRoute] = useState<RoutePath>(normalizeRoute(window.location.pathname))
   const [locationSearch, setLocationSearch] = useState(window.location.search)
-  const [authMode, setAuthMode] = useState<'boot' | 'setup' | 'login' | 'change-password' | 'ready'>('boot')
+  const [authMode, setAuthMode] = useState<'boot' | 'connect' | 'setup' | 'login' | 'change-password' | 'ready'>('boot')
+  const [serverUrl, setServerUrl] = useState('')
   const [setupStatus, setSetupStatus] = useState<SetupStatusResponse | null>(null)
   const [session, setSession] = useState<SessionResponse | null>(null)
   const [oidc, setOidc] = useState<OidcConfig | null>(null)
@@ -2113,6 +2114,15 @@ function App() {
     void bootstrap()
   }, [])
 
+  useEffect(() => {
+    if (!isNativePlatform()) return
+    void serverBaseStore.get().then((storedUrl) => {
+      if (storedUrl) {
+        setServerUrl(storedUrl)
+      }
+    })
+  }, [])
+
   useEffect(
     () =>
       subscribeToConnectivity((online) => {
@@ -2342,6 +2352,8 @@ function App() {
         mode: parsed.mode === 'light' || parsed.mode === 'dark' || parsed.mode === 'custom' ? parsed.mode : 'dark',
         pageGutter: typeof parsed.pageGutter === 'number' ? parsed.pageGutter : DEFAULT_APPEARANCE.pageGutter,
         radius: typeof parsed.radius === 'number' ? parsed.radius : DEFAULT_APPEARANCE.radius,
+        surfaceOpacity:
+          typeof parsed.surfaceOpacity === 'number' ? parsed.surfaceOpacity : DEFAULT_APPEARANCE.surfaceOpacity,
         accent: typeof parsed.accent === 'string' ? parsed.accent : DEFAULT_APPEARANCE.accent,
         fontFamily: typeof parsed.fontFamily === 'string' ? parsed.fontFamily : DEFAULT_APPEARANCE.fontFamily,
         background: typeof parsed.background === 'string' ? parsed.background : DEFAULT_APPEARANCE.background,
@@ -2490,13 +2502,16 @@ function App() {
 
   useEffect(() => {
     if (route !== '/notes' || !noteEditorRef.current || noteEditorMode !== 'rich') return
+    const editorHasFocus =
+      document.activeElement === noteEditorRef.current ||
+      !!(document.activeElement instanceof HTMLElement && document.activeElement.closest('.markdown-editor'))
     const pendingRestore = pendingLocalDraftRestoreRef.current
     const markdown =
       pendingRestore && pendingRestore.noteId === selectedNote?.id
         ? pendingRestore.markdown
         : (selectedNote?.markdown ?? '')
     const currentMarkdown = editableHtmlToMarkdown(noteEditorRef.current)
-    if (currentMarkdown !== markdown) {
+    if (currentMarkdown !== markdown && (!editorHasFocus || pendingRestore?.noteId === selectedNote?.id)) {
       noteEditorRef.current.innerHTML = markdownToEditableHtml(markdown)
     }
     if (pendingRestore?.noteId === selectedNote?.id) {
@@ -2763,39 +2778,49 @@ function App() {
   }, [route, selectedRoomId])
 
   useEffect(() => {
-    const socket = new WebSocket(api.realtimeUrl('/ws/realtime'))
-    socketRef.current = socket
+    if (authMode !== 'ready') return
 
-    socket.onopen = () => {
-      setStatus((current) => (current === 'Workspace ready' ? current : 'Realtime connected'))
-      broadcastPresence()
-    }
+    let cancelled = false
+    let socket: WebSocket | null = null
 
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data) as RealtimeEvent
-      if (payload.type === 'chat_rooms_updated') {
-        void refreshRooms()
-      }
-      if (payload.type === 'chat_message') {
-        void refreshRooms()
-        const isOwnMessage = payload.author_id === sessionUserIdRef.current
-        const isVisibleRoom = routeRef.current === '/coms' && payload.room_id === selectedRoomIdRef.current
-        if (!isOwnMessage && !isVisibleRoom) {
-          setRoomUnreadCounts((current) => ({
-            ...current,
-            [payload.room_id]: (current[payload.room_id] ?? 0) + 1,
-          }))
+    async function connectRealtime() {
+      try {
+        const socketUrl = await api.realtimeUrl('/ws/realtime')
+        if (cancelled) return
+
+        socket = new WebSocket(socketUrl)
+        socketRef.current = socket
+
+        socket.onopen = () => {
+          setStatus((current) => (current === 'Workspace ready' ? current : 'Realtime connected'))
+          broadcastPresence()
         }
-        if (payload.room_id === selectedRoomIdRef.current) {
-          void api.listMessages(payload.room_id).then(setMessages)
-        }
-      }
-      if (payload.type === 'chat_message_reactions_updated') {
-        if (payload.room_id === selectedRoomIdRef.current) {
-          void api.listMessages(payload.room_id).then(setMessages)
-        }
-      }
-      if (payload.type === 'note_patch') {
+
+        socket.onmessage = (event) => {
+          const payload = JSON.parse(event.data) as RealtimeEvent
+          if (payload.type === 'chat_rooms_updated') {
+            void refreshRooms()
+          }
+          if (payload.type === 'chat_message') {
+            void refreshRooms()
+            const isOwnMessage = payload.author_id === sessionUserIdRef.current
+            const isVisibleRoom = routeRef.current === '/coms' && payload.room_id === selectedRoomIdRef.current
+            if (!isOwnMessage && !isVisibleRoom) {
+              setRoomUnreadCounts((current) => ({
+                ...current,
+                [payload.room_id]: (current[payload.room_id] ?? 0) + 1,
+              }))
+            }
+            if (payload.room_id === selectedRoomIdRef.current) {
+              void api.listMessages(payload.room_id).then(setMessages)
+            }
+          }
+          if (payload.type === 'chat_message_reactions_updated') {
+            if (payload.room_id === selectedRoomIdRef.current) {
+              void api.listMessages(payload.room_id).then(setMessages)
+            }
+          }
+          if (payload.type === 'note_patch') {
         const currentSelected = selectedNoteRef.current
         const editorHasLocalFocus =
           document.activeElement === noteEditorRef.current ||
@@ -2862,8 +2887,8 @@ function App() {
             )
           }
         }
-      }
-      if (payload.type === 'note_draft') {
+          }
+          if (payload.type === 'note_draft') {
         if (payload.client_id === clientIdRef.current) return
         const isSelectedNote = payload.note_id === selectedNoteIdRef.current
         const editorHasLocalFocus =
@@ -2924,40 +2949,59 @@ function App() {
             )
           }
         }
-      }
-      if (payload.type === 'note_presence') {
-        registerPresence(payload.note_id, payload.user)
-      }
-      if (payload.type === 'note_cursor') {
-        if (payload.client_id === clientIdRef.current) return
-        setNoteCursors((current) => {
-          const existing = current[payload.note_id] ?? []
-          if (payload.offset === null || payload.offset === undefined) {
-            const next = existing.filter((entry) => entry.clientId !== payload.client_id)
-            return { ...current, [payload.note_id]: next }
           }
-          const seenAt = Date.now()
-          const next = [
-            {
-              clientId: payload.client_id,
-              user: payload.user,
-              offset: payload.offset,
-              seenAt,
-              color: colorForPresenceLabel(payload.user),
-            },
-            ...existing.filter((entry) => entry.clientId !== payload.client_id),
-          ].filter((entry) => seenAt - entry.seenAt < 12_000)
-          return { ...current, [payload.note_id]: next }
-        })
-      }
-      if (payload.type === 'signal' && payload.room_id === activeCallRoomIdRef.current) {
-        void handleSignal(payload.from, payload.payload as SignalPayload)
+          if (payload.type === 'note_presence') {
+            registerPresence(payload.note_id, payload.user)
+          }
+          if (payload.type === 'note_cursor') {
+            if (payload.client_id === clientIdRef.current) return
+            setNoteCursors((current) => {
+              const existing = current[payload.note_id] ?? []
+              if (payload.offset === null || payload.offset === undefined) {
+                const next = existing.filter((entry) => entry.clientId !== payload.client_id)
+                return { ...current, [payload.note_id]: next }
+              }
+              const seenAt = Date.now()
+              const next = [
+                {
+                  clientId: payload.client_id,
+                  user: payload.user,
+                  offset: payload.offset,
+                  seenAt,
+                  color: colorForPresenceLabel(payload.user),
+                },
+                ...existing.filter((entry) => entry.clientId !== payload.client_id),
+              ].filter((entry) => seenAt - entry.seenAt < 12_000)
+              return { ...current, [payload.note_id]: next }
+            })
+          }
+          if (payload.type === 'signal' && payload.room_id === activeCallRoomIdRef.current) {
+            void handleSignal(payload.from, payload.payload as SignalPayload)
+          }
+        }
+
+        socket.onclose = () => {
+          if (!cancelled) {
+            setStatus('Realtime disconnected')
+          }
+        }
+      } catch (error) {
+        if (!cancelled && error instanceof Error && error.message !== 'Server not configured') {
+          setStatus(error.message)
+        }
       }
     }
 
-    socket.onclose = () => setStatus('Realtime disconnected')
-    return () => socket.close()
-  }, [])
+    void connectRealtime()
+
+    return () => {
+      cancelled = true
+      socket?.close()
+      if (socketRef.current === socket) {
+        socketRef.current = null
+      }
+    }
+  }, [authMode])
 
   useEffect(() => {
     if (!selectedNoteId || !session) {
@@ -5136,9 +5180,19 @@ function App() {
     return (
       <div className={`app-shell theme-${effectiveAppearance.mode}`} style={appearanceStyle}>
         <AuthPage
-          mode={authMode === 'setup' ? 'setup' : authMode === 'change-password' ? 'change-password' : 'login'}
+          mode={authMode === 'connect' ? 'connect' : authMode === 'setup' ? 'setup' : authMode === 'change-password' ? 'change-password' : 'login'}
           status={status}
           ssoConfigured={setupStatus?.sso_configured ?? false}
+          serverUrl={serverUrl}
+          onSaveServerUrl={async (url) => {
+            const normalized = url.trim().replace(/\/+$/, '')
+            await api.setServerBaseUrl(normalized)
+            setServerUrl(normalized)
+            setAuthMode('boot')
+            setStatus('Connecting to API')
+            await bootstrap()
+          }}
+          onEditServerUrl={authMode !== 'connect' && isNativePlatform() ? () => setAuthMode('connect') : undefined}
           onLogin={(identifier, password) => loginWithPassword(identifier, password)}
           onSetupAdmin={(payload) => setupAdminAccount(payload)}
           onChangePassword={(payload) => changePasswordFirstUse(payload)}
