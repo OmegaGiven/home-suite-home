@@ -1,7 +1,7 @@
-# Unified Server + Mobile Sweet
+# Unified Server + Mobile Home Suite Home
 
 ## Goal
-Sweet runs as:
+Home Suite Home runs as:
 - a server-backed web app
 - a Capacitor-wrapped iOS app
 - a Capacitor-wrapped Android app
@@ -25,8 +25,8 @@ All three share the same React UI codebase and the same sync model.
 - Added initial sync handling for:
   - notes
   - tasks
-  - Sweet calendars
-  - Sweet calendar events
+  - Home Suite Home calendars
+  - Home Suite Home calendar events
 
 ### Web / shared client
 - Added a platform abstraction in `web/src/lib/platform.ts` for:
@@ -79,8 +79,8 @@ All three share the same React UI codebase and the same sync model.
 - Prioritize:
   - notes
   - tasks
-  - Sweet calendars
-  - Sweet calendar events
+  - Home Suite Home calendars
+  - Home Suite Home calendar events
 
 ### 2. Expand sync coverage
 - Add queued mutation support for:

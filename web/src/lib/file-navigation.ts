@@ -97,7 +97,7 @@ export function createFileNavigationActions(context: CreateFileNavigationActions
     }
     if (node.path.startsWith('diagrams/') && node.path.endsWith('.drawio')) {
       if (!openDiagramInDiagrams(node.path)) {
-        window.open(api.fileDownloadUrl(node.path), '_blank', 'noopener,noreferrer')
+        context.setStatus('This managed diagram file is stale. Refresh the workspace to reload the current diagrams tree.')
       }
       return
     }

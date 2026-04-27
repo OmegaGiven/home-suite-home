@@ -725,7 +725,7 @@ export function AdminPage({
                   className="input"
                   disabled={!canManageOrgSettings}
                   value={selectedAuthProvider.issuer}
-                  placeholder="https://id.example.com/application/o/sweet"
+                  placeholder="https://id.example.com/application/o/home-suite-home"
                   onChange={(event) =>
                     setAuthProvidersDraft((current) =>
                       current.map((provider) =>

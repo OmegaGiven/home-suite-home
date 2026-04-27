@@ -172,8 +172,46 @@
 .calendar-month-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 12px;
+}
+
+.calendar-month-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.calendar-month-picker,
+.calendar-year-picker {
+  display: flex;
+}
+
+.calendar-month-select,
+.calendar-year-select {
+  min-width: 0;
+  width: auto;
+  font-weight: 700;
+  text-align: center;
+}
+
+.calendar-month-select {
+  min-width: 180px;
+}
+
+.calendar-year-select {
+  min-width: 110px;
+}
+
+.calendar-month-arrow {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 20px;
+  line-height: 1;
 }
 
 .calendar-grid-frame {

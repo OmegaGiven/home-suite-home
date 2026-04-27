@@ -64,9 +64,10 @@ function sameDay(left: Date, right: Date) {
   return left.getFullYear() === right.getFullYear() && left.getMonth() === right.getMonth() && left.getDate() === right.getDate()
 }
 
-function formatMonthLabel(date: Date) {
-  return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(date)
-}
+const MONTH_OPTIONS = Array.from({ length: 12 }, (_, monthIndex) => ({
+  value: monthIndex,
+  label: new Intl.DateTimeFormat(undefined, { month: 'long' }).format(new Date(2026, monthIndex, 1)),
+}))
 
 function toDatetimeLocalValue(value?: string | null) {
   if (!value) return ''
@@ -174,6 +175,14 @@ export function CalendarPage({
 
   const selectedDayKey = selectedDay.toISOString().slice(0, 10)
   const selectedDayEvents = eventsByDay.get(selectedDayKey) ?? []
+  const yearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear()
+    return Array.from({ length: 21 }, (_, index) => currentYear - 10 + index)
+  }, [])
+
+  function setVisibleMonthParts(month: number, year: number) {
+    setVisibleMonth(startOfMonth(new Date(year, month, 1)))
+  }
 
   function openCreateEventModal() {
     const start = new Date(selectedDay)
@@ -343,7 +352,7 @@ export function CalendarPage({
             <div className="file-sidebar-header-row">
               <div className="calendar-connect-actions">
                 <button className="calendar-connect-button" type="button" onClick={() => setLocalModalOpen(true)} disabled={loading}>
-                  New Sweet calendar
+                  New Home Suite Home calendar
                 </button>
                 <button className="calendar-connect-button" type="button" onClick={onStartGoogleConnect} disabled={loading || !googleConfig?.enabled}>
                   Connect Google
@@ -370,13 +379,13 @@ export function CalendarPage({
                       {connection.owner_id === currentUserId ? <span className="tag">Yours</span> : <span className="tag">{connection.owner_display_name}</span>}
                     </div>
                     <div className="calendar-connection-meta">
-                      <span>{connection.provider === 'google' ? 'Google' : connection.provider === 'ics' ? 'Apple/iCloud' : 'Sweet'}</span>
+                      <span>{connection.provider === 'google' ? 'Google' : connection.provider === 'ics' ? 'Apple/iCloud' : 'Home Suite Home'}</span>
                       <span>{connection.account_label}</span>
                     </div>
                   </button>
                 ))
               ) : (
-                <div className="empty-state">{searchQuery.trim() ? 'No matching calendars.' : 'Create a Sweet calendar or connect an external one.'}</div>
+                <div className="empty-state">{searchQuery.trim() ? 'No matching calendars.' : 'Create a Home Suite Home calendar or connect an external one.'}</div>
               )}
             </div>
           </aside>
@@ -416,7 +425,7 @@ export function CalendarPage({
                   )}
                   <p className="muted">
                     {selectedConnection
-                      ? `${selectedConnection.provider === 'google' ? 'Google Calendar' : selectedConnection.provider === 'ics' ? 'Apple/iCloud feed' : 'Sweet calendar'} · ${selectedConnection.account_label}`
+                      ? `${selectedConnection.provider === 'google' ? 'Google Calendar' : selectedConnection.provider === 'ics' ? 'Apple/iCloud feed' : 'Home Suite Home calendar'} · ${selectedConnection.account_label}`
                       : ''}
                   </p>
                 </div>
@@ -459,7 +468,52 @@ export function CalendarPage({
               </div>
 
               <div className="calendar-month-header">
-                <h3>{formatMonthLabel(visibleMonth)}</h3>
+                <button
+                  className="calendar-month-arrow"
+                  type="button"
+                  aria-label="Previous month"
+                  onClick={() => setVisibleMonth(startOfMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() - 1, 1)))}
+                >
+                  ←
+                </button>
+                <div className="calendar-month-controls">
+                  <label className="calendar-month-picker">
+                    <span className="sr-only">Select month</span>
+                    <select
+                      className="input calendar-month-select"
+                      value={visibleMonth.getMonth()}
+                      onChange={(event) => setVisibleMonthParts(Number(event.target.value), visibleMonth.getFullYear())}
+                    >
+                      {MONTH_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="calendar-year-picker">
+                    <span className="sr-only">Select year</span>
+                    <select
+                      className="input calendar-year-select"
+                      value={visibleMonth.getFullYear()}
+                      onChange={(event) => setVisibleMonthParts(visibleMonth.getMonth(), Number(event.target.value))}
+                    >
+                      {yearOptions.map((year) => (
+                        <option key={year} value={year}>
+                          {year}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <button
+                  className="calendar-month-arrow"
+                  type="button"
+                  aria-label="Next month"
+                  onClick={() => setVisibleMonth(startOfMonth(new Date(visibleMonth.getFullYear(), visibleMonth.getMonth() + 1, 1)))}
+                >
+                  →
+                </button>
               </div>
 
               <div className="calendar-grid-frame">
@@ -504,7 +558,7 @@ export function CalendarPage({
                   </div>
                   {selectedDayEvents.length === 0 ? (
                     <div className="empty-state">
-                      {selectedConnection ? 'No events on this day.' : 'No events yet. Create a Sweet calendar or connect an external one.'}
+                      {selectedConnection ? 'No events on this day.' : 'No events yet. Create a Home Suite Home calendar or connect an external one.'}
                     </div>
                   ) : (
                     <div className="calendar-event-list">

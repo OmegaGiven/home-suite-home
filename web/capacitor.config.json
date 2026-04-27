@@ -1,6 +1,6 @@
 {
-  "appId": "com.sweet.app",
-  "appName": "Sweet",
+  "appId": "com.homesuitehome.app",
+  "appName": "Home Suite Home",
   "webDir": "dist",
   "bundledWebRuntime": false,
   "server": {

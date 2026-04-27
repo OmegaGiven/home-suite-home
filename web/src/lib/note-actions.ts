@@ -406,6 +406,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
         await openNoteInNotes(existing)
         return
       }
+      throw new Error('This managed note file is stale. Refresh the workspace to reload the current notes tree.')
     }
 
     const markdown = await api.fileText(node.path)

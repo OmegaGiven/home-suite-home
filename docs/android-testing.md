@@ -1,6 +1,6 @@
 # Android testing
 
-Sweet now includes a Capacitor Android shell in:
+Home Suite Home now includes a Capacitor Android shell in:
 
 - `/Users/nathanjohnson/Documents/Projects/sweet/web/android`
 

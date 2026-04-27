@@ -1,6 +1,6 @@
-# Sweet
+# Home Suite Home
 
-Sweet is a homelab-first collaboration suite scaffold with a Rust API and a TypeScript browser client.
+Home Suite Home is a homelab-first collaboration suite scaffold with a Rust API and a TypeScript browser client.
 
 ## Included
 
@@ -23,7 +23,7 @@ cd web && npm install && npm run dev
 docker compose up --build
 ```
 
-The diagrams editor is served from the local `drawio` container at [http://localhost:18083](http://localhost:18083) and embedded into the Sweet Diagrams page in iframe embed mode.
+The diagrams editor is served from the local `drawio` container at [http://localhost:18083](http://localhost:18083) and embedded into the Home Suite Home Diagrams page in iframe embed mode.
 
 ## Current implementation status
 

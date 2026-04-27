@@ -2,9 +2,9 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: sweet
-      POSTGRES_USER: sweet
-      POSTGRES_PASSWORD: sweet
+      POSTGRES_DB: home_suite_home
+      POSTGRES_USER: hsh
+      POSTGRES_PASSWORD: hsh
     ports:
       - "5432:5432"
     volumes:
@@ -17,9 +17,9 @@ services:
       - --log-file=stdout
       - --min-port=49160
       - --max-port=49200
-      - --realm=sweet.local
+      - --realm=home-suite-home.local
       - --use-auth-secret
-      - --static-auth-secret=sweetturn
+      - --static-auth-secret=hshturn
       - --listening-port=3478
     ports:
       - "3478:3478"
@@ -40,7 +40,7 @@ services:
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
       STORAGE_ROOT: /app/storage
-      DATABASE_URL: postgres://sweet:sweet@postgres:5432/sweet
+      DATABASE_URL: postgres://hsh:hsh@postgres:5432/home_suite_home
       TURN_URLS: turn:coturn:3478?transport=udp
       WHISPER_COMMAND: /usr/local/bin/whisper-cli
       FFMPEG_COMMAND: /usr/bin/ffmpeg
