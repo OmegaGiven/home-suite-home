@@ -404,11 +404,11 @@ export function CalendarPage({
       ) : null}
       {eventModalOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={() => setEventModalOpen(false)}>
-          <div className="modal" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
+          <div className="modal-card calendar-modal-card" role="dialog" aria-modal="true" onClick={(event) => event.stopPropagation()}>
+            <div className="calendar-modal-header">
               <h3>{editingEventId ? 'Edit event' : 'New event'}</h3>
             </div>
-            <div className="modal-body">
+            <div className="calendar-modal-body">
               <label className="settings-field">
                 <span>Title</span>
                 <input className="input" value={eventTitle} onChange={(event) => setEventTitle(event.target.value)} />
@@ -436,7 +436,7 @@ export function CalendarPage({
                 </label>
               </div>
             </div>
-            <div className="modal-actions">
+            <div className="calendar-modal-actions">
               {editingEventId ? (
                 <button className="button-secondary danger-button" type="button" onClick={() => void onDeleteEvent(editingEventId).then(() => setEventModalOpen(false))}>
                   Delete
@@ -686,11 +686,6 @@ export function CalendarPage({
                     <section className="calendar-day-group">
                       <div className="calendar-pane-header">
                         <h3>{formatEventDayLabel(selectedDay.toISOString())}</h3>
-                        {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
-                          <button className="button-secondary" type="button" onClick={openCreateEventModal}>
-                            Add event
-                          </button>
-                        ) : null}
                       </div>
                       {selectedDayEvents.length === 0 ? (
                         <div className="empty-state">
@@ -740,11 +735,6 @@ export function CalendarPage({
                   <section className="calendar-day-group">
                     <div className="calendar-pane-header">
                       <h3>{visibleWeekRangeLabel}</h3>
-                      {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
-                        <button className="button-secondary" type="button" onClick={openCreateEventModal}>
-                          Add event
-                        </button>
-                      ) : null}
                     </div>
                     <div className="calendar-week-grid">
                       <div className="calendar-week-grid-frame">
@@ -830,11 +820,6 @@ export function CalendarPage({
                   <section className="calendar-day-group">
                     <div className="calendar-pane-header">
                       <h3>{formatFullDayLabel(selectedDay)}</h3>
-                      {isSelectedLocalCalendar && isSelectedOwnedByCurrentUser ? (
-                        <button className="button-secondary" type="button" onClick={openCreateEventModal}>
-                          Add event
-                        </button>
-                      ) : null}
                     </div>
                     {selectedDayEvents.length === 0 ? (
                       <div className="empty-state">
