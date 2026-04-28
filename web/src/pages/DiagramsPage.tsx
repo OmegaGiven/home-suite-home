@@ -322,18 +322,38 @@ export function DiagramsPage({
               </button>
             ) : null}
             <div className="notes-editor-actions">
-              <button
-                className={diagramEditorMode === 'diagram' ? 'button' : 'button-secondary'}
-                onClick={() => onSetDiagramMode('diagram')}
+              <div
+                className="notes-mode-toggle"
+                role="tablist"
+                aria-label="Diagram editor mode"
               >
-                Diagram
-              </button>
-              <button
-                className={diagramEditorMode === 'xml' ? 'button' : 'button-secondary'}
-                onClick={() => onSetDiagramMode('xml')}
-              >
-                XML
-              </button>
+                <button
+                  type="button"
+                  className={
+                    diagramEditorMode === 'diagram'
+                      ? 'notes-mode-toggle-button active'
+                      : 'notes-mode-toggle-button'
+                  }
+                  role="tab"
+                  aria-selected={diagramEditorMode === 'diagram'}
+                  onClick={() => onSetDiagramMode('diagram')}
+                >
+                  Diagram
+                </button>
+                <button
+                  type="button"
+                  className={
+                    diagramEditorMode === 'xml'
+                      ? 'notes-mode-toggle-button active'
+                      : 'notes-mode-toggle-button'
+                  }
+                  role="tab"
+                  aria-selected={diagramEditorMode === 'xml'}
+                  onClick={() => onSetDiagramMode('xml')}
+                >
+                  XML
+                </button>
+              </div>
               <button
                 type="button"
                 className="notes-save-indicator"

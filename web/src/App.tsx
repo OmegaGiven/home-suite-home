@@ -2900,6 +2900,9 @@ function App() {
           if (!selectedDirty) {
             setNoteDraft(payload.markdown)
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
+            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
+              noteEditorRef.current.innerHTML = markdownToEditableHtml(payload.markdown)
+            }
           } else if (mergedSelectedPatch) {
             setNoteDraft(mergedSelectedPatch.markdown)
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
@@ -4615,6 +4618,9 @@ function App() {
     onCloseTitleModal: () => setNoteTitleModalOpen(false),
     onChangeSelectedNoteTitle: (value: string) => {
       if (!selectedNote) return
+      const nextSelectedNote = { ...selectedNote, title: value }
+      selectedNoteRef.current = nextSelectedNote
+      notesRef.current = notesRef.current.map((note) => (note.id === nextSelectedNote.id ? nextSelectedNote : note))
       setNotes((current) => current.map((note) => (note.id === selectedNote.id ? { ...note, title: value } : note)))
       window.requestAnimationFrame(() => scheduleNoteDraftBroadcast(currentNoteMarkdown()))
     },
