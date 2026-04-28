@@ -27,7 +27,7 @@ type CreateNoteEditorActionsContext = {
   noteContextTableRef: MutableRefObject<HTMLTableElement | null>
   noteContextCellRef: MutableRefObject<HTMLTableCellElement | null>
   noteClipboardText: string
-  setNoteDraft: Dispatch<SetStateAction<string>>
+  applySelectedNoteMarkdown: (markdown: string) => void
   setStatus: Dispatch<SetStateAction<string>>
   setNoteClipboardText: Dispatch<SetStateAction<string>>
   setNoteContextMenu: Dispatch<SetStateAction<NoteContextMenuState>>
@@ -40,7 +40,7 @@ export function createNoteEditorActions(context: CreateNoteEditorActionsContext)
     if (!context.noteEditorRef.current) return
     ensureEditorBlocks(context.noteEditorRef.current)
     const markdown = editableHtmlToMarkdown(context.noteEditorRef.current)
-    context.setNoteDraft(markdown)
+    context.applySelectedNoteMarkdown(markdown)
     context.scheduleNoteDraftBroadcast(markdown)
   }
 

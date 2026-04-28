@@ -58,6 +58,45 @@ async fn handle_note_socket(socket: WebSocket, state: AppState, note_id: Uuid) {
                         break;
                     }
                 }
+                Ok(
+                    event @ RealtimeEvent::NoteOperations {
+                        note_id: event_note_id,
+                        ..
+                    },
+                ) if event_note_id == note_id => {
+                    let Ok(text) = serde_json::to_string(&event) else {
+                        continue;
+                    };
+                    if sender.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(
+                    event @ RealtimeEvent::NotePresence {
+                        note_id: event_note_id,
+                        ..
+                    },
+                ) if event_note_id == note_id => {
+                    let Ok(text) = serde_json::to_string(&event) else {
+                        continue;
+                    };
+                    if sender.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(
+                    event @ RealtimeEvent::NoteCursor {
+                        note_id: event_note_id,
+                        ..
+                    },
+                ) if event_note_id == note_id => {
+                    let Ok(text) = serde_json::to_string(&event) else {
+                        continue;
+                    };
+                    if sender.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
                 Ok(_) => {}
                 Err(_) => break,
             }

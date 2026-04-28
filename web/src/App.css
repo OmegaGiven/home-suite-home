@@ -1632,12 +1632,14 @@
 }
 
 .notes-editor-card .markdown-editor,
+.notes-editor-card .notes-block-editor,
 .notes-editor-card .textarea {
   flex: 1 1 auto;
   min-height: 62vh;
 }
 
 .notes-editor-card .markdown-editor,
+.notes-editor-card .notes-block-editor,
 .notes-editor-card .textarea {
   border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
   border-radius: var(--panel-radius);
@@ -1645,9 +1647,107 @@
   padding: var(--space-md);
 }
 
-.notes-editor-card .markdown-editor {
+.notes-editor-card .markdown-editor,
+.notes-editor-card .notes-block-editor {
   border-top-left-radius: 0;
   border-top-right-radius: 0;
+}
+
+.notes-block-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+}
+
+.notes-block-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.notes-block-gutter {
+  display: flex;
+  justify-content: center;
+  padding-top: 6px;
+}
+
+.notes-block-add {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.notes-block-add:hover,
+.notes-block-add:focus-visible {
+  background: color-mix(in srgb, var(--surface-strong) 74%, transparent);
+  color: var(--text);
+  outline: none;
+}
+
+.notes-block-input {
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: calc(var(--panel-radius) - 4px);
+  background: color-mix(in srgb, var(--panel-surface) 90%, transparent);
+  color: var(--text);
+  resize: none;
+  overflow: hidden;
+  line-height: 1.55;
+}
+
+.notes-block-row.active .notes-block-input,
+.notes-block-input:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border) 45%);
+  background: color-mix(in srgb, var(--surface-strong) 78%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+  outline: none;
+}
+
+.notes-block-input.heading-1 {
+  font-size: 1.55rem;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.notes-block-input.heading-2 {
+  font-size: 1.3rem;
+  font-weight: 760;
+  line-height: 1.28;
+}
+
+.notes-block-input.heading-3 {
+  font-size: 1.12rem;
+  font-weight: 720;
+  line-height: 1.34;
+}
+
+.notes-block-row.kind-quote .notes-block-input {
+  border-left-width: 3px;
+  border-left-color: var(--accent);
+  padding-left: 12px;
+  color: color-mix(in srgb, var(--text) 92%, var(--accent) 8%);
+}
+
+.notes-block-row.kind-code .notes-block-input,
+.notes-block-row.kind-table .notes-block-input,
+.notes-block-input.mono {
+  font-family: "SFMono-Regular", "SF Mono", ui-monospace, monospace;
+  font-size: 0.95rem;
+}
+
+.notes-block-row.kind-code .notes-block-input {
+  white-space: pre;
 }
 
 .notes-empty-state {

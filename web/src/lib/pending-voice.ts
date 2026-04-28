@@ -1,5 +1,17 @@
 import { insertFileTreeNode } from './file-tree-state'
-import type { FileNode, PendingVoiceUploadRecord, VoiceMemo } from './types'
+import type {
+  FileNode,
+  ObjectNamespace,
+  PendingVoiceUploadRecord,
+  VoiceMemo,
+} from './types'
+
+const offlineVoiceNamespace: ObjectNamespace = {
+  root: 'local/offline/voice',
+  owner_id: 'local',
+  kind: 'private',
+  label: 'Local voice',
+}
 
 export function pendingVoiceUploadPath(id: string) {
   return `voice/offline-upload-${id}.webm`
@@ -9,9 +21,15 @@ export function pendingVoiceUploadToMemo(record: PendingVoiceUploadRecord): Voic
   const transcript = record.browser_transcript?.trim() || null
   return {
     id: record.id,
+    object_id: `audio:${record.id}`,
+    namespace: offlineVoiceNamespace,
+    visibility: 'private',
+    shared_user_ids: [],
     title: record.title,
     audio_path: pendingVoiceUploadPath(record.id),
     transcript,
+    transcript_tags: [],
+    topic_summary: null,
     transcript_segments: transcript
       ? [
           {
@@ -28,6 +46,7 @@ export function pendingVoiceUploadToMemo(record: PendingVoiceUploadRecord): Voic
     updated_at: record.created_at,
     failure_reason: null,
     owner_id: 'local',
+    source_channels: ['microphone'],
     sync_state: 'pending_create',
     local_only: true,
     pending_upload_id: record.id,
@@ -39,6 +58,11 @@ export function pendingVoiceUploadToFileNode(record: PendingVoiceUploadRecord): 
     name: record.filename || record.title || 'memo.webm',
     path: pendingVoiceUploadPath(record.id),
     kind: 'file',
+    object_id: `audio:${record.id}`,
+    object_kind: 'audio_memo',
+    namespace: offlineVoiceNamespace,
+    visibility: 'private',
+    resource_key: `audio:${record.id}`,
     size_bytes: record.size_bytes,
     created_at: record.created_at,
     updated_at: record.created_at,

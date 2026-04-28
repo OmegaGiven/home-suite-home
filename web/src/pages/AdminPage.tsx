@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { OverflowCategoryNav } from '../components/OverflowCategoryNav'
 import { UserAvatar } from '../components/UserAvatar'
 import type {
+  AdminDatabaseOverview,
   AdminSettings,
   AdminStorageOverview,
   AdminUserSummary,
@@ -22,12 +23,14 @@ type Props = {
   settings: AdminSettings | null
   users: AdminUserSummary[]
   storageOverview: AdminStorageOverview | null
+  databaseOverview: AdminDatabaseOverview | null
   currentFontFamily: string
   currentAccent: string
   currentPageGutter: number
   currentRadius: number
   oidcConfig: OidcConfig | null
   systemUpdateStatus: SystemUpdateStatus | null
+  onRefreshDatabaseOverview: () => void
   onSave: (settings: AdminSettings) => void
   onRefreshSystemUpdateStatus: () => void
   onRunSystemUpdate: () => void
@@ -38,7 +41,7 @@ type Props = {
   onResolveCredentialRequest: (userId: string, approve: boolean) => void
 }
 
-type AdminCategory = 'roles' | 'users' | 'storage' | 'authentication' | 'deployment'
+type AdminCategory = 'roles' | 'users' | 'storage' | 'authentication' | 'deployment' | 'db'
 
 const TOOL_SCOPE_FIELDS: Array<{ key: keyof UserToolScope; label: string }> = [
   { key: 'notes', label: 'Notes' },
@@ -61,6 +64,7 @@ const ADMIN_CATEGORIES: Array<{ key: AdminCategory; label: string }> = [
   { key: 'storage', label: 'Storage Limits' },
   { key: 'authentication', label: 'Authentication' },
   { key: 'deployment', label: 'Deployment' },
+  { key: 'db', label: 'DB' },
 ]
 
 const EMPTY_OIDC_SETTINGS: OidcProviderSettings = {
@@ -147,12 +151,14 @@ export function AdminPage({
   settings,
   users,
   storageOverview,
+  databaseOverview,
   currentFontFamily,
   currentAccent,
   currentPageGutter,
   currentRadius,
   oidcConfig,
   systemUpdateStatus,
+  onRefreshDatabaseOverview,
   onSave,
   onRefreshSystemUpdateStatus,
   onRunSystemUpdate,
@@ -201,6 +207,7 @@ export function AdminPage({
     initialAuthState.activeId || initialAuthState.providers[0]?.id || '',
   )
   const scopeMenuRef = useRef<HTMLDivElement | null>(null)
+  const [selectedDbTableKey, setSelectedDbTableKey] = useState<string>('')
 
   useEffect(() => {
     setUserAccessDrafts((current) => {
@@ -225,6 +232,16 @@ export function AdminPage({
     setActiveAuthProviderId(next.activeId || next.providers[0]?.id || '')
   }, [settings])
 
+  useEffect(() => {
+    if (!databaseOverview?.tables.length) {
+      setSelectedDbTableKey('')
+      return
+    }
+    if (!databaseOverview.tables.some((table) => table.key === selectedDbTableKey)) {
+      setSelectedDbTableKey(databaseOverview.tables[0].key)
+    }
+  }, [databaseOverview, selectedDbTableKey])
+
   const publicStoragePercent = useMemo(() => {
     if (!storageOverview?.detected_total_mb) return 0
     return Math.min(100, Math.round((storageOverview.public_storage_mb / storageOverview.detected_total_mb) * 100))
@@ -245,6 +262,8 @@ export function AdminPage({
   const resolvedUserInfoUrl =
     selectedAuthProvider.userinfo_url.trim() ||
     (selectedAuthProvider.issuer.trim() ? `${selectedAuthProvider.issuer.trim().replace(/\/+$/, '')}/userinfo` : '')
+  const selectedDbTable =
+    databaseOverview?.tables.find((table) => table.key === selectedDbTableKey) ?? databaseOverview?.tables[0] ?? null
 
   useEffect(() => {
     if (!openScopeUserId || !scopeMenuRef.current || !scopeMenuPosition) return
@@ -885,6 +904,85 @@ export function AdminPage({
               <p className="muted" style={{ marginTop: 12 }}>
                 Authentik works out of the box with issuer, client ID, and client secret. Other providers can use the same OIDC fields and override the endpoints if needed. Google Calendar sync uses the redirect URL above.
               </p>
+            </div>
+          ) : null}
+
+          {activeCategory === 'db' ? (
+            <div className="settings-card">
+              <div className="button-row admin-users-toolbar" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <h3 style={{ marginBottom: 4 }}>Database</h3>
+                  <div className="muted">
+                    Backend: {databaseOverview?.backend ?? 'unknown'}
+                    {databaseOverview?.generated_at ? ` · Updated ${new Date(databaseOverview.generated_at).toLocaleString()}` : ''}
+                  </div>
+                </div>
+                <button className="button-secondary" type="button" disabled={!canManageOrgSettings} onClick={onRefreshDatabaseOverview}>
+                  Refresh
+                </button>
+              </div>
+
+              {!databaseOverview ? (
+                <div className="empty-state">Loading database overview…</div>
+              ) : (
+                <div style={{ display: 'grid', gap: 12 }}>
+                  <label className="settings-field">
+                    <span>Table</span>
+                    <select
+                      className="input"
+                      value={selectedDbTableKey}
+                      onChange={(event) => setSelectedDbTableKey(event.target.value)}
+                    >
+                      {databaseOverview.tables.map((table) => (
+                        <option key={table.key} value={table.key}>
+                          {table.label} ({table.row_count})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {selectedDbTable ? (
+                    <>
+                      <div className="muted">
+                        Showing {selectedDbTable.rows.length} row{selectedDbTable.rows.length === 1 ? '' : 's'} from {selectedDbTable.label}
+                      </div>
+                      <div className="admin-users-table-wrap">
+                        <table className="admin-users-table">
+                          <thead>
+                            <tr>
+                              {selectedDbTable.columns.map((column) => (
+                                <th key={column}>{column}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedDbTable.rows.map((row, index) => (
+                              <tr key={`${selectedDbTable.key}-${index}`}>
+                                {selectedDbTable.columns.map((column) => {
+                                  const value = row[column]
+                                  return (
+                                    <td key={column}>
+                                      <span className="muted" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                        {value == null
+                                          ? 'null'
+                                          : typeof value === 'object'
+                                            ? JSON.stringify(value, null, 2)
+                                            : String(value)}
+                                      </span>
+                                    </td>
+                                  )
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="empty-state">No tables available.</div>
+                  )}
+                </div>
+              )}
             </div>
           ) : null}
 

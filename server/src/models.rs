@@ -46,6 +46,40 @@ pub struct UserProfile {
     pub must_change_password: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceObjectKind {
+    NoteDocument,
+    ManagedFile,
+    Folder,
+    AudioMemo,
+    Diagram,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectNamespaceKind {
+    Private,
+    Synced,
+    Shared,
+}
+
+impl Default for ObjectNamespaceKind {
+    fn default() -> Self {
+        Self::Synced
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct ObjectNamespace {
+    pub root: String,
+    pub owner_id: Uuid,
+    #[serde(default)]
+    pub kind: ObjectNamespaceKind,
+    #[serde(default)]
+    pub label: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UserToolScope {
@@ -185,6 +219,22 @@ pub struct AdminStorageOverview {
     pub public_storage_mb: u64,
     pub detected_total_mb: u64,
     pub detected_available_mb: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdminDatabaseTable {
+    pub key: String,
+    pub label: String,
+    pub row_count: usize,
+    pub columns: Vec<String>,
+    pub rows: Vec<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdminDatabaseOverview {
+    pub backend: String,
+    pub generated_at: DateTime<Utc>,
+    pub tables: Vec<AdminDatabaseTable>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -357,6 +407,13 @@ pub struct OidcConfigResponse {
     pub redirect_url: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+pub struct OidcMobileExchangeRequest {
+    pub code: String,
+    #[serde(default)]
+    pub redirect_uri: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct GoogleCalendarConfigResponse {
     pub enabled: bool,
@@ -493,6 +550,101 @@ pub struct CreateTaskRequest {
     pub calendar_connection_id: Option<Uuid>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteBlockKind {
+    Paragraph,
+    Heading,
+    Quote,
+    BulletList,
+    Checklist,
+    NumberedList,
+    Code,
+    Table,
+}
+
+impl Default for NoteBlockKind {
+    fn default() -> Self {
+        Self::Paragraph
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct NoteBlock {
+    pub id: String,
+    #[serde(default)]
+    pub kind: NoteBlockKind,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub attrs: HashMap<String, String>,
+    #[serde(default)]
+    pub order: f64,
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub last_modified_by: String,
+    #[serde(default)]
+    pub last_modified_counter: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct NoteDocument {
+    #[serde(default)]
+    pub blocks: Vec<NoteBlock>,
+    #[serde(default)]
+    pub clock: HashMap<String, u64>,
+    #[serde(default)]
+    pub last_operation_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NoteOperation {
+    SetTitle {
+        title: String,
+    },
+    SetFolder {
+        folder: String,
+    },
+    ReplaceDocument {
+        blocks: Vec<NoteBlock>,
+    },
+    InsertBlock {
+        block: NoteBlock,
+        after_block_id: Option<String>,
+    },
+    UpdateBlockText {
+        block_id: String,
+        text: String,
+    },
+    UpdateBlockAttrs {
+        block_id: String,
+        attrs: HashMap<String, String>,
+    },
+    DeleteBlock {
+        block_id: String,
+    },
+    MoveBlock {
+        block_id: String,
+        after_block_id: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct NoteDocumentOperationBatch {
+    #[serde(default)]
+    pub actor_id: String,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub operation_id: String,
+    #[serde(default)]
+    pub base_clock: HashMap<String, u64>,
+    #[serde(default)]
+    pub operations: Vec<NoteOperation>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct UpdateTaskRequest {
     pub title: String,
@@ -512,10 +664,20 @@ pub struct UpdateTaskRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Note {
     pub id: Uuid,
+    #[serde(default)]
+    pub object_id: String,
+    #[serde(default)]
+    pub namespace: ObjectNamespace,
+    #[serde(default)]
+    pub visibility: ResourceVisibility,
+    #[serde(default)]
+    pub shared_user_ids: Vec<Uuid>,
     pub title: String,
     pub folder: String,
     pub markdown: String,
     pub rendered_html: String,
+    #[serde(default)]
+    pub document: NoteDocument,
     pub revision: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -523,6 +685,10 @@ pub struct Note {
     pub author_id: Uuid,
     #[serde(default)]
     pub last_editor_id: Uuid,
+    #[serde(default)]
+    pub forked_from_note_id: Option<Uuid>,
+    #[serde(default)]
+    pub conflict_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -563,6 +729,10 @@ pub struct CreateNoteRequest {
     pub title: String,
     pub folder: Option<String>,
     pub markdown: Option<String>,
+    #[serde(default)]
+    pub document: Option<NoteDocument>,
+    #[serde(default)]
+    pub visibility: Option<ResourceVisibility>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -571,9 +741,96 @@ pub struct UpdateNoteRequest {
     pub folder: Option<String>,
     pub markdown: Option<String>,
     pub revision: u64,
+    #[serde(default)]
+    pub document: Option<NoteDocument>,
+    #[serde(default)]
+    pub operation_batch: Option<NoteDocumentOperationBatch>,
+    #[serde(default)]
+    pub visibility: Option<ResourceVisibility>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteOperationRecord {
+    pub note_id: Uuid,
+    pub operation_id: String,
+    pub actor_id: String,
+    pub client_id: String,
+    pub created_at: DateTime<Utc>,
+    pub resulting_revision: u64,
+    pub batch: NoteDocumentOperationBatch,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteSession {
+    pub session_id: String,
+    pub note_id: Uuid,
+    pub user_id: Uuid,
+    pub user_label: String,
+    #[serde(default)]
+    pub user_avatar_path: Option<String>,
+    pub client_id: String,
+    pub opened_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteConflictRecord {
+    pub id: String,
+    pub note_id: Uuid,
+    pub operation_id: String,
+    pub reason: String,
+    #[serde(default)]
+    pub forked_note_ids: Vec<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct NoteSessionOpenRequest {
+    #[serde(default)]
+    pub client_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct NoteSessionCloseRequest {
+    pub session_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct NoteOperationsPushRequest {
+    pub batch: NoteDocumentOperationBatch,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteOperationsPullResponse {
+    pub note: Note,
+    #[serde(default)]
+    pub operations: Vec<NoteOperationRecord>,
+    #[serde(default)]
+    pub conflicts: Vec<NoteConflictRecord>,
+    pub share: ResourceShare,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteOperationsPushResponse {
+    pub note: Note,
+    pub applied: bool,
+    #[serde(default)]
+    pub operation: Option<NoteOperationRecord>,
+    #[serde(default)]
+    pub conflicts: Vec<NoteConflictRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteSessionOpenResponse {
+    pub note: Note,
+    pub share: ResourceShare,
+    #[serde(default)]
+    pub sessions: Vec<NoteSession>,
+    #[serde(default)]
+    pub conflicts: Vec<NoteConflictRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FileNodeKind {
     Directory,
@@ -585,6 +842,16 @@ pub struct FileNode {
     pub name: String,
     pub path: String,
     pub kind: FileNodeKind,
+    #[serde(default)]
+    pub object_id: Option<String>,
+    #[serde(default)]
+    pub object_kind: Option<WorkspaceObjectKind>,
+    #[serde(default)]
+    pub namespace: Option<ObjectNamespace>,
+    #[serde(default)]
+    pub visibility: Option<ResourceVisibility>,
+    #[serde(default)]
+    pub resource_key: Option<String>,
     pub size_bytes: Option<u64>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -659,10 +926,24 @@ pub enum JobStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VoiceMemo {
     pub id: Uuid,
+    #[serde(default)]
+    pub object_id: String,
+    #[serde(default)]
+    pub namespace: ObjectNamespace,
+    #[serde(default)]
+    pub visibility: ResourceVisibility,
+    #[serde(default)]
+    pub shared_user_ids: Vec<Uuid>,
     pub title: String,
     pub audio_path: String,
     pub transcript: Option<String>,
     pub transcript_segments: Vec<TranscriptSegment>,
+    #[serde(default)]
+    pub transcript_tags: Vec<String>,
+    #[serde(default)]
+    pub topic_summary: Option<String>,
+    #[serde(default)]
+    pub source_channels: Vec<String>,
     pub status: JobStatus,
     pub model: String,
     pub device: String,
@@ -768,6 +1049,8 @@ pub struct SyncConflict {
     pub local_value: String,
     #[serde(default)]
     pub remote_value: String,
+    #[serde(default)]
+    pub forked_note_ids: Vec<Uuid>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -812,6 +1095,10 @@ pub enum SyncOperation {
         folder: Option<String>,
         markdown: Option<String>,
         revision: u64,
+    },
+    ApplyNoteOperations {
+        id: Uuid,
+        batch: NoteDocumentOperationBatch,
     },
     DeleteNote {
         id: Uuid,
@@ -984,12 +1271,30 @@ pub enum RealtimeEvent {
     NotePresence {
         note_id: Uuid,
         user: String,
+        #[serde(default)]
+        user_id: Option<Uuid>,
+        #[serde(default)]
+        avatar_path: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        last_seen_at: Option<DateTime<Utc>>,
     },
     NoteCursor {
         note_id: Uuid,
         user: String,
         client_id: String,
         offset: Option<usize>,
+        #[serde(default)]
+        user_id: Option<Uuid>,
+        #[serde(default)]
+        avatar_path: Option<String>,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        block_id: Option<String>,
+        #[serde(default)]
+        updated_at: Option<DateTime<Utc>>,
     },
     NotePatch {
         note_id: Uuid,
@@ -997,6 +1302,8 @@ pub enum RealtimeEvent {
         folder: String,
         markdown: String,
         revision: u64,
+        #[serde(default)]
+        document: Option<NoteDocument>,
     },
     NoteDraft {
         note_id: Uuid,
@@ -1006,6 +1313,20 @@ pub enum RealtimeEvent {
         revision: u64,
         client_id: String,
         user: String,
+        #[serde(default)]
+        document: Option<NoteDocument>,
+    },
+    NoteOperations {
+        note_id: Uuid,
+        title: String,
+        folder: String,
+        markdown: String,
+        revision: u64,
+        client_id: String,
+        user: String,
+        batch: NoteDocumentOperationBatch,
+        #[serde(default)]
+        document: Option<NoteDocument>,
     },
     ChatMessage {
         room_id: Uuid,

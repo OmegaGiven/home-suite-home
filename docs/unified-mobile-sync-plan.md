@@ -8,6 +8,9 @@ Home Suite Home runs as:
 
 All three share the same React UI codebase and the same sync model.
 
+## Related plan docs
+- Mobile notes app detail: [docs/mobile-notes-app-plan.md](/Users/nathanjohnson/Documents/Projects/sweet/docs/mobile-notes-app-plan.md)
+
 ## Implemented foundation
 
 ### Server

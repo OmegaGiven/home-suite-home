@@ -20,6 +20,8 @@ function labelForConflict(conflict: QueuedSyncConflict) {
   switch (operation.kind) {
     case 'create_note':
       return `Create note: ${operation.title}`
+    case 'apply_note_operations':
+      return `Sync note changes: ${operation.id}`
     case 'update_note':
       return `Update note: ${operation.title?.trim() || operation.id}`
     case 'delete_note':
@@ -70,6 +72,7 @@ function canOpenTarget(conflict: QueuedSyncConflict) {
     case 'update_calendar_event':
     case 'delete_calendar_event':
     case 'create_note':
+    case 'apply_note_operations':
     case 'update_note':
     case 'delete_note':
     case 'create_diagram':

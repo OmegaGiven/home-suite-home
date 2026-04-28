@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from './api'
-import type { AdminSettings, Message, SessionResponse, SystemUpdateStatus, UserProfile } from './types'
+import type { AdminDatabaseOverview, AdminSettings, Message, SessionResponse, SystemUpdateStatus, UserProfile } from './types'
 
 type AdminUserSummary = import('./types').AdminUserSummary
 type AdminStorageOverview = import('./types').AdminStorageOverview
@@ -12,6 +12,7 @@ type CreateAdminActionsContext = {
   session: SessionResponse | null
   setAdminSettings: Dispatch<SetStateAction<AdminSettings | null>>
   setAdminStorageOverview: Dispatch<SetStateAction<AdminStorageOverview | null>>
+  setAdminDatabaseOverview: Dispatch<SetStateAction<AdminDatabaseOverview | null>>
   setSystemUpdateStatus: Dispatch<SetStateAction<SystemUpdateStatus | null>>
   setAdminUsers: Dispatch<SetStateAction<AdminUserSummary[]>>
   setSetupStatus: Dispatch<SetStateAction<SetupStatusResponse | null>>
@@ -119,6 +120,12 @@ export function createAdminActions(context: CreateAdminActionsContext) {
     return status
   }
 
+  async function refreshAdminDatabaseOverview() {
+    const overview = await api.getAdminDatabaseOverview()
+    context.setAdminDatabaseOverview(overview)
+    return overview
+  }
+
   async function runSystemUpdate() {
     const status = await api.triggerSystemUpdate()
     context.setSystemUpdateStatus(status)
@@ -132,6 +139,7 @@ export function createAdminActions(context: CreateAdminActionsContext) {
     resetAdminUserPassword,
     updateAdminUserAccess,
     resolveAdminUserCredentialRequest,
+    refreshAdminDatabaseOverview,
     refreshSystemUpdateStatus,
     runSystemUpdate,
   }

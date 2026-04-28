@@ -149,6 +149,11 @@ impl BlobStorage {
             name: file_name_or_root(&relative),
             path: relative,
             kind: FileNodeKind::Directory,
+            object_id: None,
+            object_kind: None,
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: None,
             created_at: None,
             updated_at: None,
@@ -182,6 +187,11 @@ impl BlobStorage {
             name,
             path: relative,
             kind: FileNodeKind::File,
+            object_id: None,
+            object_kind: None,
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: Some(bytes.len() as u64),
             created_at: None,
             updated_at: None,
@@ -196,6 +206,10 @@ impl BlobStorage {
         nodes.push(build_node_from_fs(&self.root.join("voice"), "voice")?);
         nodes.push(build_node_from_fs(&self.root.join("drive"), "drive")?);
         Ok(nodes)
+    }
+
+    pub async fn list_drive_tree(&self) -> AppResult<FileNode> {
+        build_node_from_fs(&self.root.join("drive"), "drive")
     }
 
     pub async fn reset_managed_root(&self, root_name: &str) -> AppResult<()> {
@@ -290,6 +304,11 @@ impl BlobStorage {
             } else {
                 FileNodeKind::File
             },
+            object_id: None,
+            object_kind: None,
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes,
             created_at: metadata_timestamp_rfc3339(&source_metadata, true),
             updated_at: metadata_timestamp_rfc3339(&source_metadata, false),
@@ -358,6 +377,11 @@ impl BlobStorage {
             } else {
                 FileNodeKind::File
             },
+            object_id: None,
+            object_kind: None,
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: if metadata.is_file() {
                 Some(metadata.len())
             } else {
@@ -440,6 +464,11 @@ impl BlobStorage {
             } else {
                 FileNodeKind::File
             },
+            object_id: None,
+            object_kind: None,
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes,
             created_at: metadata_timestamp_rfc3339(&source_metadata, true),
             updated_at: metadata_timestamp_rfc3339(&source_metadata, false),
@@ -508,6 +537,11 @@ impl BlobStorage {
             } else {
                 FileNodeKind::File
             },
+            object_id: None,
+            object_kind: None,
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: if metadata.is_file() {
                 Some(metadata.len())
             } else {
@@ -605,6 +639,11 @@ fn build_node_from_fs(full_path: &Path, relative_path: &str) -> AppResult<FileNo
             name: file_name_or_root(relative_path),
             path: relative_path.to_string(),
             kind: FileNodeKind::Directory,
+            object_id: None,
+            object_kind: None,
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: None,
             created_at: metadata_timestamp_rfc3339(&metadata, true),
             updated_at: metadata_timestamp_rfc3339(&metadata, false),
@@ -616,6 +655,11 @@ fn build_node_from_fs(full_path: &Path, relative_path: &str) -> AppResult<FileNo
         name: file_name_or_root(relative_path),
         path: relative_path.to_string(),
         kind: FileNodeKind::File,
+        object_id: None,
+        object_kind: None,
+        namespace: None,
+        visibility: None,
+        resource_key: None,
         size_bytes: Some(metadata.len()),
         created_at: metadata_timestamp_rfc3339(&metadata, true),
         updated_at: metadata_timestamp_rfc3339(&metadata, false),

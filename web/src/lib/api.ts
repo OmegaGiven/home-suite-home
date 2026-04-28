@@ -8,6 +8,11 @@ import type {
   GoogleCalendarConfig,
   Message,
   Note,
+  NoteDocument,
+  NoteDocumentOperationBatch,
+  NoteOperationsPullResponse,
+  NoteOperationsPushResponse,
+  NoteSessionOpenResponse,
   OidcConfig,
   ResourceShare,
   ResourceVisibility,
@@ -28,6 +33,7 @@ import type {
   TranscriptionJob,
   VoiceMemo,
   AdminSettings,
+  AdminDatabaseOverview,
   UpdateAccountCredentialsRequest,
   UserProfile,
 } from './types'
@@ -212,11 +218,11 @@ export const api = {
   listNotes() {
     return request<Note[]>('/api/v1/notes')
   },
-  createNote(title: string, folder?: string, markdown?: string) {
+  createNote(title: string, folder?: string, markdown?: string, document?: NoteDocument | null) {
     return request<Note>('/api/v1/notes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, folder, markdown }),
+      body: JSON.stringify({ title, folder, markdown, document }),
     })
   },
   updateNote(note: Note, options?: { keepalive?: boolean }) {
@@ -228,12 +234,37 @@ export const api = {
         title: note.title,
         folder: note.folder,
         markdown: note.markdown,
+        document: note.document,
         revision: note.revision,
       }),
     })
   },
   deleteNote(id: string) {
     return request<void>(`/api/v1/notes/${id}`, { method: 'DELETE' })
+  },
+  openNoteSession(id: string, clientId: string) {
+    return request<NoteSessionOpenResponse>(`/api/v1/notes/${id}/session/open`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId }),
+    })
+  },
+  closeNoteSession(id: string, sessionId: string) {
+    return request<void>(`/api/v1/notes/${id}/session/close`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    })
+  },
+  pullNoteOperations(id: string, sinceRevision: number) {
+    return request<NoteOperationsPullResponse>(`/api/v1/notes/${id}/operations?since_revision=${sinceRevision}`)
+  },
+  pushNoteOperations(id: string, batch: NoteDocumentOperationBatch) {
+    return request<NoteOperationsPushResponse>(`/api/v1/notes/${id}/operations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch }),
+    })
   },
   listDiagrams() {
     return request<Diagram[]>('/api/v1/diagrams')
@@ -452,6 +483,9 @@ export const api = {
   },
   getAdminStorageOverview() {
     return request<AdminStorageOverview>('/api/v1/admin/storage-overview')
+  },
+  getAdminDatabaseOverview() {
+    return request<AdminDatabaseOverview>('/api/v1/admin/db')
   },
   getSystemUpdateStatus() {
     return request<SystemUpdateStatus>('/api/v1/admin/system/update')

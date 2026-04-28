@@ -3,7 +3,7 @@ import { api } from './api'
 import type { RoutePath } from './app-config'
 import { isNativePlatform, sessionStore } from './platform'
 import { bootstrapWorkspace, loadCachedWorkspaceSnapshot } from './sync-engine'
-import type { AdminSettings, Diagram, FileNode, OidcConfig, RtcConfig, SessionResponse, SetupAdminRequest, SetupStatusResponse, VoiceMemo, Note, UserProfile, Message, Room } from './types'
+import type { AdminDatabaseOverview, AdminSettings, Diagram, FileNode, OidcConfig, RtcConfig, SessionResponse, SetupAdminRequest, SetupStatusResponse, VoiceMemo, Note, UserProfile, Message, Room } from './types'
 
 type AdminUserSummary = import('./types').AdminUserSummary
 type AdminStorageOverview = import('./types').AdminStorageOverview
@@ -23,6 +23,7 @@ type CreateAuthActionsContext = {
   setAdminSettings: Dispatch<SetStateAction<AdminSettings | null>>
   setAdminUsers: Dispatch<SetStateAction<AdminUserSummary[]>>
   setAdminStorageOverview: Dispatch<SetStateAction<AdminStorageOverview | null>>
+  setAdminDatabaseOverview: Dispatch<SetStateAction<AdminDatabaseOverview | null>>
   setNotes: Dispatch<SetStateAction<Note[]>>
   setFilesTree: Dispatch<SetStateAction<FileNode[]>>
   setSelectedFilePath: Dispatch<SetStateAction<string>>
@@ -65,6 +66,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     context.setAdminSettings(nextAdminSettings)
     context.setAdminUsers(nextUsers)
     context.setAdminStorageOverview(nextAdminStorageOverview)
+    context.setAdminDatabaseOverview(null)
     context.setSyncCursors(workspace.cursors)
     context.rememberPersistedNotes(workspace.notes)
     context.setNotes(workspace.notes)
@@ -230,6 +232,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     context.setAdminSettings(null)
     context.setAdminUsers([])
     context.setAdminStorageOverview(null)
+    context.setAdminDatabaseOverview(null)
     context.setNotes([])
     context.setFilesTree([])
     context.setSelectedFilePath('')

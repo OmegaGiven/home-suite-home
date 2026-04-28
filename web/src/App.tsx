@@ -17,6 +17,7 @@ import {
 } from './lib/file-browser'
 import { createFileMutationActions } from './lib/file-mutations'
 import { createFileNavigationActions } from './lib/file-navigation'
+import { applyNoteOperationBatch, buildReplaceDocumentBatch, markdownFromNoteDocument, noteDocumentFromMarkdown } from './lib/note-document'
 import { createNoteActions, type NotePresenceEntry } from './lib/note-actions'
 import { createAdminActions } from './lib/admin-actions'
 import { createVoiceActions } from './lib/voice-actions'
@@ -102,6 +103,7 @@ import type {
   TaskItem,
   UserProfile,
   VoiceMemo,
+  NoteDocument,
 } from './lib/types'
 import {
   createEmptyDrawioDiagramXml,
@@ -224,10 +226,14 @@ function App() {
   const [adminSettings, setAdminSettings] = useState<AdminSettings | null>(null)
   const [adminUsers, setAdminUsers] = useState<import('./lib/types').AdminUserSummary[]>([])
   const [adminStorageOverview, setAdminStorageOverview] = useState<import('./lib/types').AdminStorageOverview | null>(null)
+  const [adminDatabaseOverview, setAdminDatabaseOverview] = useState<import('./lib/types').AdminDatabaseOverview | null>(null)
   const [systemUpdateStatus, setSystemUpdateStatus] = useState<SystemUpdateStatus | null>(null)
   const [notes, setNotes] = useState<Note[]>([])
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null)
   const [noteDraft, setNoteDraft] = useState(demoMarkdown)
+  const [selectedNoteDocument, setSelectedNoteDocument] = useState<NoteDocument>(() =>
+    noteDocumentFromMarkdown('local-draft', demoMarkdown, 'local'),
+  )
   const [noteEditorMode, setNoteEditorMode] = useState<NoteEditorMode>('rich')
   const [noteContextMenu, setNoteContextMenu] = useState<NoteContextMenuState>(null)
   const [noteContextSubmenu, setNoteContextSubmenu] = useState<NoteContextSubmenu>(null)
@@ -378,9 +384,11 @@ function App() {
   const sessionUserIdRef = useRef<string | null>(session?.user.id ?? null)
   const selectedNoteIdRef = useRef<string | null>(null)
   const selectedNoteRef = useRef<Note | null>(null)
+  const noteSessionIdRef = useRef<string | null>(null)
   const noteEditorModeRef = useRef<NoteEditorMode>('rich')
   const selectedFolderPathRef = useRef(selectedFolderPath)
   const noteDraftRef = useRef(noteDraft)
+  const selectedNoteDocumentRef = useRef<NoteDocument | null>(selectedNoteDocument)
   const notesRef = useRef<Note[]>([])
   const diagramsRef = useRef<Diagram[]>([])
   const memosRef = useRef<VoiceMemo[]>([])
@@ -406,18 +414,57 @@ function App() {
   const selectedRoom = rooms.find((room) => room.id === selectedRoomId) ?? null
   const activeCallRoom = rooms.find((room) => room.id === activeCallRoomId) ?? null
   const selectedVoiceMemo = memos.find((memo) => memo.id === selectedVoiceMemoId) ?? null
+
+  function buildSelectedNoteDocumentState(markdown: string, note: Note | null | undefined, previous?: NoteDocument | null) {
+    const actorId = session?.user.id ?? note?.last_editor_id ?? 'local'
+    return noteDocumentFromMarkdown(note?.id ?? 'local-draft', markdown, actorId, previous ?? note?.document ?? undefined)
+  }
+
+  function applySelectedNoteDocument(
+    document: NoteDocument | null | undefined,
+    options?: { note?: Note | null; markdown?: string },
+  ) {
+    const note = options?.note ?? selectedNoteRef.current
+    const nextDocument =
+      document ??
+      buildSelectedNoteDocumentState(options?.markdown ?? '', note, selectedNoteDocumentRef.current)
+    const nextMarkdown = options?.markdown ?? markdownFromNoteDocument(nextDocument)
+    setSelectedNoteDocument(nextDocument)
+    setNoteDraft(nextMarkdown)
+    if (note && note.id === selectedNoteIdRef.current) {
+      const nextNote = {
+        ...note,
+        markdown: nextMarkdown,
+        document: nextDocument,
+      }
+      selectedNoteRef.current = nextNote
+      notesRef.current = notesRef.current.map((entry) => (entry.id === nextNote.id ? nextNote : entry))
+      setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
+    }
+  }
+
+  function applySelectedNoteMarkdown(markdown: string, options?: { note?: Note | null; document?: NoteDocument | null }) {
+    const note = options?.note ?? selectedNoteRef.current
+    const nextDocument =
+      options?.document ??
+      buildSelectedNoteDocumentState(markdown, note, selectedNoteDocumentRef.current)
+    applySelectedNoteDocument(nextDocument, { note, markdown })
+  }
+
   const {
     saveAdminSettings,
     createAdminUser,
     resetAdminUserPassword,
     updateAdminUserAccess,
     resolveAdminUserCredentialRequest,
+    refreshAdminDatabaseOverview,
     refreshSystemUpdateStatus,
     runSystemUpdate,
   } = createAdminActions({
     session,
     setAdminSettings,
     setAdminStorageOverview,
+    setAdminDatabaseOverview,
     setSystemUpdateStatus,
     setAdminUsers,
     setSetupStatus,
@@ -510,6 +557,7 @@ function App() {
     noteEditorMode,
     noteEditorRef,
     noteDraftRef,
+    currentNoteDocumentRef: selectedNoteDocumentRef,
     selectedNoteRef,
     selectedNoteIdRef,
     selectedFolderPathRef,
@@ -533,6 +581,8 @@ function App() {
     setNoteSaveState,
     setNotes,
     setNoteDraft,
+    applySelectedNoteMarkdown,
+    applySelectedNoteDocument,
     setCustomFolders,
     setSelectedNoteId,
     setSelectedFolderPath,
@@ -540,6 +590,15 @@ function App() {
     setRoute,
     createNoteRecord: createNoteLocalFirst,
     updateNoteRecord: updateNoteLocalFirst,
+    buildNoteDocument: (note, markdown) =>
+      note.id === selectedNoteRef.current?.id && selectedNoteDocumentRef.current
+        ? noteDocumentFromMarkdown(
+            note.id,
+            markdown,
+            session?.user.id ?? note.last_editor_id,
+            selectedNoteDocumentRef.current,
+          )
+        : noteDocumentFromMarkdown(note.id, markdown, session?.user.id ?? note.last_editor_id, note.document),
     refreshFilesTree,
     showActionNotice,
     normalizeFolderPath,
@@ -601,7 +660,7 @@ function App() {
     noteContextTableRef,
     noteContextCellRef,
     noteClipboardText,
-    setNoteDraft,
+    applySelectedNoteMarkdown,
     setStatus,
     setNoteClipboardText,
     setNoteContextMenu,
@@ -1005,19 +1064,34 @@ function App() {
   }
 
   async function createNoteLocalFirst(title: string, folder?: string, markdown?: string) {
+    const noteMarkdown = markdown ?? '# New note\n\nStart writing.'
     if (getConnectivityState()) {
-      return api.createNote(title, folder, markdown)
+      return api.createNote(title, folder, noteMarkdown)
     }
     if (!session) {
       throw new Error('You must be signed in to create notes offline.')
     }
     const now = new Date().toISOString()
+    const noteId = createEntityId()
+    const noteDocument = noteDocumentFromMarkdown(noteId, noteMarkdown, session.user.id, null)
     const note: Note = {
-      id: createEntityId(),
+      id: noteId,
+      object_id: `note:${noteId}`,
+      namespace: {
+        root: `users/${session.user.id}/synced`,
+        owner_id: session.user.id,
+        kind: 'synced',
+        label: 'Synced',
+      },
+      visibility: 'private',
+      shared_user_ids: [],
       title,
       folder: folder || 'Inbox',
-      markdown: markdown ?? '# New note\n\nStart writing.',
+      markdown: noteMarkdown,
       rendered_html: '',
+      document: noteDocument,
+      forked_from_note_id: null,
+      conflict_tag: null,
       revision: 1,
       created_at: now,
       updated_at: now,
@@ -1034,25 +1108,38 @@ function App() {
     return note
   }
 
-  async function updateNoteLocalFirst(note: Note, payload: { markdown: string; folder: string }, options?: { keepalive?: boolean }) {
-    if (getConnectivityState()) {
-      return api.updateNote({ ...note, markdown: payload.markdown, folder: payload.folder }, options)
-    }
+  async function updateNoteLocalFirst(note: Note, payload: { markdown: string; folder: string }, _options?: { keepalive?: boolean }) {
+    const actorId = session?.user.id ?? note.last_editor_id
+    const nextDocument = noteDocumentFromMarkdown(note.id, payload.markdown, actorId, note.document)
     const updated: Note = {
       ...note,
       markdown: payload.markdown,
       folder: payload.folder,
+      document: nextDocument,
       revision: note.revision + 1,
       updated_at: new Date().toISOString(),
       last_editor_id: session?.user.id ?? note.last_editor_id,
     }
+    if (getConnectivityState()) {
+      const response = await api.pushNoteOperations(
+        note.id,
+        buildReplaceDocumentBatch(
+          note,
+          updated,
+          payload.markdown,
+          actorId,
+          clientIdRef.current,
+        ),
+      )
+      if (!response.applied) {
+        throw new Error('note forked due to conflicting block edits')
+      }
+      return response.note
+    }
     await queueSyncOperation({
-      kind: 'update_note',
+      kind: 'apply_note_operations',
       id: note.id,
-      title: updated.title,
-      folder: updated.folder,
-      markdown: updated.markdown,
-      revision: note.revision,
+      batch: buildReplaceDocumentBatch(note, updated, updated.markdown, actorId, clientIdRef.current),
     })
     return updated
   }
@@ -2051,6 +2138,36 @@ function App() {
   }, [selectedNote])
 
   useEffect(() => {
+    if (authMode !== 'ready' || !session || !selectedNoteId) {
+      return
+    }
+
+    let cancelled = false
+    void api
+      .openNoteSession(selectedNoteId, clientIdRef.current)
+      .then((response) => {
+        if (cancelled) return
+        noteSessionIdRef.current = response.sessions[0]?.session_id ?? null
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error(error)
+        }
+      })
+
+    return () => {
+      cancelled = true
+      const sessionId = noteSessionIdRef.current
+      noteSessionIdRef.current = null
+      if (sessionId) {
+        void api.closeNoteSession(selectedNoteId, sessionId).catch((error) => {
+          console.error(error)
+        })
+      }
+    }
+  }, [authMode, selectedNoteId, session])
+
+  useEffect(() => {
     noteEditorModeRef.current = noteEditorMode
   }, [noteEditorMode])
 
@@ -2075,6 +2192,10 @@ function App() {
   useEffect(() => {
     noteDraftRef.current = noteDraft
   }, [noteDraft])
+
+  useEffect(() => {
+    selectedNoteDocumentRef.current = selectedNoteDocument
+  }, [selectedNoteDocument])
 
   useEffect(() => {
     rtcConfigRef.current = rtcConfig
@@ -2506,7 +2627,13 @@ function App() {
   }, [])
 
   useEffect(() => {
-    setNoteDraft(selectedNote?.markdown ?? '')
+    if (selectedNote) {
+      applySelectedNoteDocument(selectedNote.document, { note: selectedNote, markdown: selectedNote.markdown })
+      return
+    }
+    const emptyDocument = noteDocumentFromMarkdown('local-draft', '', session?.user.id ?? 'local', selectedNoteDocumentRef.current)
+    setSelectedNoteDocument(emptyDocument)
+    setNoteDraft('')
   }, [selectedNote?.id])
 
   useEffect(() => {
@@ -2530,15 +2657,21 @@ function App() {
     const markdown =
       pendingRestore && pendingRestore.noteId === selectedNote?.id
         ? pendingRestore.markdown
-        : (selectedNote?.markdown ?? '')
+        : noteDraft
     const currentMarkdown = editableHtmlToMarkdown(noteEditorRef.current)
+    if (noteEditorRef.current.dataset.noteEditorModel === 'blocks') {
+      if (pendingRestore?.noteId === selectedNote?.id) {
+        pendingLocalDraftRestoreRef.current = null
+      }
+      return
+    }
     if (currentMarkdown !== markdown && (!editorHasFocus || pendingRestore?.noteId === selectedNote?.id)) {
       noteEditorRef.current.innerHTML = markdownToEditableHtml(markdown)
     }
     if (pendingRestore?.noteId === selectedNote?.id) {
       pendingLocalDraftRestoreRef.current = null
     }
-  }, [route, selectedNote?.id, selectedNote?.revision, noteEditorMode])
+  }, [route, selectedNote?.id, selectedNote?.revision, noteEditorMode, noteDraft])
 
   useEffect(() => {
     setNoteContextMenu(null)
@@ -2889,6 +3022,15 @@ function App() {
                       selectedDirty && mergedSelectedPatch && note.id === payload.note_id
                         ? mergedSelectedPatch.markdown
                         : payload.markdown,
+                    document:
+                      selectedDirty && mergedSelectedPatch && note.id === payload.note_id
+                        ? noteDocumentFromMarkdown(
+                            note.id,
+                            mergedSelectedPatch.markdown,
+                            session?.user.id ?? note.last_editor_id,
+                            note.document,
+                          )
+                        : (payload.document ?? note.document),
                     revision: payload.revision,
                   }
                 : note,
@@ -2898,15 +3040,30 @@ function App() {
 
         if (payload.note_id === selectedNoteIdRef.current) {
           if (!selectedDirty) {
-            setNoteDraft(payload.markdown)
+            applySelectedNoteDocument(payload.document ?? currentSelected?.document, {
+              note:
+                currentSelected && currentSelected.id === payload.note_id
+                  ? { ...currentSelected, title: payload.title, folder: payload.folder }
+                  : null,
+              markdown: payload.markdown,
+            })
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
+            if (
+              noteEditorModeRef.current === 'rich' &&
+              noteEditorRef.current &&
+              noteEditorRef.current.dataset.noteEditorModel !== 'blocks'
+            ) {
               noteEditorRef.current.innerHTML = markdownToEditableHtml(payload.markdown)
             }
           } else if (mergedSelectedPatch) {
-            setNoteDraft(mergedSelectedPatch.markdown)
+            applySelectedNoteMarkdown(mergedSelectedPatch.markdown)
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current && !editorHasLocalFocus) {
+            if (
+              noteEditorModeRef.current === 'rich' &&
+              noteEditorRef.current &&
+              noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
+              !editorHasLocalFocus
+            ) {
               noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedPatch.markdown)
             }
             setStatus(
@@ -2917,7 +3074,7 @@ function App() {
           }
         }
           }
-          if (payload.type === 'note_draft') {
+          if (payload.type === 'note_draft' || payload.type === 'note_operations') {
         if (payload.client_id === clientIdRef.current) return
         const isSelectedNote = payload.note_id === selectedNoteIdRef.current
         const editorHasLocalFocus =
@@ -2926,6 +3083,14 @@ function App() {
             document.activeElement.classList.contains('note-raw-editor'))
         const selectedDirty = isSelectedNote && currentNoteIsDirty()
         const currentSelected = selectedNoteRef.current
+        const incomingDocument =
+          payload.type === 'note_operations'
+            ? applyNoteOperationBatch(currentSelected?.id === payload.note_id ? currentSelected.document : undefined, payload.batch)
+            : (payload.document ?? (currentSelected?.id === payload.note_id ? currentSelected.document : { blocks: [], clock: {}, last_operation_id: '' }))
+        const incomingMarkdown =
+          payload.type === 'note_operations'
+            ? markdownFromNoteDocument(incomingDocument)
+            : payload.markdown
         const realtimeBaseBeforeUpdate =
           realtimeDraftBaseRef.current[payload.note_id] ??
           persistedNoteStateRef.current[payload.note_id]?.markdown ??
@@ -2938,12 +3103,12 @@ function App() {
             ? mergeConcurrentMarkdown(
                 realtimeBaseBeforeUpdate,
                 localSelectedMarkdown,
-                payload.markdown,
+                incomingMarkdown,
               )
             : null
 
         startTransition(() => {
-          realtimeDraftBaseRef.current[payload.note_id] = payload.markdown
+          realtimeDraftBaseRef.current[payload.note_id] = incomingMarkdown
           setNotes((current) =>
             current.map((note) =>
               note.id === payload.note_id
@@ -2954,7 +3119,16 @@ function App() {
                     markdown:
                       isSelectedNote && selectedDirty && mergedSelectedDraft && note.id === payload.note_id
                         ? mergedSelectedDraft.markdown
-                        : payload.markdown,
+                        : incomingMarkdown,
+                    document:
+                      isSelectedNote && selectedDirty && mergedSelectedDraft && note.id === payload.note_id
+                        ? noteDocumentFromMarkdown(
+                            note.id,
+                            mergedSelectedDraft.markdown,
+                            session?.user.id ?? note.last_editor_id,
+                            note.document,
+                          )
+                        : incomingDocument,
                     revision: Math.max(note.revision, payload.revision),
                   }
                 : note,
@@ -2965,15 +3139,30 @@ function App() {
         if (isSelectedNote) {
           registerPresence(payload.note_id, payload.user)
           if (!(selectedDirty && editorHasLocalFocus)) {
-            setNoteDraft(payload.markdown)
+            applySelectedNoteDocument(incomingDocument, {
+              note:
+                currentSelected && currentSelected.id === payload.note_id
+                  ? { ...currentSelected, title: payload.title, folder: payload.folder }
+                  : null,
+              markdown: incomingMarkdown,
+            })
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current) {
-              noteEditorRef.current.innerHTML = markdownToEditableHtml(payload.markdown)
+            if (
+              noteEditorModeRef.current === 'rich' &&
+              noteEditorRef.current &&
+              noteEditorRef.current.dataset.noteEditorModel !== 'blocks'
+            ) {
+              noteEditorRef.current.innerHTML = markdownToEditableHtml(incomingMarkdown)
             }
           } else if (mergedSelectedDraft) {
-            setNoteDraft(mergedSelectedDraft.markdown)
+            applySelectedNoteMarkdown(mergedSelectedDraft.markdown)
             setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (noteEditorModeRef.current === 'rich' && noteEditorRef.current && !editorHasLocalFocus) {
+            if (
+              noteEditorModeRef.current === 'rich' &&
+              noteEditorRef.current &&
+              noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
+              !editorHasLocalFocus
+            ) {
               noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedDraft.markdown)
             }
             setStatus(
@@ -3056,6 +3245,124 @@ function App() {
     }, 10_000)
     return () => window.clearInterval(interval)
   }, [selectedNoteId, session?.user.id])
+
+  useEffect(() => {
+    if (authMode !== 'ready' || !session || !selectedNoteId) {
+      return
+    }
+
+    let cancelled = false
+
+    async function reconcileSelectedNote() {
+      const currentSession = session
+      const currentSelected = selectedNoteRef.current
+      if (!currentSession || !currentSelected || currentSelected.id !== selectedNoteId || !getConnectivityState()) {
+        return
+      }
+
+      try {
+        const response = await api.pullNoteOperations(selectedNoteId, currentSelected.revision)
+        if (cancelled || response.note.revision <= currentSelected.revision) {
+          return
+        }
+        const pulledDocument =
+          response.operations.length > 0
+            ? response.operations.reduce(
+                (document, operation) => applyNoteOperationBatch(document, operation.batch),
+                currentSelected.document,
+              )
+            : response.note.document
+        const pulledMarkdown = pulledDocument ? markdownFromNoteDocument(pulledDocument) : response.note.markdown
+        const pulledNote = {
+          ...response.note,
+          document: pulledDocument,
+          markdown: pulledMarkdown,
+        }
+
+        const selectedDirty = currentNoteIsDirty()
+        const editorHasLocalFocus =
+          document.activeElement === noteEditorRef.current ||
+          (document.activeElement instanceof HTMLTextAreaElement &&
+            document.activeElement.classList.contains('note-raw-editor'))
+        const merged =
+          selectedDirty
+            ? mergeConcurrentMarkdown(
+                realtimeDraftBaseRef.current[selectedNoteId] ??
+                  persistedNoteStateRef.current[selectedNoteId]?.markdown ??
+                  currentSelected.markdown,
+                currentNoteMarkdown(),
+                pulledNote.markdown,
+              )
+            : null
+
+        persistedNoteStateRef.current[selectedNoteId] = {
+          title: pulledNote.title,
+          folder: pulledNote.folder,
+          markdown: pulledNote.markdown,
+        }
+        realtimeDraftBaseRef.current[selectedNoteId] = pulledNote.markdown
+
+        startTransition(() => {
+          setNotes((current) =>
+            current.map((note) =>
+              note.id === selectedNoteId
+                ? {
+                    ...pulledNote,
+                    markdown: selectedDirty && merged ? merged.markdown : pulledNote.markdown,
+                    document:
+                      selectedDirty && merged
+                        ? noteDocumentFromMarkdown(
+                            pulledNote.id,
+                            merged.markdown,
+                            currentSession.user.id,
+                            pulledNote.document,
+                          )
+                        : pulledNote.document,
+                  }
+                : note,
+            ),
+          )
+        })
+
+        if (!selectedDirty) {
+          applySelectedNoteDocument(pulledNote.document, { note: pulledNote, markdown: pulledNote.markdown })
+          setSelectedFolderPath(normalizeFolderPath(pulledNote.folder || 'Inbox'))
+          if (
+            noteEditorModeRef.current === 'rich' &&
+            noteEditorRef.current &&
+            noteEditorRef.current.dataset.noteEditorModel !== 'blocks'
+          ) {
+            noteEditorRef.current.innerHTML = markdownToEditableHtml(pulledNote.markdown)
+          }
+        } else if (merged) {
+          applySelectedNoteMarkdown(merged.markdown)
+          if (
+            noteEditorModeRef.current === 'rich' &&
+            noteEditorRef.current &&
+            noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
+            !editorHasLocalFocus
+          ) {
+            noteEditorRef.current.innerHTML = markdownToEditableHtml(merged.markdown)
+          }
+          setStatus(merged.hadConflict ? 'Concurrent note edits merged with conflict markers' : 'Concurrent note edits merged')
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.error(error)
+        }
+      }
+    }
+
+    void reconcileSelectedNote()
+    const interval = window.setInterval(() => {
+      void reconcileSelectedNote()
+    }, 4000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [authMode, selectedNoteId, session, route, noteEditorMode])
 
   useEffect(() => {
     if (route !== '/notes' || noteEditorMode !== 'rich' || !selectedNoteId) return
@@ -3181,6 +3488,19 @@ function App() {
       console.error(error)
     })
   }, [authMode, session, currentRolePolicy.manage_org_settings])
+
+  useEffect(() => {
+    if (authMode !== 'ready' || !session || !currentRolePolicy.manage_org_settings) {
+      setAdminDatabaseOverview(null)
+      return
+    }
+    if (route !== '/admin') {
+      return
+    }
+    void refreshAdminDatabaseOverview().catch((error) => {
+      console.error(error)
+    })
+  }, [authMode, session, currentRolePolicy.manage_org_settings, route])
 
   useEffect(() => {
     if (route !== '/admin' || !systemUpdateStatus?.update_in_progress || !currentRolePolicy.manage_org_settings) {
@@ -3357,6 +3677,7 @@ function App() {
     setAdminSettings,
     setAdminUsers,
     setAdminStorageOverview,
+    setAdminDatabaseOverview,
     setNotes,
     setFilesTree,
     setSelectedFilePath,
@@ -3480,6 +3801,7 @@ function App() {
         setSelectedFolderPath(normalizeFolderPath(operation.folder || 'Inbox'))
         await navigate('/notes')
         return
+      case 'apply_note_operations':
       case 'update_note':
       case 'delete_note': {
         const note = notesRef.current.find((entry) => entry.id === operation.id)
@@ -3596,7 +3918,11 @@ function App() {
 
     setSelectedNoteId(nextSelected?.id ?? null)
     setSelectedFolderPath(normalizeFolderPath(nextSelected?.folder || note.folder || 'Inbox'))
-    setNoteDraft(nextSelected?.markdown ?? '')
+    if (nextSelected) {
+      applySelectedNoteDocument(nextSelected.document, { note: nextSelected, markdown: nextSelected.markdown })
+    } else {
+      applySelectedNoteMarkdown('', { note: null })
+    }
     await refreshFilesTree()
     showActionNotice(`Deleted note: ${note.title || 'Untitled note'}`)
   }
@@ -3657,7 +3983,7 @@ function App() {
       locallyDirtyNoteIdsRef.current.delete(updated.id)
       if (updated.id === selectedNoteIdRef.current) {
         setSelectedFolderPath(nextFolder)
-        setNoteDraft(updated.markdown)
+        applySelectedNoteDocument(updated.document, { note: updated, markdown: updated.markdown })
       }
       setCustomFolders((current) => mergeFolderPaths(current, [currentFolder, updated.folder || 'Inbox']))
       await refreshFilesTree()
@@ -3712,7 +4038,7 @@ function App() {
       const updatedSelected = updatedById.get(selectedNoteId)
       if (updatedSelected) {
         setSelectedFolderPath(normalizeFolderPath(updatedSelected.folder || 'Inbox'))
-        setNoteDraft(updatedSelected.markdown)
+        applySelectedNoteDocument(updatedSelected.document, { note: updatedSelected, markdown: updatedSelected.markdown })
       } else if (selectedFolderPathRef.current === sourceFolder || selectedFolderPathRef.current.startsWith(`${sourceFolder}/`)) {
         setSelectedFolderPath(rebaseFolderPath(selectedFolderPathRef.current))
       }
@@ -4546,6 +4872,7 @@ function App() {
     noteTitleModalOpen,
     noteEditorMode,
     noteDraft,
+    selectedNoteDocument,
     activePresence,
     remoteCursors: activeRemoteNoteCursors,
     noteEditorRef,
@@ -4619,9 +4946,7 @@ function App() {
     onChangeSelectedNoteTitle: (value: string) => {
       if (!selectedNote) return
       const nextSelectedNote = { ...selectedNote, title: value }
-      selectedNoteRef.current = nextSelectedNote
-      notesRef.current = notesRef.current.map((note) => (note.id === nextSelectedNote.id ? nextSelectedNote : note))
-      setNotes((current) => current.map((note) => (note.id === selectedNote.id ? { ...note, title: value } : note)))
+      applySelectedNoteDocument(selectedNoteDocumentRef.current, { note: nextSelectedNote, markdown: currentNoteMarkdown() })
       window.requestAnimationFrame(() => scheduleNoteDraftBroadcast(currentNoteMarkdown()))
     },
     onRequestSave: () => void saveNote(),
@@ -4632,16 +4957,24 @@ function App() {
     onOpenShareDialog: (target: ShareTarget) => void openShareDialog(target),
     resourceKeyForNote,
     onSetNoteEditorMode: setNoteEditorMode,
+    onRichDocumentChange: (document: NoteDocument) => {
+      const markdown = markdownFromNoteDocument(document)
+      applySelectedNoteDocument(document, { note: selectedNoteRef.current, markdown })
+      scheduleNoteDraftBroadcast(markdown)
+    },
     handleNoteEditorClick,
     openNoteContextMenu,
     handleNoteEditorInput,
     handleNoteEditorKeyDown,
     onRawDraftChange: (value: string) => {
-      setNoteDraft(value)
+      applySelectedNoteMarkdown(value)
       scheduleNoteDraftBroadcast(value)
     },
     onRawDraftKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) =>
-      handleTextareaTabKeyDown(event, setNoteDraft, scheduleNoteDraftBroadcast),
+      handleTextareaTabKeyDown(event, (value) => {
+        const nextValue = typeof value === 'function' ? value(noteDraftRef.current) : value
+        applySelectedNoteMarkdown(nextValue)
+      }, scheduleNoteDraftBroadcast),
     onCopySelection: copyNoteSelection,
     onPasteFromClipboard: pasteIntoNoteFromClipboard,
     onSetNoteContextMenu: setNoteContextMenu,
@@ -5178,12 +5511,14 @@ function App() {
     settings: adminSettings,
     users: adminUsers,
     storageOverview: adminStorageOverview,
+    databaseOverview: adminDatabaseOverview,
     currentFontFamily: appearance.fontFamily,
     currentAccent: appearance.accent,
     currentPageGutter: appearance.pageGutter,
     currentRadius: appearance.radius,
     oidcConfig: oidc,
     systemUpdateStatus,
+    onRefreshDatabaseOverview: () => void refreshAdminDatabaseOverview(),
     onSave: (settings: AdminSettings) => void saveAdminSettings(settings),
     onRefreshSystemUpdateStatus: () => void refreshSystemUpdateStatus(),
     onRunSystemUpdate: () => void runSystemUpdate(),

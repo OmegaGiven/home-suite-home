@@ -118,6 +118,20 @@ export interface AdminStorageOverview {
   detected_available_mb: number
 }
 
+export interface AdminDatabaseTable {
+  key: string
+  label: string
+  row_count: number
+  columns: string[]
+  rows: Record<string, unknown>[]
+}
+
+export interface AdminDatabaseOverview {
+  backend: string
+  generated_at: string
+  tables: AdminDatabaseTable[]
+}
+
 export interface SystemUpdateStatus {
   current_version: string
   update_target: string
@@ -178,17 +192,130 @@ export interface OidcProviderSettings {
   scopes: string
 }
 
+export type WorkspaceObjectKind = 'note_document' | 'managed_file' | 'folder' | 'audio_memo' | 'diagram'
+export type ObjectNamespaceKind = 'private' | 'synced' | 'shared'
+
+export interface ObjectNamespace {
+  root: string
+  owner_id: string
+  kind: ObjectNamespaceKind
+  label: string
+}
+
+export type NoteBlockKind =
+  | 'paragraph'
+  | 'heading'
+  | 'quote'
+  | 'bullet_list'
+  | 'checklist'
+  | 'numbered_list'
+  | 'code'
+  | 'table'
+
+export interface NoteBlock {
+  id: string
+  kind: NoteBlockKind
+  text: string
+  attrs: Record<string, string>
+  order: number
+  deleted: boolean
+  last_modified_by: string
+  last_modified_counter: number
+}
+
+export interface NoteDocument {
+  blocks: NoteBlock[]
+  clock: Record<string, number>
+  last_operation_id: string
+}
+
+export type NoteOperation =
+  | { type: 'set_title'; title: string }
+  | { type: 'set_folder'; folder: string }
+  | { type: 'replace_document'; blocks: NoteBlock[] }
+  | { type: 'insert_block'; block: NoteBlock; after_block_id?: string | null }
+  | { type: 'update_block_text'; block_id: string; text: string }
+  | { type: 'update_block_attrs'; block_id: string; attrs: Record<string, string> }
+  | { type: 'delete_block'; block_id: string }
+  | { type: 'move_block'; block_id: string; after_block_id?: string | null }
+
+export interface NoteDocumentOperationBatch {
+  actor_id: string
+  client_id: string
+  operation_id: string
+  base_clock: Record<string, number>
+  operations: NoteOperation[]
+}
+
+export interface NoteOperationRecord {
+  note_id: string
+  operation_id: string
+  actor_id: string
+  client_id: string
+  created_at: string
+  resulting_revision: number
+  batch: NoteDocumentOperationBatch
+}
+
+export interface NoteSession {
+  session_id: string
+  note_id: string
+  user_id: string
+  user_label: string
+  user_avatar_path?: string | null
+  client_id: string
+  opened_at: string
+  last_seen_at: string
+}
+
+export interface NoteConflictRecord {
+  id: string
+  note_id: string
+  operation_id: string
+  reason: string
+  forked_note_ids: string[]
+  created_at: string
+}
+
+export interface NoteOperationsPullResponse {
+  note: Note
+  operations: NoteOperationRecord[]
+  conflicts: NoteConflictRecord[]
+  share: ResourceShare
+}
+
+export interface NoteOperationsPushResponse {
+  note: Note
+  applied: boolean
+  operation?: NoteOperationRecord | null
+  conflicts: NoteConflictRecord[]
+}
+
+export interface NoteSessionOpenResponse {
+  note: Note
+  share: ResourceShare
+  sessions: NoteSession[]
+  conflicts: NoteConflictRecord[]
+}
+
 export interface Note {
   id: string
+  object_id: string
+  namespace: ObjectNamespace
+  visibility: ResourceVisibility
+  shared_user_ids: string[]
   title: string
   folder: string
   markdown: string
   rendered_html: string
+  document: NoteDocument
   revision: number
   created_at: string
   updated_at: string
   author_id: string
   last_editor_id: string
+  forked_from_note_id?: string | null
+  conflict_tag?: string | null
 }
 
 export type ResourceVisibility = 'private' | 'org' | 'users'
@@ -222,10 +349,17 @@ export interface TranscriptSegment {
 
 export interface VoiceMemo {
   id: string
+  object_id: string
+  namespace: ObjectNamespace
+  visibility: ResourceVisibility
+  shared_user_ids: string[]
   title: string
   audio_path: string
   transcript?: string | null
   transcript_segments: TranscriptSegment[]
+  transcript_tags: string[]
+  topic_summary?: string | null
+  source_channels: string[]
   status: JobStatus
   model: string
   device: string
@@ -348,8 +482,20 @@ export interface RtcConfig {
 }
 
 export type RealtimeEvent =
-  | { type: 'note_patch'; note_id: string; title: string; folder: string; markdown: string; revision: number }
-  | { type: 'note_draft'; note_id: string; title: string; folder: string; markdown: string; revision: number; client_id: string; user: string }
+  | { type: 'note_patch'; note_id: string; title: string; folder: string; markdown: string; revision: number; document?: NoteDocument | null }
+  | { type: 'note_draft'; note_id: string; title: string; folder: string; markdown: string; revision: number; client_id: string; user: string; document?: NoteDocument | null }
+  | {
+      type: 'note_operations'
+      note_id: string
+      title: string
+      folder: string
+      markdown: string
+      revision: number
+      client_id: string
+      user: string
+      batch: NoteDocumentOperationBatch
+      document?: NoteDocument | null
+    }
   | { type: 'note_cursor'; note_id: string; user: string; client_id: string; offset: number | null }
   | { type: 'chat_message'; room_id: string; body: string; author: string; author_id: string }
   | { type: 'chat_message_reactions_updated'; room_id: string; message_id: string }
@@ -363,6 +509,11 @@ export interface FileNode {
   name: string
   path: string
   kind: FileNodeKind
+  object_id?: string | null
+  object_kind?: WorkspaceObjectKind | null
+  namespace?: ObjectNamespace | null
+  visibility?: ResourceVisibility | null
+  resource_key?: string | null
   size_bytes?: number | null
   created_at?: string | null
   updated_at?: string | null
@@ -410,6 +561,7 @@ export interface SyncConflict {
   field: string
   local_value: string
   remote_value: string
+  forked_note_ids: string[]
 }
 
 export interface SyncEnvelope {
@@ -430,6 +582,7 @@ export interface SyncEnvelope {
 export type SyncOperation =
   | { kind: 'create_note'; client_generated_id: string; title: string; folder?: string | null; markdown?: string | null }
   | { kind: 'update_note'; id: string; title?: string | null; folder?: string | null; markdown?: string | null; revision: number }
+  | { kind: 'apply_note_operations'; id: string; batch: NoteDocumentOperationBatch }
   | { kind: 'delete_note'; id: string }
   | { kind: 'create_diagram'; client_generated_id: string; title: string; xml?: string | null }
   | { kind: 'update_diagram'; id: string; title?: string | null; xml: string; revision: number }

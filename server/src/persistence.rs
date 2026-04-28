@@ -10,9 +10,11 @@ use crate::{
     error::{AppError, AppResult},
     models::{
         AdminSettings, CalendarConnection, CalendarEvent, CalendarProvider, Diagram, JobStatus,
-        Message, MessageReaction, Note, ResourceShare, ResourceVisibility, Room, RoomKind,
-        StoredUser, SyncEntityKind, SyncTombstone, TaskItem, TaskStatus, TranscriptSegment,
-        TranscriptionJob, UserProfile, UserToolScope, VoiceMemo,
+        Message, MessageReaction, Note, NoteConflictRecord, NoteDocument,
+        NoteDocumentOperationBatch, NoteOperationRecord, NoteSession, ObjectNamespace,
+        ResourceShare, ResourceVisibility, Room, RoomKind, StoredUser, SyncEntityKind,
+        SyncTombstone, TaskItem, TaskStatus, TranscriptSegment, TranscriptionJob, UserProfile,
+        UserToolScope, VoiceMemo,
     },
     state::StateData,
 };
@@ -70,16 +72,30 @@ impl PersistenceBackend {
                             alter table users add column if not exists tool_scope_json text not null default '{}';
                             create table if not exists notes (
                                 id text primary key,
+                                object_id text not null default '',
+                                namespace_json text not null default '{}',
+                                visibility text not null default 'private',
+                                shared_user_ids_json text not null default '[]',
                                 title text not null,
                                 folder text not null,
                                 markdown text not null,
                                 rendered_html text not null,
+                                document_json text not null default '{}',
                                 revision bigint not null,
                                 created_at text not null,
                                 updated_at text not null,
                                 author_id text not null,
-                                last_editor_id text not null
+                                last_editor_id text not null,
+                                forked_from_note_id text,
+                                conflict_tag text
                             );
+                            alter table notes add column if not exists object_id text not null default '';
+                            alter table notes add column if not exists namespace_json text not null default '{}';
+                            alter table notes add column if not exists visibility text not null default 'private';
+                            alter table notes add column if not exists shared_user_ids_json text not null default '[]';
+                            alter table notes add column if not exists document_json text not null default '{}';
+                            alter table notes add column if not exists forked_from_note_id text;
+                            alter table notes add column if not exists conflict_tag text;
                             create table if not exists diagrams (
                                 id text primary key,
                                 title text not null,
@@ -94,10 +110,17 @@ impl PersistenceBackend {
                             alter table diagrams add column if not exists last_editor_id text not null default '';
                             create table if not exists voice_memos (
                                 id text primary key,
+                                object_id text not null default '',
+                                namespace_json text not null default '{}',
+                                visibility text not null default 'private',
+                                shared_user_ids_json text not null default '[]',
                                 title text not null,
                                 audio_path text not null,
                                 transcript text,
                                 transcript_segments_json text not null,
+                                transcript_tags_json text not null default '[]',
+                                topic_summary text,
+                                source_channels_json text not null default '[]',
                                 status text not null,
                                 model text not null,
                                 device text not null,
@@ -106,6 +129,13 @@ impl PersistenceBackend {
                                 failure_reason text,
                                 owner_id text not null default ''
                             );
+                            alter table voice_memos add column if not exists object_id text not null default '';
+                            alter table voice_memos add column if not exists namespace_json text not null default '{}';
+                            alter table voice_memos add column if not exists visibility text not null default 'private';
+                            alter table voice_memos add column if not exists shared_user_ids_json text not null default '[]';
+                            alter table voice_memos add column if not exists transcript_tags_json text not null default '[]';
+                            alter table voice_memos add column if not exists topic_summary text;
+                            alter table voice_memos add column if not exists source_channels_json text not null default '[]';
                             alter table voice_memos add column if not exists owner_id text not null default '';
                             create table if not exists transcription_jobs (
                                 id text primary key,
@@ -188,6 +218,35 @@ impl PersistenceBackend {
                                 id text not null,
                                 deleted_at text not null,
                                 primary key (entity, id)
+                            );
+                            create table if not exists note_operations (
+                                note_id text not null,
+                                operation_id text not null,
+                                actor_id text not null,
+                                client_id text not null,
+                                created_at text not null,
+                                resulting_revision bigint not null,
+                                batch_json text not null,
+                                primary key (note_id, operation_id)
+                            );
+                            create table if not exists note_sessions (
+                                note_id text not null,
+                                session_id text not null,
+                                user_id text not null,
+                                user_label text not null,
+                                user_avatar_path text,
+                                client_id text not null,
+                                opened_at text not null,
+                                last_seen_at text not null,
+                                primary key (note_id, session_id)
+                            );
+                            create table if not exists note_conflicts (
+                                id text primary key,
+                                note_id text not null,
+                                operation_id text not null,
+                                reason text not null,
+                                forked_note_ids_json text not null default '[]',
+                                created_at text not null
                             );",
                         )
                         .await
@@ -320,7 +379,7 @@ impl PersistenceBackend {
                 let mut notes = HashMap::new();
                 for row in client
                     .query(
-                        "select id, title, folder, markdown, rendered_html, revision, created_at, updated_at, author_id, last_editor_id from notes",
+                        "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag from notes",
                         &[],
                     )
                     .await
@@ -328,15 +387,28 @@ impl PersistenceBackend {
                 {
                     let note = Note {
                         id: parse_uuid(row.get::<_, String>(0).as_str())?,
-                        title: row.get(1),
-                        folder: row.get(2),
-                        markdown: row.get(3),
-                        rendered_html: row.get(4),
-                        revision: row.get::<_, i64>(5) as u64,
-                        created_at: parse_datetime(row.get::<_, String>(6).as_str())?,
-                        updated_at: parse_datetime(row.get::<_, String>(7).as_str())?,
-                        author_id: parse_uuid(row.get::<_, String>(8).as_str())?,
-                        last_editor_id: parse_uuid(row.get::<_, String>(9).as_str())?,
+                        object_id: row.get(1),
+                        namespace: serde_json::from_str::<ObjectNamespace>(row.get::<_, String>(2).as_str())
+                            .unwrap_or_default(),
+                        visibility: parse_resource_visibility(row.get::<_, String>(3).as_str())?,
+                        shared_user_ids: serde_json::from_str::<Vec<String>>(row.get::<_, String>(4).as_str())
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(|value| parse_uuid(value.as_str()))
+                            .collect::<AppResult<Vec<_>>>()?,
+                        title: row.get(5),
+                        folder: row.get(6),
+                        markdown: row.get(7),
+                        rendered_html: row.get(8),
+                        document: serde_json::from_str::<NoteDocument>(row.get::<_, String>(9).as_str())
+                            .unwrap_or_default(),
+                        revision: row.get::<_, i64>(10) as u64,
+                        created_at: parse_datetime(row.get::<_, String>(11).as_str())?,
+                        updated_at: parse_datetime(row.get::<_, String>(12).as_str())?,
+                        author_id: parse_uuid(row.get::<_, String>(13).as_str())?,
+                        last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
+                        forked_from_note_id: optional_uuid_from_string(row.get(15))?,
+                        conflict_tag: string_column_to_option(row.get(16)),
                     };
                     notes.insert(note.id, note);
                 }
@@ -349,22 +421,37 @@ impl PersistenceBackend {
         match self {
             Self::File { .. } => Ok(false),
             Self::Postgres { client, .. } => {
+                let namespace_json = serde_json::to_string(&note.namespace)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
+                let shared_user_ids_json = serde_json::to_string(
+                    &note.shared_user_ids.iter().map(Uuid::to_string).collect::<Vec<_>>(),
+                )
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+                let document_json = serde_json::to_string(&note.document)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
                 client
                     .execute(
                         "insert into notes
-                         (id, title, folder, markdown, rendered_html, revision, created_at, updated_at, author_id, last_editor_id)
-                         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                         (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag)
+                         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
                         &[
                             &note.id.to_string(),
+                            &note.object_id,
+                            &namespace_json,
+                            &resource_visibility_to_str(&note.visibility),
+                            &shared_user_ids_json,
                             &note.title,
                             &note.folder,
                             &note.markdown,
                             &note.rendered_html,
+                            &document_json,
                             &(note.revision as i64),
                             &note.created_at.to_rfc3339(),
                             &note.updated_at.to_rfc3339(),
                             &note.author_id.to_string(),
                             &note.last_editor_id.to_string(),
+                            &note.forked_from_note_id.map(|value| value.to_string()),
+                            &note.conflict_tag,
                         ],
                     )
                     .await
@@ -378,20 +465,35 @@ impl PersistenceBackend {
         match self {
             Self::File { .. } => Ok(false),
             Self::Postgres { client, .. } => {
+                let namespace_json = serde_json::to_string(&note.namespace)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
+                let shared_user_ids_json = serde_json::to_string(
+                    &note.shared_user_ids.iter().map(Uuid::to_string).collect::<Vec<_>>(),
+                )
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+                let document_json = serde_json::to_string(&note.document)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
                 let updated = client
                     .execute(
                         "update notes
-                         set title=$2, folder=$3, markdown=$4, rendered_html=$5, revision=$6, updated_at=$7, last_editor_id=$8
-                         where id=$1 and revision=$9",
+                         set object_id=$2, namespace_json=$3, visibility=$4, shared_user_ids_json=$5, title=$6, folder=$7, markdown=$8, rendered_html=$9, document_json=$10, revision=$11, updated_at=$12, last_editor_id=$13, forked_from_note_id=$14, conflict_tag=$15
+                         where id=$1 and revision=$16",
                         &[
                             &note.id.to_string(),
+                            &note.object_id,
+                            &namespace_json,
+                            &resource_visibility_to_str(&note.visibility),
+                            &shared_user_ids_json,
                             &note.title,
                             &note.folder,
                             &note.markdown,
                             &note.rendered_html,
+                            &document_json,
                             &(note.revision as i64),
                             &note.updated_at.to_rfc3339(),
                             &note.last_editor_id.to_string(),
+                            &note.forked_from_note_id.map(|value| value.to_string()),
+                            &note.conflict_tag,
                             &(expected_revision as i64),
                         ],
                     )
@@ -744,6 +846,9 @@ async fn sync_relational_state(
 ) -> AppResult<()> {
     for statement in [
         "delete from sync_tombstones",
+        "delete from note_conflicts",
+        "delete from note_sessions",
+        "delete from note_operations",
         "delete from tasks",
         "delete from calendar_events",
         "delete from messages",
@@ -793,22 +898,37 @@ async fn sync_relational_state(
     }
 
     for note in snapshot.notes.values() {
+        let namespace_json = serde_json::to_string(&note.namespace)
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        let shared_user_ids_json = serde_json::to_string(
+            &note.shared_user_ids.iter().map(Uuid::to_string).collect::<Vec<_>>(),
+        )
+        .map_err(|err| AppError::Internal(err.to_string()))?;
+        let document_json = serde_json::to_string(&note.document)
+            .map_err(|err| AppError::Internal(err.to_string()))?;
         client
             .execute(
                 "insert into notes
-                 (id, title, folder, markdown, rendered_html, revision, created_at, updated_at, author_id, last_editor_id)
-                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
                 &[
                     &note.id.to_string(),
+                    &note.object_id,
+                    &namespace_json,
+                    &resource_visibility_to_str(&note.visibility),
+                    &shared_user_ids_json,
                     &note.title,
                     &note.folder,
                     &note.markdown,
                     &note.rendered_html,
+                    &document_json,
                     &(note.revision as i64),
                     &note.created_at.to_rfc3339(),
                     &note.updated_at.to_rfc3339(),
                     &note.author_id.to_string(),
                     &note.last_editor_id.to_string(),
+                    &note.forked_from_note_id.map(|value| value.to_string()),
+                    &note.conflict_tag,
                 ],
             )
             .await
@@ -838,17 +958,34 @@ async fn sync_relational_state(
     for memo in snapshot.memos.values() {
         let segments_json = serde_json::to_string(&memo.transcript_segments)
             .map_err(|err| AppError::Internal(err.to_string()))?;
+        let namespace_json = serde_json::to_string(&memo.namespace)
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        let shared_user_ids_json = serde_json::to_string(
+            &memo.shared_user_ids.iter().map(Uuid::to_string).collect::<Vec<_>>(),
+        )
+        .map_err(|err| AppError::Internal(err.to_string()))?;
+        let transcript_tags_json = serde_json::to_string(&memo.transcript_tags)
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        let source_channels_json = serde_json::to_string(&memo.source_channels)
+            .map_err(|err| AppError::Internal(err.to_string()))?;
         client
             .execute(
                 "insert into voice_memos
-                 (id, title, audio_path, transcript, transcript_segments_json, status, model, device, created_at, updated_at, failure_reason, owner_id)
-                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, audio_path, transcript, transcript_segments_json, transcript_tags_json, topic_summary, source_channels_json, status, model, device, created_at, updated_at, failure_reason, owner_id)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
                 &[
                     &memo.id.to_string(),
+                    &memo.object_id,
+                    &namespace_json,
+                    &resource_visibility_to_str(&memo.visibility),
+                    &shared_user_ids_json,
                     &memo.title,
                     &memo.audio_path,
                     &memo.transcript,
                     &segments_json,
+                    &transcript_tags_json,
+                    &memo.topic_summary,
+                    &source_channels_json,
                     &job_status_to_str(&memo.status),
                     &memo.model,
                     &memo.device,
@@ -1043,6 +1180,77 @@ async fn sync_relational_state(
             .map_err(|err| AppError::Internal(err.to_string()))?;
     }
 
+    for operations in snapshot.note_operations.values() {
+        for operation in operations {
+            client
+                .execute(
+                    "insert into note_operations (note_id, operation_id, actor_id, client_id, created_at, resulting_revision, batch_json)
+                     values ($1,$2,$3,$4,$5,$6,$7)",
+                    &[
+                        &operation.note_id.to_string(),
+                        &operation.operation_id,
+                        &operation.actor_id,
+                        &operation.client_id,
+                        &operation.created_at.to_rfc3339(),
+                        &(operation.resulting_revision as i64),
+                        &serde_json::to_string(&operation.batch)
+                            .map_err(|err| AppError::Internal(err.to_string()))?,
+                    ],
+                )
+                .await
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+    }
+
+    for sessions in snapshot.note_sessions.values() {
+        for session in sessions {
+            client
+                .execute(
+                    "insert into note_sessions (note_id, session_id, user_id, user_label, user_avatar_path, client_id, opened_at, last_seen_at)
+                     values ($1,$2,$3,$4,$5,$6,$7,$8)",
+                    &[
+                        &session.note_id.to_string(),
+                        &session.session_id,
+                        &session.user_id.to_string(),
+                        &session.user_label,
+                        &session.user_avatar_path,
+                        &session.client_id,
+                        &session.opened_at.to_rfc3339(),
+                        &session.last_seen_at.to_rfc3339(),
+                    ],
+                )
+                .await
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+    }
+
+    for conflicts in snapshot.note_conflicts.values() {
+        for conflict in conflicts {
+            client
+                .execute(
+                    "insert into note_conflicts (id, note_id, operation_id, reason, forked_note_ids_json, created_at)
+                     values ($1,$2,$3,$4,$5,$6)",
+                    &[
+                        &conflict.id,
+                        &conflict.note_id.to_string(),
+                        &conflict.operation_id,
+                        &conflict.reason,
+                        &serde_json::to_string(
+                            &conflict
+                                .forked_note_ids
+                                .iter()
+                                .map(Uuid::to_string)
+                                .collect::<Vec<_>>(),
+                        )
+                        .map_err(|err| AppError::Internal(err.to_string()))?,
+                        &conflict.created_at.to_rfc3339(),
+                    ],
+                )
+                .await
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+    }
+
     Ok(())
 }
 
@@ -1112,7 +1320,7 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     let mut notes = HashMap::new();
     for row in client
         .query(
-            "select id, title, folder, markdown, rendered_html, revision, created_at, updated_at, author_id, last_editor_id from notes",
+            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag from notes",
             &[],
         )
         .await
@@ -1120,15 +1328,26 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     {
         let note = Note {
             id: parse_uuid(row.get::<_, String>(0).as_str())?,
-            title: row.get(1),
-            folder: row.get(2),
-            markdown: row.get(3),
-            rendered_html: row.get(4),
-            revision: row.get::<_, i64>(5) as u64,
-            created_at: parse_datetime(row.get::<_, String>(6).as_str())?,
-            updated_at: parse_datetime(row.get::<_, String>(7).as_str())?,
-            author_id: parse_uuid(row.get::<_, String>(8).as_str())?,
-            last_editor_id: parse_uuid(row.get::<_, String>(9).as_str())?,
+            object_id: row.get(1),
+            namespace: serde_json::from_str::<ObjectNamespace>(row.get::<_, String>(2).as_str()).unwrap_or_default(),
+            visibility: parse_resource_visibility(row.get::<_, String>(3).as_str())?,
+            shared_user_ids: serde_json::from_str::<Vec<String>>(row.get::<_, String>(4).as_str())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|value| parse_uuid(value.as_str()))
+                .collect::<AppResult<Vec<_>>>()?,
+            title: row.get(5),
+            folder: row.get(6),
+            markdown: row.get(7),
+            rendered_html: row.get(8),
+            document: serde_json::from_str::<NoteDocument>(row.get::<_, String>(9).as_str()).unwrap_or_default(),
+            revision: row.get::<_, i64>(10) as u64,
+            created_at: parse_datetime(row.get::<_, String>(11).as_str())?,
+            updated_at: parse_datetime(row.get::<_, String>(12).as_str())?,
+            author_id: parse_uuid(row.get::<_, String>(13).as_str())?,
+            last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
+            forked_from_note_id: optional_uuid_from_string(row.get(15))?,
+            conflict_tag: string_column_to_option(row.get(16)),
         };
         notes.insert(note.id, note);
     }
@@ -1158,28 +1377,39 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     let mut memos = HashMap::new();
     for row in client
         .query(
-            "select id, title, audio_path, transcript, transcript_segments_json, status, model, device, created_at, updated_at, failure_reason, owner_id from voice_memos",
+            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, audio_path, transcript, transcript_segments_json, transcript_tags_json, topic_summary, source_channels_json, status, model, device, created_at, updated_at, failure_reason, owner_id from voice_memos",
             &[],
         )
         .await
         .map_err(|err| AppError::Internal(err.to_string()))?
     {
         let segments: Vec<TranscriptSegment> =
-            serde_json::from_str(row.get::<_, String>(4).as_str())
+            serde_json::from_str(row.get::<_, String>(8).as_str())
                 .map_err(|err| AppError::Internal(err.to_string()))?;
         let memo = VoiceMemo {
             id: parse_uuid(row.get::<_, String>(0).as_str())?,
-            title: row.get(1),
-            audio_path: row.get(2),
-            transcript: row.get(3),
+            object_id: row.get(1),
+            namespace: serde_json::from_str::<ObjectNamespace>(row.get::<_, String>(2).as_str()).unwrap_or_default(),
+            visibility: parse_resource_visibility(row.get::<_, String>(3).as_str())?,
+            shared_user_ids: serde_json::from_str::<Vec<String>>(row.get::<_, String>(4).as_str())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|value| parse_uuid(value.as_str()))
+                .collect::<AppResult<Vec<_>>>()?,
+            title: row.get(5),
+            audio_path: row.get(6),
+            transcript: row.get(7),
             transcript_segments: segments,
-            status: parse_job_status(row.get::<_, String>(5).as_str())?,
-            model: row.get(6),
-            device: row.get(7),
-            created_at: parse_datetime(row.get::<_, String>(8).as_str())?,
-            updated_at: parse_datetime(row.get::<_, String>(9).as_str())?,
-            failure_reason: row.get(10),
-            owner_id: parse_uuid(row.get::<_, String>(11).as_str())?,
+            transcript_tags: serde_json::from_str::<Vec<String>>(row.get::<_, String>(9).as_str()).unwrap_or_default(),
+            topic_summary: string_column_to_option(row.get(10)),
+            source_channels: serde_json::from_str::<Vec<String>>(row.get::<_, String>(11).as_str()).unwrap_or_default(),
+            status: parse_job_status(row.get::<_, String>(12).as_str())?,
+            model: row.get(13),
+            device: row.get(14),
+            created_at: parse_datetime(row.get::<_, String>(15).as_str())?,
+            updated_at: parse_datetime(row.get::<_, String>(16).as_str())?,
+            failure_reason: row.get(17),
+            owner_id: parse_uuid(row.get::<_, String>(18).as_str())?,
         };
         memos.insert(memo.id, memo);
     }
@@ -1404,6 +1634,77 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         });
     }
 
+    let mut note_operations: HashMap<Uuid, Vec<NoteOperationRecord>> = HashMap::new();
+    for row in client
+        .query(
+            "select note_id, operation_id, actor_id, client_id, created_at, resulting_revision, batch_json from note_operations order by created_at asc",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        let record = NoteOperationRecord {
+            note_id: parse_uuid(row.get::<_, String>(0).as_str())?,
+            operation_id: row.get(1),
+            actor_id: row.get(2),
+            client_id: row.get(3),
+            created_at: parse_datetime(row.get::<_, String>(4).as_str())?,
+            resulting_revision: row.get::<_, i64>(5) as u64,
+            batch: serde_json::from_str::<NoteDocumentOperationBatch>(
+                row.get::<_, String>(6).as_str(),
+            )
+            .map_err(|err| AppError::Internal(err.to_string()))?,
+        };
+        note_operations.entry(record.note_id).or_default().push(record);
+    }
+
+    let mut note_sessions: HashMap<Uuid, Vec<NoteSession>> = HashMap::new();
+    for row in client
+        .query(
+            "select note_id, session_id, user_id, user_label, user_avatar_path, client_id, opened_at, last_seen_at from note_sessions",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        let session = NoteSession {
+            note_id: parse_uuid(row.get::<_, String>(0).as_str())?,
+            session_id: row.get(1),
+            user_id: parse_uuid(row.get::<_, String>(2).as_str())?,
+            user_label: row.get(3),
+            user_avatar_path: row.get::<_, Option<String>>(4).filter(|value| !value.trim().is_empty()),
+            client_id: row.get(5),
+            opened_at: parse_datetime(row.get::<_, String>(6).as_str())?,
+            last_seen_at: parse_datetime(row.get::<_, String>(7).as_str())?,
+        };
+        note_sessions.entry(session.note_id).or_default().push(session);
+    }
+
+    let mut note_conflicts: HashMap<Uuid, Vec<NoteConflictRecord>> = HashMap::new();
+    for row in client
+        .query(
+            "select id, note_id, operation_id, reason, forked_note_ids_json, created_at from note_conflicts",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        let forked_note_ids = serde_json::from_str::<Vec<String>>(&row.get::<_, String>(4))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|value| Uuid::parse_str(value.as_str()).ok())
+            .collect::<Vec<_>>();
+        let conflict = NoteConflictRecord {
+            id: row.get(0),
+            note_id: parse_uuid(row.get::<_, String>(1).as_str())?,
+            operation_id: row.get(2),
+            reason: row.get(3),
+            forked_note_ids,
+            created_at: parse_datetime(row.get::<_, String>(5).as_str())?,
+        };
+        note_conflicts.entry(conflict.note_id).or_default().push(conflict);
+    }
+
     Ok(Some(StateData {
         users,
         admin_settings: AdminSettings::default(),
@@ -1420,6 +1721,9 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         tasks,
         resource_shares,
         sync_tombstones,
+        note_operations,
+        note_sessions,
+        note_conflicts,
         pending_credential_changes: HashMap::new(),
     }))
 }
@@ -1453,6 +1757,13 @@ fn string_column_to_option(value: String) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+fn optional_uuid_from_string(value: Option<String>) -> AppResult<Option<Uuid>> {
+    match value {
+        Some(raw) if !raw.trim().is_empty() => Ok(Some(parse_uuid(raw.as_str())?)),
+        _ => Ok(None),
     }
 }
 

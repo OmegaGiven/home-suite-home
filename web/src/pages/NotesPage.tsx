@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useState, type FormEventHandler, type KeyboardEventHandler, type MouseEventHandler, type RefObject } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type FormEventHandler, type KeyboardEventHandler, type MouseEventHandler, type RefObject } from 'react'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FolderPromptModal } from '../components/FolderPromptModal'
 import { FileTreeHeader, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
@@ -7,9 +7,8 @@ import { NewFolderIcon, NewNoteIcon, RenameIcon, UploadIcon } from '../component
 import { LibraryShell } from '../components/LibraryShell'
 import { NotesFormatToolbar } from './notes/NotesFormatToolbar'
 import { NoteLibraryTreeNode } from '../components/NoteLibraryTreeNode'
-import { ensureEditorBlocks } from '../lib/markdown-editor'
 import type { NoteContextMenuState, NoteContextSubmenu, NoteEditorMode } from '../lib/app-config'
-import type { Note, ResourceVisibility } from '../lib/types'
+import type { Note, NoteBlock, NoteDocument, ResourceVisibility } from '../lib/types'
 import type { FileTreeSortState, NoteInsertKind, NoteFolderNode, NoteToolbarAction } from '../lib/ui-helpers'
 import { filterNoteFolderNode, getCaretRectForOffset, normalizeFolderPath, toggleFileTreeSortState } from '../lib/ui-helpers'
 
@@ -51,6 +50,7 @@ type Props = {
   noteTitleModalOpen: boolean
   noteEditorMode: NoteEditorMode
   noteDraft: string
+  selectedNoteDocument: NoteDocument | null
   activePresence: NotePresence[]
   remoteCursors: RemoteCursor[]
   noteEditorRef: RefObject<HTMLDivElement | null>
@@ -83,6 +83,7 @@ type Props = {
   onOpenShareDialog: (target: { resourceKey: string; label: string; visibility?: ResourceVisibility }) => void
   resourceKeyForNote: (noteId: string) => string
   onSetNoteEditorMode: (mode: NoteEditorMode) => void
+  onRichDocumentChange: (document: NoteDocument) => void
   handleNoteEditorClick: MouseEventHandler<HTMLDivElement>
   openNoteContextMenu: MouseEventHandler<HTMLDivElement>
   handleNoteEditorInput: FormEventHandler<HTMLDivElement>
@@ -119,6 +120,7 @@ export function NotesPage({
   noteTitleModalOpen,
   noteEditorMode,
   noteDraft,
+  selectedNoteDocument,
   activePresence,
   remoteCursors,
   noteEditorRef,
@@ -151,6 +153,7 @@ export function NotesPage({
   onOpenShareDialog,
   resourceKeyForNote,
   onSetNoteEditorMode,
+  onRichDocumentChange,
   handleNoteEditorClick,
   openNoteContextMenu,
   handleNoteEditorInput,
@@ -197,9 +200,247 @@ export function NotesPage({
     [noteRootNode, sidebarSearchQuery],
   )
   const [remoteCursorDecorations, setRemoteCursorDecorations] = useState<RemoteCursorDecoration[]>([])
+  const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
+  const [undoStack, setUndoStack] = useState<NoteDocument[]>([])
+  const [redoStack, setRedoStack] = useState<NoteDocument[]>([])
+  const blockInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+  void handleNoteEditorClick
+  void handleNoteEditorInput
+  void handleNoteEditorKeyDown
+  void onRunToolbarAction
+
+  const visibleBlocks = useMemo(
+    () =>
+      [...(selectedNoteDocument?.blocks ?? [])]
+        .filter((block) => !block.deleted)
+        .sort((left, right) => left.order - right.order),
+    [selectedNoteDocument],
+  )
+
+  const activeBlock =
+    visibleBlocks.find((block) => block.id === activeBlockId) ??
+    visibleBlocks[0] ??
+    null
+
+  function normalizeDocumentBlocks(blocks: NoteBlock[]) {
+    return blocks.map((block, index) => ({
+      ...block,
+      order: index,
+      attrs: { ...block.attrs },
+    }))
+  }
+
+  function cloneDocument(document: NoteDocument) {
+    return {
+      ...document,
+      clock: { ...document.clock },
+      blocks: document.blocks.map((block) => ({ ...block, attrs: { ...block.attrs } })),
+    }
+  }
+
+  function createBlock(kind: NoteBlock['kind'], text = '', previous?: NoteBlock | null): NoteBlock {
+    return {
+      id: previous?.id ?? `block-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      kind,
+      text,
+      attrs:
+        kind === 'heading'
+          ? { level: previous?.attrs.level ?? '1' }
+          : previous?.attrs
+            ? { ...previous.attrs }
+            : {},
+      order: 0,
+      deleted: false,
+      last_modified_by: previous?.last_modified_by ?? selectedNote?.last_editor_id ?? 'local',
+      last_modified_counter: (selectedNoteDocument?.clock[selectedNote?.last_editor_id ?? 'local'] ?? 0) + 1,
+    }
+  }
+
+  function commitRichDocument(nextBlocks: NoteBlock[], options?: { pushHistory?: boolean; focusBlockId?: string | null }) {
+    if (!selectedNoteDocument) return
+    const nextDocument: NoteDocument = {
+      ...selectedNoteDocument,
+      blocks: normalizeDocumentBlocks(nextBlocks),
+      last_operation_id: `local:${Date.now().toString(36)}`,
+    }
+    if (options?.pushHistory !== false) {
+      setUndoStack((current) => [...current, cloneDocument(selectedNoteDocument)])
+      setRedoStack([])
+    }
+    onRichDocumentChange(nextDocument)
+    if (options?.focusBlockId !== undefined) {
+      setActiveBlockId(options.focusBlockId)
+    }
+  }
+
+  function updateActiveBlock(mutator: (block: NoteBlock) => NoteBlock) {
+    if (!selectedNoteDocument || !activeBlock) return
+    commitRichDocument(
+      visibleBlocks.map((block) => (block.id === activeBlock.id ? mutator(block) : block)),
+      { focusBlockId: activeBlock.id },
+    )
+  }
+
+  function wrapTextSelection(
+    textarea: HTMLTextAreaElement,
+    before: string,
+    after = before,
+  ) {
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    const source = textarea.value
+    const selected = source.slice(start, end) || 'text'
+    const nextText = `${source.slice(0, start)}${before}${selected}${after}${source.slice(end)}`
+    updateActiveBlock((block) => ({ ...block, text: nextText }))
+    window.requestAnimationFrame(() => {
+      const next = blockInputRefs.current[activeBlock?.id ?? '']
+      if (!next) return
+      next.focus()
+      const selectionStart = start + before.length
+      const selectionEnd = selectionStart + selected.length
+      next.selectionStart = selectionStart
+      next.selectionEnd = selectionEnd
+    })
+  }
+
+  function splitActiveBlock(textarea: HTMLTextAreaElement) {
+    if (!selectedNoteDocument || !activeBlock) return
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    const source = activeBlock.text
+    const beforeText = source.slice(0, start)
+    const afterText = source.slice(end)
+    const currentIndex = visibleBlocks.findIndex((block) => block.id === activeBlock.id)
+    const nextBlock = createBlock(activeBlock.kind, afterText, { ...activeBlock, id: '' })
+    if (activeBlock.kind === 'heading') {
+      nextBlock.kind = 'paragraph'
+      nextBlock.attrs = {}
+    }
+    const nextBlocks = visibleBlocks.flatMap((block, index) => {
+      if (index !== currentIndex) return [block]
+      return [{ ...block, text: beforeText }, nextBlock]
+    })
+    commitRichDocument(nextBlocks, { focusBlockId: nextBlock.id })
+    window.requestAnimationFrame(() => {
+      const next = blockInputRefs.current[nextBlock.id]
+      if (!next) return
+      next.focus()
+      next.selectionStart = 0
+      next.selectionEnd = 0
+    })
+  }
+
+  function mergeWithPreviousBlock(textarea: HTMLTextAreaElement) {
+    if (!selectedNoteDocument || !activeBlock) return
+    if (textarea.selectionStart !== 0 || textarea.selectionEnd !== 0) return
+    const currentIndex = visibleBlocks.findIndex((block) => block.id === activeBlock.id)
+    if (currentIndex <= 0) return
+    const previous = visibleBlocks[currentIndex - 1]
+    const nextText = `${previous.text}${activeBlock.text}`
+    const nextBlocks = visibleBlocks.flatMap((block, index) => {
+      if (index === currentIndex - 1) return [{ ...previous, text: nextText }]
+      if (index === currentIndex) return []
+      return [block]
+    })
+    commitRichDocument(nextBlocks, { focusBlockId: previous.id })
+    window.requestAnimationFrame(() => {
+      const next = blockInputRefs.current[previous.id]
+      if (!next) return
+      next.focus()
+      next.selectionStart = previous.text.length
+      next.selectionEnd = previous.text.length
+    })
+  }
+
+  function appendBlockAfter(block: NoteBlock, kind: NoteBlock['kind'] = 'paragraph', text = '') {
+    const currentIndex = visibleBlocks.findIndex((entry) => entry.id === block.id)
+    const nextBlock = createBlock(kind, text)
+    const nextBlocks = visibleBlocks.flatMap((entry, index) => (index === currentIndex ? [entry, nextBlock] : [entry]))
+    commitRichDocument(nextBlocks, { focusBlockId: nextBlock.id })
+    window.requestAnimationFrame(() => blockInputRefs.current[nextBlock.id]?.focus())
+  }
+
+  function applyToolbarAction(action: NoteToolbarAction) {
+    if (!selectedNoteDocument) return
+    const focusedInput = activeBlockId ? blockInputRefs.current[activeBlockId] : null
+    switch (action) {
+      case 'undo': {
+        const previous = undoStack[undoStack.length - 1]
+        if (!previous) return
+        setUndoStack((current) => current.slice(0, -1))
+        setRedoStack((current) => [...current, cloneDocument(selectedNoteDocument)])
+        onRichDocumentChange(previous)
+        return
+      }
+      case 'redo': {
+        const next = redoStack[redoStack.length - 1]
+        if (!next) return
+        setRedoStack((current) => current.slice(0, -1))
+        setUndoStack((current) => [...current, cloneDocument(selectedNoteDocument)])
+        onRichDocumentChange(next)
+        return
+      }
+      case 'bold':
+        if (focusedInput) wrapTextSelection(focusedInput, '**')
+        return
+      case 'italic':
+        if (focusedInput) wrapTextSelection(focusedInput, '*')
+        return
+      case 'underline':
+        if (focusedInput) wrapTextSelection(focusedInput, '<u>', '</u>')
+        return
+      case 'link': {
+        if (!focusedInput) return
+        const url = window.prompt('Enter link URL', 'https://')
+        if (!url?.trim()) return
+        wrapTextSelection(focusedInput, '[', `](${url.trim()})`)
+        return
+      }
+      case 'heading-1':
+      case 'heading-2':
+      case 'heading-3':
+        if (!activeBlock) return
+        updateActiveBlock((block) => ({
+          ...block,
+          kind: 'heading',
+          attrs: { ...block.attrs, level: action === 'heading-1' ? '1' : action === 'heading-2' ? '2' : '3' },
+        }))
+        return
+      case 'quote':
+        if (!activeBlock) return
+        updateActiveBlock((block) => ({ ...block, kind: 'quote' }))
+        return
+      case 'bullet-list':
+        if (!activeBlock) return
+        updateActiveBlock((block) => ({ ...block, kind: 'bullet_list' }))
+        return
+      case 'code-block':
+        if (!activeBlock) return
+        updateActiveBlock((block) => ({ ...block, kind: 'code' }))
+        return
+      case 'table':
+        if (!activeBlock) return
+        updateActiveBlock((block) => ({
+          ...block,
+          kind: 'table',
+          text: block.text.trim() ? block.text : '| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |',
+        }))
+        return
+      case 'divider':
+        if (!activeBlock) return
+        appendBlockAfter(activeBlock, 'paragraph', '---')
+        return
+      default:
+        return
+    }
+  }
 
   useLayoutEffect(() => {
     if (noteEditorMode !== 'rich' || !noteEditorRef.current || remoteCursors.length === 0) {
+      setRemoteCursorDecorations([])
+      return
+    }
+    if (noteEditorRef.current.dataset.noteEditorModel === 'blocks') {
       setRemoteCursorDecorations([])
       return
     }
@@ -220,6 +461,12 @@ export function NotesPage({
 
     setRemoteCursorDecorations(nextDecorations)
   }, [noteDraft, noteEditorMode, noteEditorRef, remoteCursors])
+
+  useLayoutEffect(() => {
+    setUndoStack([])
+    setRedoStack([])
+    setActiveBlockId(visibleBlocks[0]?.id ?? null)
+  }, [selectedNote?.id])
 
   return (
     <>
@@ -570,24 +817,103 @@ export function NotesPage({
                 </div>
               </div>
               <div className="notes-editor-card">
-                {noteEditorMode === 'rich' ? <NotesFormatToolbar onRunAction={onRunToolbarAction} /> : null}
+                {noteEditorMode === 'rich' ? <NotesFormatToolbar onRunAction={applyToolbarAction} /> : null}
                 {noteEditorMode === 'rich' ? (
                   <>
                     <div
                       ref={noteEditorRef}
-                      className="markdown-editor"
-                      contentEditable
-                      suppressContentEditableWarning
-                      data-editor-root="true"
-                      data-placeholder="Select a note to begin editing"
-                      onFocus={() => {
-                        if (noteEditorRef.current) ensureEditorBlocks(noteEditorRef.current)
-                      }}
-                      onClick={handleNoteEditorClick}
+                      className="notes-block-editor"
+                      data-note-editor-model="blocks"
                       onContextMenu={openNoteContextMenu}
-                      onInput={handleNoteEditorInput}
-                      onKeyDown={handleNoteEditorKeyDown}
-                    />
+                    >
+                      {visibleBlocks.map((block) => {
+                        const headingLevel =
+                          block.kind === 'heading'
+                            ? Math.min(3, Math.max(1, Number.parseInt(block.attrs.level ?? '1', 10) || 1))
+                            : null
+                        return (
+                          <div
+                            key={block.id}
+                            className={`notes-block-row kind-${block.kind}${activeBlockId === block.id ? ' active' : ''}`}
+                          >
+                            <div className="notes-block-gutter">
+                              <button
+                                type="button"
+                                className="notes-block-add"
+                                onClick={() => appendBlockAfter(block)}
+                                title="Add block below"
+                                aria-label="Add block below"
+                              >
+                                +
+                              </button>
+                            </div>
+                            <textarea
+                              ref={(node) => {
+                                blockInputRefs.current[block.id] = node
+                              }}
+                              className={`textarea notes-block-input note-raw-editor${block.kind === 'code' || block.kind === 'table' ? ' mono' : ''}${headingLevel ? ` heading-${headingLevel}` : ''}`}
+                              value={block.text}
+                              rows={Math.max(1, block.text.split('\n').length)}
+                              placeholder={
+                                block.kind === 'heading'
+                                  ? `Heading ${headingLevel ?? 1}`
+                                  : block.kind === 'quote'
+                                    ? 'Quote'
+                                    : block.kind === 'bullet_list'
+                                      ? 'List item'
+                                      : block.kind === 'code'
+                                        ? 'Code block'
+                                        : block.kind === 'table'
+                                          ? 'Table markdown'
+                                          : 'Write here'
+                              }
+                              onFocus={() => setActiveBlockId(block.id)}
+                              onClick={() => setActiveBlockId(block.id)}
+                              onChange={(event) => {
+                                setActiveBlockId(block.id)
+                                commitRichDocument(
+                                  visibleBlocks.map((entry) =>
+                                    entry.id === block.id ? { ...entry, text: event.target.value } : entry,
+                                  ),
+                                  { focusBlockId: block.id },
+                                )
+                              }}
+                              onKeyDown={(event) => {
+                                setActiveBlockId(block.id)
+                                if (event.key === 'Enter' && !event.shiftKey) {
+                                  event.preventDefault()
+                                  splitActiveBlock(event.currentTarget)
+                                  return
+                                }
+                                if (event.key === 'Backspace' && block.text.length === 0) {
+                                  event.preventDefault()
+                                  mergeWithPreviousBlock(event.currentTarget)
+                                  return
+                                }
+                                if (event.key === 'Tab') {
+                                  event.preventDefault()
+                                  const target = event.currentTarget
+                                  const start = target.selectionStart
+                                  const end = target.selectionEnd
+                                  const nextValue = `${target.value.slice(0, start)}\t${target.value.slice(end)}`
+                                  commitRichDocument(
+                                    visibleBlocks.map((entry) =>
+                                      entry.id === block.id ? { ...entry, text: nextValue } : entry,
+                                    ),
+                                    { focusBlockId: block.id },
+                                  )
+                                  window.requestAnimationFrame(() => {
+                                    const next = blockInputRefs.current[block.id]
+                                    if (!next) return
+                                    next.selectionStart = next.selectionEnd = start + 1
+                                  })
+                                }
+                              }}
+                            />
+                          </div>
+                        )
+                      })}
+                    </div>
                     <div className="notes-remote-cursor-layer" aria-hidden="true">
                       {remoteCursorDecorations.map((cursor) => (
                         <div

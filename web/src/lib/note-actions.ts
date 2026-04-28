@@ -1,7 +1,8 @@
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import { api } from './api'
 import type { RoutePath, NoteEditorMode } from './app-config'
-import type { FileNode, Note, RealtimeEvent } from './types'
+import type { FileNode, Note, NoteDocument, RealtimeEvent } from './types'
+import { buildReplaceDocumentBatch, markdownFromNoteDocument } from './note-document'
 
 export type NotePresenceEntry = {
   user: string
@@ -15,6 +16,7 @@ type CreateNoteActionsContext = {
   noteEditorMode: NoteEditorMode
   noteEditorRef: RefObject<HTMLDivElement | null>
   noteDraftRef: MutableRefObject<string>
+  currentNoteDocumentRef: MutableRefObject<NoteDocument | null>
   selectedNoteRef: MutableRefObject<Note | null>
   selectedNoteIdRef: MutableRefObject<string | null>
   selectedFolderPathRef: MutableRefObject<string>
@@ -38,6 +40,8 @@ type CreateNoteActionsContext = {
   setNoteSaveState: Dispatch<SetStateAction<'idle' | 'saving'>>
   setNotes: Dispatch<SetStateAction<Note[]>>
   setNoteDraft: Dispatch<SetStateAction<string>>
+  applySelectedNoteMarkdown: (markdown: string, options?: { note?: Note | null; document?: NoteDocument | null }) => void
+  applySelectedNoteDocument: (document: NoteDocument | null | undefined, options?: { note?: Note | null; markdown?: string }) => void
   setCustomFolders: Dispatch<SetStateAction<string[]>>
   setSelectedNoteId: Dispatch<SetStateAction<string | null>>
   setSelectedFolderPath: Dispatch<SetStateAction<string>>
@@ -49,6 +53,7 @@ type CreateNoteActionsContext = {
     payload: { markdown: string; folder: string },
     options?: { keepalive?: boolean },
   ) => Promise<Note>
+  buildNoteDocument: (note: Note, markdown: string) => NoteDocument
   refreshFilesTree: () => Promise<void>
   showActionNotice: (message: string) => void
   normalizeFolderPath: (path: string) => string
@@ -63,6 +68,9 @@ type CreateNoteActionsContext = {
 
 export function createNoteActions(context: CreateNoteActionsContext) {
   function currentNoteMarkdown() {
+    if (context.currentNoteDocumentRef.current) {
+      return markdownFromNoteDocument(context.currentNoteDocumentRef.current)
+    }
     if (context.noteEditorMode === 'rich' && context.noteEditorRef.current) {
       return context.editableHtmlToMarkdown(context.noteEditorRef.current)
     }
@@ -176,8 +184,16 @@ export function createNoteActions(context: CreateNoteActionsContext) {
     if (!note || !context.socketRef.current || context.socketRef.current.readyState !== WebSocket.OPEN) {
       return
     }
+    const document = context.buildNoteDocument(note, markdown)
+    const batch = buildReplaceDocumentBatch(
+      note,
+      { ...note, markdown, document },
+      markdown,
+      document.blocks[0]?.last_modified_by || note.last_editor_id,
+      context.clientIdRef.current,
+    )
     const event: RealtimeEvent = {
-      type: 'note_draft',
+      type: 'note_operations',
       note_id: note.id,
       title: note.title,
       folder: context.selectedFolderPathRef.current || note.folder,
@@ -185,6 +201,8 @@ export function createNoteActions(context: CreateNoteActionsContext) {
       revision: note.revision,
       client_id: context.clientIdRef.current,
       user: context.notePresenceLabel,
+      batch,
+      document,
     }
     context.socketRef.current.send(JSON.stringify(event))
   }
@@ -297,7 +315,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
         context.realtimeDraftBaseRef.current[updated.id] = updated.markdown
         clearNoteLocallyDirty(updated.id)
         if (updated.id === context.selectedNoteIdRef.current) {
-          context.setNoteDraft(updated.markdown)
+          context.applySelectedNoteDocument(updated.document, { note: updated, markdown: updated.markdown })
         }
         context.setCustomFolders((current) => context.mergeFolderPaths(current, [updated.folder || 'Inbox']))
         await context.refreshFilesTree()
@@ -326,10 +344,12 @@ export function createNoteActions(context: CreateNoteActionsContext) {
               (targetNote.id === context.selectedNoteIdRef.current ? context.selectedNoteRef.current : null) ??
               context.notesRef.current.find((note) => note.id === targetNote.id) ??
               targetNote
-            const rebased = await api.updateNote(
+            const rebased = await context.updateNoteRecord(
               {
                 ...latest,
                 title: localNote.title,
+              },
+              {
                 folder:
                   targetNote.id === context.selectedNoteIdRef.current
                     ? context.selectedFolderPathRef.current || localNote.folder
@@ -347,7 +367,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
             context.realtimeDraftBaseRef.current[rebased.id] = rebased.markdown
             clearNoteLocallyDirty(rebased.id)
             if (rebased.id === context.selectedNoteIdRef.current) {
-              context.setNoteDraft(rebased.markdown)
+              context.applySelectedNoteDocument(rebased.document, { note: rebased, markdown: rebased.markdown })
             }
             await context.refreshFilesTree()
             if (options?.notify !== false && !options?.quiet) {
@@ -356,7 +376,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
             return true
           }
           if (targetNote.id === context.selectedNoteIdRef.current) {
-            context.setNoteDraft(markdown)
+            context.applySelectedNoteMarkdown(markdown)
           }
           return false
         }

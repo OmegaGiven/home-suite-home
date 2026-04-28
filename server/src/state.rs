@@ -16,18 +16,22 @@ use crate::{
     config::Config,
     error::{AppError, AppResult},
     models::{
-        AdminSettings, AdminStorageOverview, AdminUserSummary, CalendarConnection, CalendarEvent,
+        AdminDatabaseOverview, AdminDatabaseTable, AdminSettings, AdminStorageOverview, AdminUserSummary, CalendarConnection, CalendarEvent,
         CalendarProvider, ChangeCurrentUserPasswordRequest, ChangePasswordRequest,
         ConnectGoogleCalendarRequest, CreateCalendarEventRequest, CreateDiagramRequest,
         CreateIcsCalendarConnectionRequest, CreateLocalCalendarConnectionRequest,
         CreateMessageRequest, CreateNoteRequest, CreateRoomRequest, CreateTaskRequest,
         CreateUserRequest, Diagram, GoogleCalendarConfigResponse, JobStatus, Message,
-        MessageReaction, Note, OidcConfigResponse, OidcProviderSettings,
-        PendingCredentialChangeRequest, RealtimeEvent, ResourceShare, ResourceVisibility, Room,
-        SessionResponse, SetupAdminRequest, StoredUser, SyncBootstrapRequest, SyncConflict,
-        SyncCursorSet, SyncEntityKind, SyncEnvelope, SyncOperation, SyncPullRequest,
-        SyncPushRequest, SyncPushResponse, SyncTombstone, SystemUpdateStatus, TaskItem, TaskStatus,
-        ToggleMessageReactionRequest, TranscriptSegment, TranscriptionJob,
+        MessageReaction, Note, NoteBlock, NoteBlockKind, NoteConflictRecord, NoteDocument,
+        NoteDocumentOperationBatch, NoteOperation, NoteOperationRecord, NoteOperationsPullResponse,
+        NoteOperationsPushResponse, NoteSession, NoteSessionCloseRequest, NoteSessionOpenRequest,
+        NoteSessionOpenResponse, ObjectNamespace, ObjectNamespaceKind, OidcConfigResponse,
+        OidcProviderSettings, PendingCredentialChangeRequest, RealtimeEvent, ResourceShare,
+        ResourceVisibility, Room, SessionResponse, SetupAdminRequest, StoredUser,
+        SyncBootstrapRequest, SyncConflict, SyncCursorSet, SyncEntityKind, SyncEnvelope,
+        SyncOperation, SyncPullRequest, SyncPushRequest, SyncPushResponse, SyncTombstone,
+        SystemUpdateStatus, TaskItem, TaskStatus, ToggleMessageReactionRequest, TranscriptSegment,
+        TranscriptionJob,
         UpdateAccountCredentialsRequest, UpdateCalendarConnectionRequest,
         UpdateCalendarEventRequest, UpdateDiagramRequest, UpdateNoteRequest,
         UpdateResourceShareRequest, UpdateTaskRequest, UpdateUserAccessRequest, UserProfile,
@@ -73,6 +77,12 @@ pub(crate) struct StateData {
     pub sync_tombstones: Vec<SyncTombstone>,
     #[serde(default)]
     pub pending_credential_changes: HashMap<Uuid, PendingCredentialChangeRequest>,
+    #[serde(default)]
+    pub note_operations: HashMap<Uuid, Vec<NoteOperationRecord>>,
+    #[serde(default)]
+    pub note_sessions: HashMap<Uuid, Vec<NoteSession>>,
+    #[serde(default)]
+    pub note_conflicts: HashMap<Uuid, Vec<NoteConflictRecord>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -176,6 +186,7 @@ impl AppState {
             if note.last_editor_id.is_nil() {
                 note.last_editor_id = note.author_id;
             }
+            ensure_note_foundation(note);
         }
         for diagram in initial_state.diagrams.values_mut() {
             if diagram.author_id.is_nil() {
@@ -189,6 +200,7 @@ impl AppState {
             if memo.owner_id.is_nil() {
                 memo.owner_id = fallback_owner_id;
             }
+            ensure_voice_memo_foundation(memo);
         }
         for stored_user in initial_state.users.values_mut() {
             if stored_user.profile.username.trim().is_empty() {
@@ -545,7 +557,10 @@ impl AppState {
         let mut conflicts = Vec::new();
         for operation in payload.operations {
             let entity = match &operation {
-                SyncOperation::CreateNote { .. } | SyncOperation::UpdateNote { .. } | SyncOperation::DeleteNote { .. } => {
+                SyncOperation::CreateNote { .. }
+                | SyncOperation::UpdateNote { .. }
+                | SyncOperation::ApplyNoteOperations { .. }
+                | SyncOperation::DeleteNote { .. } => {
                     SyncEntityKind::Notes
                 }
                 SyncOperation::CreateDiagram { .. } | SyncOperation::UpdateDiagram { .. } => SyncEntityKind::Diagrams,
@@ -567,7 +582,16 @@ impl AppState {
             let operation_id = operation_id_string(&operation);
             let result = match operation.clone() {
                 SyncOperation::CreateNote { client_generated_id, title, folder, markdown } => {
-                    self.create_note_with_id(CreateNoteRequest { title, folder, markdown }, Some(client_generated_id))
+                    self.create_note_with_id(
+                        CreateNoteRequest {
+                            title,
+                            folder,
+                            markdown,
+                            document: None,
+                            visibility: None,
+                        },
+                        Some(client_generated_id),
+                    )
                         .await
                         .map(|_| ())
                 }
@@ -580,7 +604,23 @@ impl AppState {
                     self.update_diagram(id, UpdateDiagramRequest { title, xml, revision }).await.map(|_| ())
                 }
                 SyncOperation::UpdateNote { id, title, folder, markdown, revision } => {
-                    self.update_note(id, UpdateNoteRequest { title, folder, markdown, revision }).await.map(|_| ())
+                    self.update_note(
+                        id,
+                        UpdateNoteRequest {
+                            title,
+                            folder,
+                            markdown,
+                            revision,
+                            document: None,
+                            operation_batch: None,
+                            visibility: None,
+                        },
+                    )
+                    .await
+                    .map(|_| ())
+                }
+                SyncOperation::ApplyNoteOperations { id, batch } => {
+                    self.apply_note_operation_batch(id, batch).await.map(|_| ())
                 }
                 SyncOperation::DeleteNote { id } => self.delete_note(id).await,
                 SyncOperation::CreateTask { client_generated_id, title, description, start_at, end_at, all_day, calendar_connection_id } => {
@@ -673,6 +713,7 @@ impl AppState {
             field: String::new(),
             local_value: String::new(),
             remote_value: String::new(),
+            forked_note_ids: Vec::new(),
         };
 
         match operation {
@@ -696,10 +737,14 @@ impl AppState {
                 }
                 if conflict.remote_value.is_empty() && (title.is_some() || folder.is_some()) {
                     conflict.field = if title.is_some() { "title".into() } else { "folder".into() };
-                    conflict.local_value = title
-                        .clone()
-                        .or_else(|| folder.clone())
-                        .unwrap_or_default();
+                    conflict.local_value = title.clone().or_else(|| folder.clone()).unwrap_or_default();
+                }
+            }
+            SyncOperation::ApplyNoteOperations { id, .. } => {
+                conflict.field = "document".into();
+                let state = self.inner.read().await;
+                if let Some(note) = state.notes.get(id) {
+                    conflict.remote_value = note.title.clone();
                 }
             }
             SyncOperation::DeleteNote { id } => {
@@ -779,6 +824,18 @@ impl AppState {
                     conflict.local_value = title.clone();
                 }
             }
+        }
+
+        if let Some(raw_ids) = conflict
+            .reason
+            .strip_prefix("bad request: note forked due to conflicting block edits:")
+            .map(str::to_string)
+        {
+            conflict.reason = "note forked due to conflicting block edits".into();
+            conflict.forked_note_ids = raw_ids
+                .split(',')
+                .filter_map(|value| Uuid::parse_str(value.trim()).ok())
+                .collect();
         }
 
         conflict
@@ -1991,6 +2048,108 @@ impl AppState {
         }
     }
 
+    pub async fn admin_database_overview(&self) -> AdminDatabaseOverview {
+        let state = self.inner.read().await;
+        let backend = if self.persistence.uses_postgres() {
+            "postgres"
+        } else {
+            "file"
+        }
+        .to_string();
+
+        fn table_from_records<T: serde::Serialize>(key: &str, label: &str, records: Vec<T>) -> AdminDatabaseTable {
+            let rows = records
+                .into_iter()
+                .filter_map(|record| serde_json::to_value(record).ok())
+                .collect::<Vec<_>>();
+            let columns = rows
+                .first()
+                .and_then(|row| row.as_object())
+                .map(|object| object.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            AdminDatabaseTable {
+                key: key.to_string(),
+                label: label.to_string(),
+                row_count: rows.len(),
+                columns,
+                rows,
+            }
+        }
+
+        let tables = vec![
+            table_from_records(
+                "users",
+                "Users",
+                state.users.values().cloned().map(|stored| stored.profile).collect::<Vec<_>>(),
+            ),
+            table_from_records("notes", "Notes", state.notes.values().cloned().collect::<Vec<_>>()),
+            table_from_records(
+                "note_operations",
+                "Note Operations",
+                state
+                    .note_operations
+                    .values()
+                    .flat_map(|records| records.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            table_from_records(
+                "note_sessions",
+                "Note Sessions",
+                state
+                    .note_sessions
+                    .values()
+                    .flat_map(|records| records.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            table_from_records(
+                "note_conflicts",
+                "Note Conflicts",
+                state
+                    .note_conflicts
+                    .values()
+                    .flat_map(|records| records.clone())
+                    .collect::<Vec<_>>(),
+            ),
+            table_from_records("diagrams", "Diagrams", state.diagrams.values().cloned().collect::<Vec<_>>()),
+            table_from_records("voice_memos", "Voice Memos", state.memos.values().cloned().collect::<Vec<_>>()),
+            table_from_records(
+                "transcription_jobs",
+                "Transcription Jobs",
+                state.jobs.values().cloned().collect::<Vec<_>>(),
+            ),
+            table_from_records("rooms", "Rooms", state.rooms.values().cloned().collect::<Vec<_>>()),
+            table_from_records("messages", "Messages", state.messages.values().cloned().collect::<Vec<_>>()),
+            table_from_records(
+                "calendar_connections",
+                "Calendar Connections",
+                state.calendar_connections.values().cloned().collect::<Vec<_>>(),
+            ),
+            table_from_records(
+                "calendar_events",
+                "Calendar Events",
+                state.calendar_events.values().cloned().collect::<Vec<_>>(),
+            ),
+            table_from_records("tasks", "Tasks", state.tasks.values().cloned().collect::<Vec<_>>()),
+            table_from_records(
+                "resource_shares",
+                "Resource Shares",
+                state.resource_shares.values().cloned().collect::<Vec<_>>(),
+            ),
+            table_from_records("sync_tombstones", "Sync Tombstones", state.sync_tombstones.clone()),
+            table_from_records(
+                "pending_credential_changes",
+                "Pending Credential Changes",
+                state.pending_credential_changes.values().cloned().collect::<Vec<_>>(),
+            ),
+        ];
+
+        AdminDatabaseOverview {
+            backend,
+            generated_at: Utc::now(),
+            tables,
+        }
+    }
+
     pub async fn change_password(&self, payload: ChangePasswordRequest) -> AppResult<UserProfile> {
         if payload.new_password != payload.new_password_confirm {
             return Err(AppError::BadRequest("passwords do not match".into()));
@@ -2273,10 +2432,27 @@ impl AppState {
     pub async fn list_notes(&self) -> Vec<Note> {
         if let Ok(Some(notes)) = self.persistence.list_notes().await {
             let mut state = self.inner.write().await;
-            state.notes = notes.iter().cloned().map(|note| (note.id, note)).collect();
-            return notes;
+            let normalized = notes
+                .into_iter()
+                .map(|mut note| {
+                    ensure_note_foundation(&mut note);
+                    note
+                })
+                .collect::<Vec<_>>();
+            state.notes = normalized.iter().cloned().map(|note| (note.id, note)).collect();
+            return normalized;
         }
-        self.inner.read().await.notes.values().cloned().collect()
+        self.inner
+            .read()
+            .await
+            .notes
+            .values()
+            .cloned()
+            .map(|mut note| {
+                ensure_note_foundation(&mut note);
+                note
+            })
+            .collect()
     }
 
     pub async fn get_resource_share(&self, resource_key: &str) -> ResourceShare {
@@ -2292,6 +2468,20 @@ impl AppState {
                 user_ids: Vec::new(),
                 updated_at: Utc::now(),
                 updated_by: Uuid::nil(),
+            })
+    }
+
+    fn resource_share_for_note(state: &StateData, note: &Note) -> ResourceShare {
+        state
+            .resource_shares
+            .get(&format!("note:{}", note.id))
+            .cloned()
+            .unwrap_or_else(|| ResourceShare {
+                resource_key: format!("note:{}", note.id),
+                visibility: note.visibility.clone(),
+                user_ids: note.shared_user_ids.clone(),
+                updated_at: note.updated_at,
+                updated_by: note.last_editor_id,
             })
     }
 
@@ -2335,6 +2525,20 @@ impl AppState {
             updated_at: Utc::now(),
             updated_by: user.id,
         };
+        if let Some(note_id) = resource_key.strip_prefix("note:") {
+            let parsed_note_id = Uuid::parse_str(note_id)
+                .map_err(|_| AppError::BadRequest("invalid note resource key".into()))?;
+            let note = state.notes.get_mut(&parsed_note_id).ok_or(AppError::NotFound)?;
+            note.visibility = share.visibility.clone();
+            note.shared_user_ids = share.user_ids.clone();
+        }
+        if let Some(memo_id) = resource_key.strip_prefix("audio:") {
+            let parsed_memo_id = Uuid::parse_str(memo_id)
+                .map_err(|_| AppError::BadRequest("invalid audio resource key".into()))?;
+            let memo = state.memos.get_mut(&parsed_memo_id).ok_or(AppError::NotFound)?;
+            memo.visibility = share.visibility.clone();
+            memo.shared_user_ids = share.user_ids.clone();
+        }
         state
             .resource_shares
             .insert(share.resource_key.clone(), share.clone());
@@ -2348,6 +2552,242 @@ impl AppState {
         self.create_note_with_id(payload, None).await
     }
 
+    pub async fn open_note_session(
+        &self,
+        note_id: Uuid,
+        user: UserProfile,
+        payload: NoteSessionOpenRequest,
+    ) -> AppResult<NoteSessionOpenResponse> {
+        let mut state = self.inner.write().await;
+        let note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
+        let sessions = state.note_sessions.entry(note_id).or_default();
+        sessions.retain(|entry| (Utc::now() - entry.last_seen_at) < Duration::seconds(45));
+        let client_id = if payload.client_id.trim().is_empty() {
+            format!("mobile-{}", Uuid::new_v4())
+        } else {
+            payload.client_id
+        };
+        let existing_index = sessions
+            .iter()
+            .position(|entry| entry.user_id == user.id && entry.client_id == client_id);
+        let session = NoteSession {
+            session_id: existing_index
+                .and_then(|index| sessions.get(index).map(|entry| entry.session_id.clone()))
+                .unwrap_or_else(|| format!("session-{}", Uuid::new_v4())),
+            note_id,
+            user_id: user.id,
+            user_label: user.display_name.clone(),
+            user_avatar_path: user.avatar_path.clone(),
+            client_id: client_id.clone(),
+            opened_at: existing_index
+                .and_then(|index| sessions.get(index).map(|entry| entry.opened_at))
+                .unwrap_or_else(Utc::now),
+            last_seen_at: Utc::now(),
+        };
+        if let Some(index) = existing_index {
+            sessions[index] = session.clone();
+        } else {
+            sessions.push(session.clone());
+        }
+        let visible_sessions = sessions.clone();
+        let share = Self::resource_share_for_note(&state, &note);
+        let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        let _ = self.realtime.send(RealtimeEvent::NotePresence {
+            note_id,
+            user: session.user_label.clone(),
+            user_id: Some(session.user_id),
+            avatar_path: session.user_avatar_path.clone(),
+            session_id: Some(session.session_id.clone()),
+            last_seen_at: Some(session.last_seen_at),
+        });
+        Ok(NoteSessionOpenResponse {
+            note,
+            share,
+            sessions: visible_sessions,
+            conflicts,
+        })
+    }
+
+    pub async fn close_note_session(
+        &self,
+        note_id: Uuid,
+        user: UserProfile,
+        payload: NoteSessionCloseRequest,
+    ) -> AppResult<()> {
+        let mut state = self.inner.write().await;
+        if let Some(sessions) = state.note_sessions.get_mut(&note_id) {
+            sessions.retain(|entry| !(entry.session_id == payload.session_id && entry.user_id == user.id));
+        }
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        Ok(())
+    }
+
+    pub async fn pull_note_operations(
+        &self,
+        note_id: Uuid,
+        _user: UserProfile,
+        since_revision: u64,
+    ) -> AppResult<NoteOperationsPullResponse> {
+        let state = self.inner.read().await;
+        let note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
+        let share = Self::resource_share_for_note(&state, &note);
+        let operations = state
+            .note_operations
+            .get(&note_id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry.resulting_revision > since_revision)
+            .collect::<Vec<_>>();
+        let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
+        Ok(NoteOperationsPullResponse {
+            note,
+            operations,
+            conflicts,
+            share,
+        })
+    }
+
+    pub async fn push_note_operations(
+        &self,
+        note_id: Uuid,
+        user: UserProfile,
+        mut batch: NoteDocumentOperationBatch,
+    ) -> AppResult<NoteOperationsPushResponse> {
+        let mut state = self.inner.write().await;
+        let existing_note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
+        if batch.actor_id.trim().is_empty() {
+            batch.actor_id = user.id.to_string();
+        }
+        if batch.client_id.trim().is_empty() {
+            batch.client_id = format!("mobile-{}", Uuid::new_v4());
+        }
+        if batch.operation_id.trim().is_empty() {
+            batch.operation_id = format!("op-{}", Uuid::new_v4());
+        }
+
+        if should_fork_note_document(&existing_note.document, &batch) {
+            let local_document = apply_operations_to_document(&existing_note.document, &batch, &batch.actor_id)?;
+            let forked_ids = create_note_conflict_forks(&mut state, &existing_note, &local_document, &batch.actor_id);
+            let conflict = NoteConflictRecord {
+                id: format!("conflict-{}", Uuid::new_v4()),
+                note_id,
+                operation_id: batch.operation_id.clone(),
+                reason: "overlapping_block_edits".into(),
+                forked_note_ids: forked_ids.clone(),
+                created_at: Utc::now(),
+            };
+            state.note_conflicts.entry(note_id).or_default().push(conflict.clone());
+            let uses_postgres = self.persistence.uses_postgres();
+            if uses_postgres {
+                for fork_id in &forked_ids {
+                    if let Some(note) = state.notes.get(fork_id) {
+                        self.persistence.create_note(note).await?;
+                    }
+                }
+            }
+            let note = existing_note.clone();
+            let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
+            let snapshot = state.clone();
+            drop(state);
+            self.persist_snapshot(snapshot).await?;
+            return Ok(NoteOperationsPushResponse {
+                note,
+                applied: false,
+                operation: None,
+                conflicts,
+            });
+        }
+
+        let mut next_document = apply_operations_to_document(&existing_note.document, &batch, &batch.actor_id)?;
+        if next_document.last_operation_id.trim().is_empty() {
+            next_document.last_operation_id = batch.operation_id.clone();
+        }
+        let next_markdown = markdown_from_note_document(&next_document);
+        let current_used = storage_used_bytes_for_user(&state, &self.storage, user.id);
+        let projected_used = current_used
+            .saturating_sub(existing_note.markdown.len() as u64)
+            .saturating_add(next_markdown.len() as u64);
+        enforce_storage_limit(&state, user.id, current_used, projected_used, false)?;
+
+        let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
+        let previous_title = note.title.clone();
+        let previous_folder = note.folder.clone();
+        for operation in &batch.operations {
+            match operation {
+                NoteOperation::SetTitle { title } => note.title = title.clone(),
+                NoteOperation::SetFolder { folder } => note.folder = folder.clone(),
+                _ => {}
+            }
+        }
+        note.document = next_document;
+        note.markdown = next_markdown;
+        note.revision += 1;
+        note.updated_at = Utc::now();
+        note.last_editor_id = user.id;
+        let note_snapshot = note.clone();
+        let expected_revision = existing_note.revision;
+        let operation_record = NoteOperationRecord {
+            note_id,
+            operation_id: batch.operation_id.clone(),
+            actor_id: batch.actor_id.clone(),
+            client_id: batch.client_id.clone(),
+            created_at: Utc::now(),
+            resulting_revision: note_snapshot.revision,
+            batch: batch.clone(),
+        };
+        state.note_operations.entry(note_id).or_default().push(operation_record.clone());
+        let uses_postgres = self.persistence.uses_postgres();
+        if uses_postgres {
+            self.persistence.update_note(&note_snapshot, expected_revision).await?;
+        }
+        self.storage
+            .sync_note_markdown(
+                Some((&previous_folder, &previous_title)),
+                note_snapshot.id,
+                &note_snapshot.title,
+                &note_snapshot.folder,
+                &note_snapshot.markdown,
+            )
+            .await?;
+        let share = Self::resource_share_for_note(&state, &note_snapshot);
+        let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        let _ = self.realtime.send(RealtimeEvent::NoteOperations {
+            note_id,
+            title: note_snapshot.title.clone(),
+            folder: note_snapshot.folder.clone(),
+            markdown: note_snapshot.markdown.clone(),
+            revision: note_snapshot.revision,
+            client_id: batch.client_id.clone(),
+            user: user.display_name.clone(),
+            batch: batch.clone(),
+            document: Some(note_snapshot.document.clone()),
+        });
+        let _ = self.realtime.send(RealtimeEvent::NotePatch {
+            note_id,
+            title: note_snapshot.title.clone(),
+            folder: note_snapshot.folder.clone(),
+            markdown: note_snapshot.markdown.clone(),
+            revision: note_snapshot.revision,
+            document: Some(note_snapshot.document.clone()),
+        });
+        let _ = share;
+        Ok(NoteOperationsPushResponse {
+            note: note_snapshot,
+            applied: true,
+            operation: Some(operation_record),
+            conflicts,
+        })
+    }
+
     async fn create_note_with_id(&self, payload: CreateNoteRequest, forced_id: Option<Uuid>) -> AppResult<Note> {
         let mut state = self.inner.write().await;
         let now = Utc::now();
@@ -2358,18 +2798,30 @@ impl AppState {
         let current_used = storage_used_bytes_for_user(&state, &self.storage, author_id);
         let projected_used = current_used.saturating_add(markdown.len() as u64);
         enforce_storage_limit(&state, author_id, current_used, projected_used, true)?;
+        let note_id = forced_id.unwrap_or_else(Uuid::new_v4);
         let note = Note {
-            id: forced_id.unwrap_or_else(Uuid::new_v4),
+            id: note_id,
+            object_id: default_note_object_id(note_id),
+            namespace: default_user_namespace(author_id),
+            visibility: payload.visibility.unwrap_or(ResourceVisibility::Private),
+            shared_user_ids: Vec::new(),
             title: payload.title,
             folder: payload.folder.unwrap_or_else(|| "Inbox".into()),
-            markdown,
+            markdown: String::new(),
             rendered_html: String::new(),
+            document: payload
+                .document
+                .unwrap_or_else(|| note_document_from_markdown(&markdown, &author_id.to_string())),
             revision: 1,
             created_at: now,
             updated_at: now,
             author_id,
             last_editor_id: author_id,
+            forked_from_note_id: None,
+            conflict_tag: None,
         };
+        let mut note = note;
+        note.markdown = markdown_from_note_document(&note.document);
         let uses_postgres = self.persistence.uses_postgres();
         if uses_postgres {
             self.persistence.create_note(&note).await?;
@@ -2399,7 +2851,12 @@ impl AppState {
         let old_size = existing_note.markdown.len() as u64;
         let next_title = payload.title.unwrap_or(existing_note.title.clone());
         let next_folder = payload.folder.unwrap_or(existing_note.folder.clone());
-        let next_markdown = payload.markdown.unwrap_or(existing_note.markdown.clone());
+        let next_document = payload
+            .document
+            .clone()
+            .or_else(|| payload.markdown.as_ref().map(|markdown| note_document_from_markdown(markdown, &user_id.to_string())))
+            .unwrap_or_else(|| existing_note.document.clone());
+        let next_markdown = markdown_from_note_document(&next_document);
         let projected_used = current_used
             .saturating_sub(old_size)
             .saturating_add(next_markdown.len() as u64);
@@ -2408,6 +2865,10 @@ impl AppState {
         note.title = next_title;
         note.folder = next_folder;
         note.markdown = next_markdown;
+        note.document = next_document;
+        if let Some(visibility) = payload.visibility {
+            note.visibility = visibility;
+        }
         note.revision += 1;
         note.updated_at = Utc::now();
         note.last_editor_id = user_id;
@@ -2418,6 +2879,99 @@ impl AppState {
             self.persistence
                 .update_note(&note_snapshot, expected_revision)
                 .await?;
+        }
+        self.storage
+            .sync_note_markdown(
+                Some((&previous_folder, &previous_title)),
+                note_snapshot.id,
+                &note_snapshot.title,
+                &note_snapshot.folder,
+                &note_snapshot.markdown,
+            )
+            .await?;
+        let snapshot = state.clone();
+        drop(state);
+        if !uses_postgres {
+            self.persist_snapshot(snapshot).await?;
+        }
+        Ok(note_snapshot)
+    }
+
+    pub async fn apply_note_operation_batch(
+        &self,
+        id: Uuid,
+        batch: NoteDocumentOperationBatch,
+    ) -> AppResult<Note> {
+        let mut state = self.inner.write().await;
+        let user_id = state.user.id;
+        let existing_note = state.notes.get(&id).cloned().ok_or(AppError::NotFound)?;
+        let actor_id = if batch.actor_id.trim().is_empty() {
+            user_id.to_string()
+        } else {
+            batch.actor_id.clone()
+        };
+
+        if should_fork_note_document(&existing_note.document, &batch) {
+            let local_document = apply_operations_to_document(
+                &existing_note.document,
+                &batch,
+                &actor_id,
+            )?;
+            let forked_ids = create_note_conflict_forks(&mut state, &existing_note, &local_document, &actor_id);
+            let uses_postgres = self.persistence.uses_postgres();
+            if uses_postgres {
+                for fork_id in &forked_ids {
+                    if let Some(note) = state.notes.get(fork_id) {
+                        self.persistence.create_note(note).await?;
+                    }
+                }
+            }
+            let snapshot = state.clone();
+            drop(state);
+            if !uses_postgres {
+                self.persist_snapshot(snapshot).await?;
+            }
+            return Err(AppError::BadRequest(format!(
+                "note forked due to conflicting block edits:{}",
+                forked_ids
+                    .iter()
+                    .map(Uuid::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )));
+        }
+
+        let mut next_document = apply_operations_to_document(&existing_note.document, &batch, &actor_id)?;
+        if next_document.last_operation_id.trim().is_empty() {
+            next_document.last_operation_id = batch.operation_id.clone();
+        }
+        let next_markdown = markdown_from_note_document(&next_document);
+        let current_used = storage_used_bytes_for_user(&state, &self.storage, user_id);
+        let projected_used = current_used
+            .saturating_sub(existing_note.markdown.len() as u64)
+            .saturating_add(next_markdown.len() as u64);
+        enforce_storage_limit(&state, user_id, current_used, projected_used, false)?;
+
+        let note = state.notes.get_mut(&id).ok_or(AppError::NotFound)?;
+        let previous_title = note.title.clone();
+        let previous_folder = note.folder.clone();
+        for operation in &batch.operations {
+            match operation {
+                NoteOperation::SetTitle { title } => note.title = title.clone(),
+                NoteOperation::SetFolder { folder } => note.folder = folder.clone(),
+                _ => {}
+            }
+        }
+        note.document = next_document;
+        note.markdown = next_markdown;
+        note.revision += 1;
+        note.updated_at = Utc::now();
+        note.last_editor_id = user_id;
+        let note_snapshot = note.clone();
+        let expected_revision = existing_note.revision;
+        let uses_postgres = self.persistence.uses_postgres();
+        if uses_postgres {
+            self.persistence.update_note(&note_snapshot, expected_revision).await?;
         }
         self.storage
             .sync_note_markdown(
@@ -2567,7 +3121,17 @@ impl AppState {
     }
 
     pub async fn list_memos(&self) -> Vec<VoiceMemo> {
-        self.inner.read().await.memos.values().cloned().collect()
+        self.inner
+            .read()
+            .await
+            .memos
+            .values()
+            .cloned()
+            .map(|mut memo| {
+                ensure_voice_memo_foundation(&mut memo);
+                memo
+            })
+            .collect()
     }
 
     pub async fn get_memo(&self, memo_id: Uuid) -> AppResult<VoiceMemo> {
@@ -2607,6 +3171,10 @@ impl AppState {
         let completed = transcript.is_some();
         let memo = VoiceMemo {
             id: Uuid::new_v4(),
+            object_id: String::new(),
+            namespace: default_user_namespace(owner_id),
+            visibility: ResourceVisibility::Private,
+            shared_user_ids: Vec::new(),
             title,
             audio_path: path,
             transcript: transcript.clone(),
@@ -2620,6 +3188,9 @@ impl AppState {
                     }]
                 })
                 .unwrap_or_default(),
+            transcript_tags: derive_transcript_tags(transcript.as_deref().unwrap_or_default()),
+            topic_summary: transcript.as_ref().map(|text| summarize_transcript_topic(text)),
+            source_channels: vec!["microphone".into()],
             status: if completed {
                 JobStatus::Completed
             } else {
@@ -2640,6 +3211,8 @@ impl AppState {
             failure_reason: None,
             owner_id,
         };
+        let mut memo = memo;
+        ensure_voice_memo_foundation(&mut memo);
         let job = TranscriptionJob {
             id: Uuid::new_v4(),
             memo_id: memo.id,
@@ -3058,7 +3631,23 @@ impl AppState {
     }
 
     pub async fn list_files(&self) -> AppResult<Vec<crate::models::FileNode>> {
-        self.storage.list_tree().await
+        let drive = self.storage.list_drive_tree().await?;
+        let state = self.inner.read().await;
+        let mut notes = state.notes.values().cloned().collect::<Vec<_>>();
+        for note in &mut notes {
+            ensure_note_foundation(note);
+        }
+        let mut memos = state.memos.values().cloned().collect::<Vec<_>>();
+        for memo in &mut memos {
+            ensure_voice_memo_foundation(memo);
+        }
+        let diagrams = state.diagrams.values().cloned().collect::<Vec<_>>();
+        Ok(vec![
+            build_notes_projection(&notes),
+            build_diagrams_projection(&diagrams),
+            build_voice_projection(&memos),
+            drive,
+        ])
     }
 
     pub async fn create_managed_folder(&self, path: String) -> AppResult<crate::models::FileNode> {
@@ -3238,6 +3827,11 @@ impl AppState {
                 name: format!("{}-{}.md", slug_for_note_title(&moved.title), moved.id),
                 path: note_relative_path_for_move(&moved),
                 kind: crate::models::FileNodeKind::File,
+                object_id: Some(moved.object_id.clone()),
+                object_kind: Some(crate::models::WorkspaceObjectKind::NoteDocument),
+                namespace: Some(moved.namespace.clone()),
+                visibility: Some(moved.visibility),
+                resource_key: Some(format!("note:{}", moved.id)),
                 size_bytes: Some(moved.markdown.len() as u64),
                 created_at: Some(moved.created_at.to_rfc3339()),
                 updated_at: Some(moved.updated_at.to_rfc3339()),
@@ -3306,6 +3900,11 @@ impl AppState {
             name: moved_folder_name,
             path: format!("notes/{}", destination_folder.replace('\\', "/")),
             kind: crate::models::FileNodeKind::Directory,
+            object_id: None,
+            object_kind: Some(crate::models::WorkspaceObjectKind::Folder),
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: None,
             created_at: None,
             updated_at: None,
@@ -3416,6 +4015,11 @@ impl AppState {
                 name: format!("{}-{}.md", slug_for_note_title(&renamed.title), renamed.id),
                 path: note_relative_path_for_move(&renamed),
                 kind: crate::models::FileNodeKind::File,
+                object_id: Some(renamed.object_id.clone()),
+                object_kind: Some(crate::models::WorkspaceObjectKind::NoteDocument),
+                namespace: Some(renamed.namespace.clone()),
+                visibility: Some(renamed.visibility),
+                resource_key: Some(format!("note:{}", renamed.id)),
                 size_bytes: Some(renamed.markdown.len() as u64),
                 created_at: Some(renamed.created_at.to_rfc3339()),
                 updated_at: Some(renamed.updated_at.to_rfc3339()),
@@ -3483,6 +4087,11 @@ impl AppState {
             name: moved_folder_name,
             path: format!("notes/{}", destination_folder.replace('\\', "/")),
             kind: crate::models::FileNodeKind::Directory,
+            object_id: None,
+            object_kind: Some(crate::models::WorkspaceObjectKind::Folder),
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: None,
             created_at: None,
             updated_at: None,
@@ -3547,6 +4156,11 @@ impl AppState {
                 ),
                 path: diagram_relative_path_for_move(&moved),
                 kind: crate::models::FileNodeKind::File,
+                object_id: Some(format!("diagram:{}", moved.id)),
+                object_kind: Some(crate::models::WorkspaceObjectKind::Diagram),
+                namespace: Some(default_user_namespace(moved.author_id)),
+                visibility: Some(crate::models::ResourceVisibility::Private),
+                resource_key: Some(format!("diagram:{}", moved.id)),
                 size_bytes: Some(moved.xml.len() as u64),
                 created_at: Some(moved.created_at.to_rfc3339()),
                 updated_at: Some(moved.updated_at.to_rfc3339()),
@@ -3611,6 +4225,11 @@ impl AppState {
             name: moved_folder_name,
             path: format!("diagrams/{}", destination_folder.replace('\\', "/")),
             kind: crate::models::FileNodeKind::Directory,
+            object_id: None,
+            object_kind: Some(crate::models::WorkspaceObjectKind::Folder),
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: None,
             created_at: None,
             updated_at: None,
@@ -3730,6 +4349,11 @@ impl AppState {
                 ),
                 path: diagram_relative_path_for_move(&renamed),
                 kind: crate::models::FileNodeKind::File,
+                object_id: Some(format!("diagram:{}", renamed.id)),
+                object_kind: Some(crate::models::WorkspaceObjectKind::Diagram),
+                namespace: Some(default_user_namespace(renamed.author_id)),
+                visibility: Some(crate::models::ResourceVisibility::Private),
+                resource_key: Some(format!("diagram:{}", renamed.id)),
                 size_bytes: Some(renamed.xml.len() as u64),
                 created_at: Some(renamed.created_at.to_rfc3339()),
                 updated_at: Some(renamed.updated_at.to_rfc3339()),
@@ -3798,6 +4422,11 @@ impl AppState {
             name: moved_folder_name,
             path: format!("diagrams/{}", destination_folder.replace('\\', "/")),
             kind: crate::models::FileNodeKind::Directory,
+            object_id: None,
+            object_kind: Some(crate::models::WorkspaceObjectKind::Folder),
+            namespace: None,
+            visibility: None,
+            resource_key: None,
             size_bytes: None,
             created_at: None,
             updated_at: None,
@@ -4767,12 +5396,21 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         participant_labels: Vec::new(),
     };
 
+    let welcome_note_id = Uuid::new_v4();
+    let welcome_note_markdown = "# Welcome to Home Suite Home\n\nThis homelab workspace is seeded with:\n\n- live Markdown notes\n- draw.io-compatible diagram storage\n- voice memo ingestion and transcript jobs\n- chat rooms and call signaling\n- durable JSON state snapshots across restarts\n\nEdit this note and save it from the browser.".to_string();
     let welcome_note = Note {
-        id: Uuid::new_v4(),
+        id: welcome_note_id,
+        object_id: default_note_object_id(welcome_note_id),
+        namespace: default_user_namespace(user.id),
+        visibility: ResourceVisibility::Private,
+        shared_user_ids: Vec::new(),
         title: "Welcome to Home Suite Home".into(),
         folder: "Getting Started".into(),
-        markdown: "# Welcome to Home Suite Home\n\nThis homelab workspace is seeded with:\n\n- live Markdown notes\n- draw.io-compatible diagram storage\n- voice memo ingestion and transcript jobs\n- chat rooms and call signaling\n- durable JSON state snapshots across restarts\n\nEdit this note and save it from the browser.".into(),
+        markdown: welcome_note_markdown.clone(),
         rendered_html: String::new(),
+        document: note_document_from_markdown(&welcome_note_markdown, &user.id.to_string()),
+        forked_from_note_id: None,
+        conflict_tag: None,
         revision: 1,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -4877,6 +5515,9 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         resource_shares: HashMap::new(),
         sync_tombstones: Vec::new(),
         pending_credential_changes: HashMap::new(),
+        note_operations: HashMap::new(),
+        note_sessions: HashMap::new(),
+        note_conflicts: HashMap::new(),
     })
 }
 
@@ -4951,7 +5592,9 @@ where
 fn operation_id_string(operation: &SyncOperation) -> String {
     match operation {
         SyncOperation::CreateNote { title, .. } => format!("create-note:{title}"),
-        SyncOperation::UpdateNote { id, .. } | SyncOperation::DeleteNote { id } => id.to_string(),
+        SyncOperation::UpdateNote { id, .. }
+        | SyncOperation::ApplyNoteOperations { id, .. }
+        | SyncOperation::DeleteNote { id } => id.to_string(),
         SyncOperation::CreateDiagram { title, .. } => format!("create-diagram:{title}"),
         SyncOperation::UpdateDiagram { id, .. } => id.to_string(),
         SyncOperation::CreateTask { title, .. } => format!("create-task:{title}"),
@@ -5020,6 +5663,508 @@ fn truncate_status_message(message: String) -> String {
         return trimmed.to_string();
     }
     format!("{}…", &trimmed[..MAX_LEN])
+}
+
+fn default_note_object_id(note_id: Uuid) -> String {
+    format!("note:{note_id}")
+}
+
+fn default_audio_object_id(memo_id: Uuid) -> String {
+    format!("audio:{memo_id}")
+}
+
+fn default_user_namespace(owner_id: Uuid) -> ObjectNamespace {
+    ObjectNamespace {
+        root: format!("users/{owner_id}/synced"),
+        owner_id,
+        kind: ObjectNamespaceKind::Synced,
+        label: "Synced".into(),
+    }
+}
+
+fn next_block_counter(clock: &HashMap<String, u64>, actor: &str) -> u64 {
+    clock.get(actor).copied().unwrap_or(0) + 1
+}
+
+fn note_document_from_markdown(markdown: &str, actor: &str) -> NoteDocument {
+    let mut blocks = Vec::new();
+    let mut clock = HashMap::new();
+    let mut counter = 0u64;
+    for (index, raw_block) in markdown.split("\n\n").enumerate() {
+        let text = raw_block.trim_end_matches('\n').to_string();
+        counter += 1;
+        let kind = if text.starts_with("```") {
+            NoteBlockKind::Code
+        } else if text.starts_with(">") {
+            NoteBlockKind::Quote
+        } else if text.starts_with("- [") {
+            NoteBlockKind::Checklist
+        } else if text.starts_with("- ") || text.starts_with("* ") {
+            NoteBlockKind::BulletList
+        } else if text
+            .chars()
+            .next()
+            .map(|character| character == '#')
+            .unwrap_or(false)
+        {
+            NoteBlockKind::Heading
+        } else {
+            NoteBlockKind::Paragraph
+        };
+        blocks.push(NoteBlock {
+            id: format!("block-{}-{}", index, counter),
+            kind,
+            text,
+            attrs: HashMap::new(),
+            order: index as f64,
+            deleted: false,
+            last_modified_by: actor.to_string(),
+            last_modified_counter: counter,
+        });
+    }
+    if blocks.is_empty() {
+        blocks.push(NoteBlock {
+            id: "block-0-1".into(),
+            kind: NoteBlockKind::Paragraph,
+            text: String::new(),
+            attrs: HashMap::new(),
+            order: 0.0,
+            deleted: false,
+            last_modified_by: actor.to_string(),
+            last_modified_counter: 1,
+        });
+        counter = 1;
+    }
+    clock.insert(actor.to_string(), counter);
+    NoteDocument {
+        blocks,
+        clock,
+        last_operation_id: format!("seed:{actor}:{counter}"),
+    }
+}
+
+fn markdown_from_note_document(document: &NoteDocument) -> String {
+    let mut blocks = document
+        .blocks
+        .iter()
+        .filter(|block| !block.deleted)
+        .cloned()
+        .collect::<Vec<_>>();
+    blocks.sort_by(|left, right| left.order.total_cmp(&right.order));
+    blocks
+        .into_iter()
+        .map(|block| block.text)
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn ensure_note_foundation(note: &mut Note) {
+    if note.object_id.trim().is_empty() {
+        note.object_id = default_note_object_id(note.id);
+    }
+    if note.namespace.root.trim().is_empty() || note.namespace.owner_id.is_nil() {
+        note.namespace = default_user_namespace(note.author_id);
+    }
+    if note.document.blocks.is_empty() {
+        note.document = note_document_from_markdown(&note.markdown, &note.author_id.to_string());
+    }
+    let materialized = markdown_from_note_document(&note.document);
+    if note.markdown != materialized {
+        note.markdown = materialized;
+    }
+}
+
+fn ensure_voice_memo_foundation(memo: &mut VoiceMemo) {
+    if memo.object_id.trim().is_empty() {
+        memo.object_id = default_audio_object_id(memo.id);
+    }
+    if memo.namespace.root.trim().is_empty() || memo.namespace.owner_id.is_nil() {
+        memo.namespace = default_user_namespace(memo.owner_id);
+    }
+    if memo.transcript_tags.is_empty() {
+        memo.transcript_tags = derive_transcript_tags(
+            memo.transcript
+                .as_deref()
+                .unwrap_or_default(),
+        );
+    }
+    if memo.topic_summary.is_none() {
+        memo.topic_summary = memo
+            .transcript
+            .as_ref()
+            .map(|text| summarize_transcript_topic(text));
+    }
+}
+
+fn derive_transcript_tags(transcript: &str) -> Vec<String> {
+    let mut counts = HashMap::<String, usize>::new();
+    for token in transcript
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|token| token.len() >= 4)
+    {
+        let key = token.to_ascii_lowercase();
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    let mut entries = counts.into_iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    entries.into_iter().take(8).map(|(token, _)| token).collect()
+}
+
+fn summarize_transcript_topic(transcript: &str) -> String {
+    transcript
+        .split_terminator(&['.', '!', '?'][..])
+        .map(str::trim)
+        .find(|sentence| !sentence.is_empty())
+        .unwrap_or("Audio memo")
+        .chars()
+        .take(160)
+        .collect()
+}
+
+fn should_fork_note_document(document: &NoteDocument, batch: &NoteDocumentOperationBatch) -> bool {
+    if batch.operations.is_empty() {
+        return false;
+    }
+    for operation in &batch.operations {
+        match operation {
+            NoteOperation::SetTitle { .. } | NoteOperation::SetFolder { .. } => {}
+            NoteOperation::ReplaceDocument { .. } => {
+                for (actor, counter) in &document.clock {
+                    if batch.base_clock.get(actor).copied().unwrap_or(0) < *counter {
+                        return true;
+                    }
+                }
+            }
+            NoteOperation::UpdateBlockText { block_id, .. }
+            | NoteOperation::UpdateBlockAttrs { block_id, .. }
+            | NoteOperation::DeleteBlock { block_id }
+            | NoteOperation::MoveBlock { block_id, .. } => {
+                if let Some(block) = document.blocks.iter().find(|candidate| candidate.id == *block_id) {
+                    let seen_counter = batch
+                        .base_clock
+                        .get(&block.last_modified_by)
+                        .copied()
+                        .unwrap_or(0);
+                    if seen_counter < block.last_modified_counter {
+                        return true;
+                    }
+                }
+            }
+            NoteOperation::InsertBlock { after_block_id, .. } => {
+                if let Some(anchor_id) = after_block_id {
+                    if let Some(block) = document.blocks.iter().find(|candidate| candidate.id == *anchor_id) {
+                        let seen_counter = batch
+                            .base_clock
+                            .get(&block.last_modified_by)
+                            .copied()
+                            .unwrap_or(0);
+                        if seen_counter < block.last_modified_counter {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn apply_operations_to_document(
+    document: &NoteDocument,
+    batch: &NoteDocumentOperationBatch,
+    actor_id: &str,
+) -> AppResult<NoteDocument> {
+    let mut next = document.clone();
+    let mut counter = next_block_counter(&next.clock, actor_id);
+    for operation in &batch.operations {
+        match operation {
+            NoteOperation::SetTitle { .. } | NoteOperation::SetFolder { .. } => {}
+            NoteOperation::ReplaceDocument { blocks } => {
+                next.blocks = blocks
+                    .iter()
+                    .enumerate()
+                    .map(|(index, block)| NoteBlock {
+                        id: if block.id.trim().is_empty() {
+                            format!("block-{}-{}", index, counter)
+                        } else {
+                            block.id.clone()
+                        },
+                        kind: block.kind.clone(),
+                        text: block.text.clone(),
+                        attrs: block.attrs.clone(),
+                        order: index as f64,
+                        deleted: block.deleted,
+                        last_modified_by: actor_id.to_string(),
+                        last_modified_counter: counter,
+                    })
+                    .collect();
+                counter += 1;
+            }
+            NoteOperation::InsertBlock { block, after_block_id } => {
+                let insertion_order = after_block_id
+                    .as_ref()
+                    .and_then(|anchor_id| next.blocks.iter().find(|candidate| candidate.id == *anchor_id))
+                    .map(|anchor| anchor.order + 0.5)
+                    .unwrap_or_else(|| next.blocks.iter().map(|candidate| candidate.order).fold(-1.0, f64::max) + 1.0);
+                next.blocks.push(NoteBlock {
+                    id: if block.id.trim().is_empty() {
+                        format!("block-insert-{}", counter)
+                    } else {
+                        block.id.clone()
+                    },
+                    kind: block.kind.clone(),
+                    text: block.text.clone(),
+                    attrs: block.attrs.clone(),
+                    order: insertion_order,
+                    deleted: false,
+                    last_modified_by: actor_id.to_string(),
+                    last_modified_counter: counter,
+                });
+                counter += 1;
+            }
+            NoteOperation::UpdateBlockText { block_id, text } => {
+                let block = next
+                    .blocks
+                    .iter_mut()
+                    .find(|candidate| candidate.id == *block_id)
+                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
+                block.text = text.clone();
+                block.last_modified_by = actor_id.to_string();
+                block.last_modified_counter = counter;
+                counter += 1;
+            }
+            NoteOperation::UpdateBlockAttrs { block_id, attrs } => {
+                let block = next
+                    .blocks
+                    .iter_mut()
+                    .find(|candidate| candidate.id == *block_id)
+                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
+                block.attrs = attrs.clone();
+                block.last_modified_by = actor_id.to_string();
+                block.last_modified_counter = counter;
+                counter += 1;
+            }
+            NoteOperation::DeleteBlock { block_id } => {
+                let block = next
+                    .blocks
+                    .iter_mut()
+                    .find(|candidate| candidate.id == *block_id)
+                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
+                block.deleted = true;
+                block.last_modified_by = actor_id.to_string();
+                block.last_modified_counter = counter;
+                counter += 1;
+            }
+            NoteOperation::MoveBlock { block_id, after_block_id } => {
+                let max_order = next.blocks.iter().map(|candidate| candidate.order).fold(0.0, f64::max);
+                let new_order = after_block_id
+                    .as_ref()
+                    .and_then(|anchor_id| next.blocks.iter().find(|candidate| candidate.id == *anchor_id))
+                    .map(|anchor| anchor.order + 0.5)
+                    .unwrap_or(max_order + 1.0);
+                let block = next
+                    .blocks
+                    .iter_mut()
+                    .find(|candidate| candidate.id == *block_id)
+                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
+                block.order = new_order;
+                block.last_modified_by = actor_id.to_string();
+                block.last_modified_counter = counter;
+                counter += 1;
+            }
+        }
+    }
+    next.clock.insert(actor_id.to_string(), counter.saturating_sub(1));
+    next.last_operation_id = batch.operation_id.clone();
+    next.blocks.sort_by(|left, right| left.order.total_cmp(&right.order));
+    Ok(next)
+}
+
+fn create_note_conflict_forks(
+    state: &mut StateData,
+    original: &Note,
+    incoming_document: &NoteDocument,
+    actor_id: &str,
+) -> Vec<Uuid> {
+    let now = Utc::now();
+    let remote_fork_id = Uuid::new_v4();
+    let local_fork_id = Uuid::new_v4();
+    let mut remote_fork = original.clone();
+    remote_fork.id = remote_fork_id;
+    remote_fork.object_id = default_note_object_id(remote_fork_id);
+    remote_fork.title = format!("{} (remote conflict)", original.title);
+    remote_fork.forked_from_note_id = Some(original.id);
+    remote_fork.conflict_tag = Some("remote_conflict".into());
+    remote_fork.created_at = now;
+    remote_fork.updated_at = now;
+    remote_fork.revision = 1;
+
+    let mut local_fork = original.clone();
+    local_fork.id = local_fork_id;
+    local_fork.object_id = default_note_object_id(local_fork_id);
+    local_fork.title = format!("{} (local conflict)", original.title);
+    local_fork.document = incoming_document.clone();
+    local_fork.markdown = markdown_from_note_document(incoming_document);
+    local_fork.forked_from_note_id = Some(original.id);
+    local_fork.conflict_tag = Some(format!("local_conflict:{actor_id}"));
+    local_fork.created_at = now;
+    local_fork.updated_at = now;
+    local_fork.revision = 1;
+
+    state.notes.insert(remote_fork.id, remote_fork);
+    state.notes.insert(local_fork.id, local_fork);
+    vec![remote_fork_id, local_fork_id]
+}
+
+fn file_node_directory(
+    name: String,
+    path: String,
+    namespace: Option<ObjectNamespace>,
+    visibility: Option<ResourceVisibility>,
+) -> crate::models::FileNode {
+    crate::models::FileNode {
+        name,
+        path,
+        kind: crate::models::FileNodeKind::Directory,
+        object_id: None,
+        object_kind: None,
+        namespace,
+        visibility,
+        resource_key: None,
+        size_bytes: None,
+        created_at: None,
+        updated_at: None,
+        children: Vec::new(),
+    }
+}
+
+fn insert_projected_node(root: &mut crate::models::FileNode, parts: &[String], leaf: crate::models::FileNode) {
+    if parts.is_empty() {
+        root.children.push(leaf);
+        return;
+    }
+    let mut current_path = root.path.clone();
+    let mut current = root;
+    for part in parts {
+        if current_path.is_empty() {
+            current_path = part.clone();
+        } else {
+            current_path = format!("{current_path}/{part}");
+        }
+        let existing_index = current
+            .children
+            .iter()
+            .position(|child| child.kind == crate::models::FileNodeKind::Directory && child.name == *part);
+        let index = if let Some(index) = existing_index {
+            index
+        } else {
+            current.children.push(file_node_directory(part.clone(), current_path.clone(), None, None));
+            current.children.len() - 1
+        };
+        current = current.children.get_mut(index).expect("folder inserted");
+    }
+    current.children.push(leaf);
+}
+
+fn sort_file_tree(node: &mut crate::models::FileNode) {
+    for child in &mut node.children {
+        sort_file_tree(child);
+    }
+    node.children.sort_by(|left, right| {
+        match (&left.kind, &right.kind) {
+            (crate::models::FileNodeKind::Directory, crate::models::FileNodeKind::File) => std::cmp::Ordering::Less,
+            (crate::models::FileNodeKind::File, crate::models::FileNodeKind::Directory) => std::cmp::Ordering::Greater,
+            _ => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
+        }
+    });
+}
+
+fn build_notes_projection(notes: &[Note]) -> crate::models::FileNode {
+    let mut root = file_node_directory("notes".into(), "notes".into(), None, None);
+    for note in notes {
+        let folders = note
+            .folder
+            .split('/')
+            .filter(|part| !part.is_empty() && *part != "Inbox")
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let leaf = crate::models::FileNode {
+            name: format!("{}-{}.md", slug_for_note_title(&note.title), note.id),
+            path: note_relative_path_for_move(note),
+            kind: crate::models::FileNodeKind::File,
+            object_id: Some(note.object_id.clone()),
+            object_kind: Some(crate::models::WorkspaceObjectKind::NoteDocument),
+            namespace: Some(note.namespace.clone()),
+            visibility: Some(note.visibility.clone()),
+            resource_key: Some(format!("note:{}", note.id)),
+            size_bytes: Some(note.markdown.len() as u64),
+            created_at: Some(note.created_at.to_rfc3339()),
+            updated_at: Some(note.updated_at.to_rfc3339()),
+            children: Vec::new(),
+        };
+        insert_projected_node(&mut root, &folders, leaf);
+    }
+    sort_file_tree(&mut root);
+    root
+}
+
+fn build_diagrams_projection(diagrams: &[Diagram]) -> crate::models::FileNode {
+    let mut root = file_node_directory("diagrams".into(), "diagrams".into(), None, None);
+    for diagram in diagrams {
+        let folder = normalize_diagram_folder_path(&diagram.title);
+        let folders = folder
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let leaf = crate::models::FileNode {
+            name: format!("{}-{}.drawio", slug_for_diagram_title(&diagram.title), diagram.id),
+            path: diagram_relative_path_for_move(diagram),
+            kind: crate::models::FileNodeKind::File,
+            object_id: Some(format!("diagram:{}", diagram.id)),
+            object_kind: Some(crate::models::WorkspaceObjectKind::Diagram),
+            namespace: None,
+            visibility: None,
+            resource_key: None,
+            size_bytes: Some(diagram.xml.len() as u64),
+            created_at: Some(diagram.created_at.to_rfc3339()),
+            updated_at: Some(diagram.updated_at.to_rfc3339()),
+            children: Vec::new(),
+        };
+        insert_projected_node(&mut root, &folders, leaf);
+    }
+    sort_file_tree(&mut root);
+    root
+}
+
+fn build_voice_projection(memos: &[VoiceMemo]) -> crate::models::FileNode {
+    let mut root = file_node_directory("voice".into(), "voice".into(), None, None);
+    for memo in memos {
+        let relative = memo.audio_path.strip_prefix("voice/").unwrap_or(&memo.audio_path);
+        let mut parts = relative
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let name = parts.pop().unwrap_or_else(|| format!("{}.webm", memo.id));
+        let leaf = crate::models::FileNode {
+            name,
+            path: memo.audio_path.clone(),
+            kind: crate::models::FileNodeKind::File,
+            object_id: Some(memo.object_id.clone()),
+            object_kind: Some(crate::models::WorkspaceObjectKind::AudioMemo),
+            namespace: Some(memo.namespace.clone()),
+            visibility: Some(memo.visibility.clone()),
+            resource_key: Some(format!("audio:{}", memo.id)),
+            size_bytes: None,
+            created_at: Some(memo.created_at.to_rfc3339()),
+            updated_at: Some(memo.updated_at.to_rfc3339()),
+            children: Vec::new(),
+        };
+        insert_projected_node(&mut root, &parts, leaf);
+    }
+    sort_file_tree(&mut root);
+    root
 }
 
 #[cfg(test)]

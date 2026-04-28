@@ -19,13 +19,14 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 use crate::{
     error::{AppError, AppResult},
     models::{
-        AdminResetPasswordRequest, AdminSettings, AdminStorageOverview,
+        AdminDatabaseOverview, AdminResetPasswordRequest, AdminSettings, AdminStorageOverview,
         ChangeCurrentUserPasswordRequest, ChangePasswordRequest, ConnectGoogleCalendarRequest,
         CreateCalendarEventRequest, CreateDiagramRequest, CreateFolderRequest,
         CreateIcsCalendarConnectionRequest, CreateLocalCalendarConnectionRequest,
         CreateMessageRequest, CreateNoteRequest, CreateRoomRequest, CreateTaskRequest,
         CreateUserRequest, DeleteFileRequest, GoogleCalendarConfigResponse, HealthResponse,
-        LoginRequest, MoveFileRequest, OidcConfigResponse, RealtimeEvent, RenameFileRequest,
+        LoginRequest, MoveFileRequest, NoteOperationsPushRequest, NoteSessionCloseRequest,
+        NoteSessionOpenRequest, OidcConfigResponse, OidcMobileExchangeRequest, RealtimeEvent, RenameFileRequest,
         RtcConfig, SetupAdminRequest, SyncBootstrapRequest, SyncPullRequest, SyncPushRequest,
         ToggleMessageReactionRequest,
         UpdateAccountCredentialsRequest, UpdateCalendarConnectionRequest,
@@ -44,6 +45,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/change-password", post(change_password))
         .route("/api/v1/auth/oidc/config", get(oidc_config))
+        .route("/api/v1/auth/oidc/mobile/exchange", post(oidc_mobile_exchange))
         .route("/api/v1/auth/oidc/callback", get(oidc_callback))
         .route("/api/v1/sync/bootstrap", post(sync_bootstrap))
         .route("/api/v1/sync/pull", post(sync_pull))
@@ -94,6 +96,7 @@ pub fn router(state: AppState) -> Router {
             "/api/v1/admin/storage-overview",
             get(get_admin_storage_overview),
         )
+        .route("/api/v1/admin/db", get(get_admin_database_overview))
         .route(
             "/api/v1/admin/system/update",
             get(get_system_update_status).post(trigger_system_update),
@@ -115,6 +118,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/notes", get(list_notes).post(create_note))
         .route("/api/v1/notes/{id}", put(update_note).delete(delete_note))
+        .route("/api/v1/notes/{id}/session/open", post(open_note_session))
+        .route("/api/v1/notes/{id}/session/close", post(close_note_session))
+        .route("/api/v1/notes/{id}/operations", get(pull_note_operations).post(push_note_operations))
         .route("/api/v1/diagrams", get(list_diagrams).post(create_diagram))
         .route("/api/v1/diagrams/{id}", put(update_diagram))
         .route(
@@ -176,18 +182,25 @@ async fn change_password(
     Ok(Json(session))
 }
 
-async fn upload_current_user_avatar(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    mut multipart: Multipart,
-) -> AppResult<Json<crate::models::UserProfile>> {
-    let user = state
+async fn authenticated_user(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> AppResult<crate::models::UserProfile> {
+    state
         .authenticated_user_from_header(
             headers
                 .get(header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok()),
         )
-        .await?;
+        .await
+}
+
+async fn upload_current_user_avatar(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> AppResult<Json<crate::models::UserProfile>> {
+    let user = authenticated_user(&state, &headers).await?;
 
     let mut filename: Option<String> = None;
     let mut content_type: Option<String> = None;
@@ -246,13 +259,7 @@ async fn update_current_user_credentials(
     headers: HeaderMap,
     Json(payload): Json<UpdateAccountCredentialsRequest>,
 ) -> AppResult<Json<crate::models::UserProfile>> {
-    let user = state
-        .authenticated_user_from_header(
-            headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok()),
-        )
-        .await?;
+    let user = authenticated_user(&state, &headers).await?;
     Ok(Json(
         state
             .update_current_user_credentials(user.id, payload)
@@ -265,13 +272,7 @@ async fn change_current_user_password(
     headers: HeaderMap,
     Json(payload): Json<ChangeCurrentUserPasswordRequest>,
 ) -> AppResult<Json<crate::models::SessionResponse>> {
-    let user = state
-        .authenticated_user_from_header(
-            headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok()),
-        )
-        .await?;
+    let user = authenticated_user(&state, &headers).await?;
     let updated = state.change_current_user_password(user.id, payload).await?;
     let session = state.session_response(updated).await?;
     Ok(Json(session))
@@ -305,17 +306,19 @@ async fn get_admin_storage_overview(State(state): State<AppState>) -> Json<Admin
     Json(state.storage_overview().await)
 }
 
+async fn get_admin_database_overview(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<AdminDatabaseOverview>> {
+    let _user = require_manage_org_settings_user(&state, &headers).await?;
+    Ok(Json(state.admin_database_overview().await))
+}
+
 async fn require_manage_org_settings_user(
     state: &AppState,
     headers: &HeaderMap,
 ) -> AppResult<crate::models::UserProfile> {
-    let user = state
-        .authenticated_user_from_header(
-            headers
-                .get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok()),
-        )
-        .await?;
+    let user = authenticated_user(state, headers).await?;
     state.ensure_manage_org_settings(user.id).await?;
     Ok(user)
 }
@@ -688,6 +691,16 @@ async fn oidc_callback(
     Ok(Json(session))
 }
 
+async fn oidc_mobile_exchange(
+    State(state): State<AppState>,
+    Json(payload): Json<OidcMobileExchangeRequest>,
+) -> AppResult<Json<crate::models::SessionResponse>> {
+    let _redirect_uri = payload.redirect_uri;
+    let user = state.oidc_login(&payload.code).await?;
+    let session = state.session_response(user).await?;
+    Ok(Json(session))
+}
+
 async fn list_notes(State(state): State<AppState>) -> Json<Vec<crate::models::Note>> {
     let mut notes = state.list_notes().await;
     for note in &mut notes {
@@ -718,8 +731,59 @@ async fn update_note(
         folder: note.folder.clone(),
         markdown: note.markdown.clone(),
         revision: note.revision,
+        document: Some(note.document.clone()),
     });
     Ok(Json(note))
+}
+
+#[derive(Deserialize)]
+struct NoteOperationsQuery {
+    since_revision: Option<u64>,
+}
+
+async fn open_note_session(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<NoteSessionOpenRequest>,
+) -> AppResult<Json<crate::models::NoteSessionOpenResponse>> {
+    let user = authenticated_user(&state, &headers).await?;
+    Ok(Json(state.open_note_session(id, user, payload).await?))
+}
+
+async fn close_note_session(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<NoteSessionCloseRequest>,
+) -> AppResult<Json<serde_json::Value>> {
+    let user = authenticated_user(&state, &headers).await?;
+    state.close_note_session(id, user, payload).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn pull_note_operations(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<NoteOperationsQuery>,
+) -> AppResult<Json<crate::models::NoteOperationsPullResponse>> {
+    let user = authenticated_user(&state, &headers).await?;
+    Ok(Json(
+        state
+            .pull_note_operations(id, user, query.since_revision.unwrap_or(0))
+            .await?,
+    ))
+}
+
+async fn push_note_operations(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<NoteOperationsPushRequest>,
+) -> AppResult<Json<crate::models::NoteOperationsPushResponse>> {
+    let user = authenticated_user(&state, &headers).await?;
+    Ok(Json(state.push_note_operations(id, user, payload.batch).await?))
 }
 
 async fn delete_note(Path(id): Path<Uuid>, State(state): State<AppState>) -> AppResult<StatusCode> {
