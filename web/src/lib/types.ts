@@ -268,6 +268,8 @@ export interface NoteDocumentOperationBatch {
   client_id: string
   operation_id: string
   base_clock: Record<string, number>
+  base_markdown?: string | null
+  base_document?: NoteDocument | null
   operations: NoteOperation[]
 }
 

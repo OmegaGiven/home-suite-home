@@ -2876,6 +2876,53 @@ impl AppState {
         if batch.operation_id.trim().is_empty() {
             batch.operation_id = format!("op-{}", Uuid::new_v4());
         }
+        if let Some(existing_operation) = state
+            .note_operations
+            .get(&note_id)
+            .and_then(|operations| operations.iter().find(|entry| entry.operation_id == batch.operation_id))
+            .cloned()
+        {
+            let note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
+            let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
+            return Ok(NoteOperationsPushResponse {
+                note,
+                applied: true,
+                operation: Some(existing_operation),
+                conflicts,
+            });
+        }
+
+        let stale_against_current = existing_note
+            .document
+            .clock
+            .iter()
+            .any(|(actor, counter)| batch.base_clock.get(actor).copied().unwrap_or(0) < *counter);
+
+        if stale_against_current {
+            if let Some(base_document) = batch.base_document.clone() {
+                let local_document = apply_operations_to_document(&base_document, &batch, &batch.actor_id)?;
+                let rebased_document = if let Some((merged_document, _)) =
+                    merge_documents_from_base(&base_document, &local_document, &existing_note.document)
+                {
+                    merged_document
+                } else {
+                    let base_markdown = batch
+                        .base_markdown
+                        .clone()
+                        .unwrap_or_else(|| markdown_from_note_document(&base_document));
+                    let local_markdown = markdown_from_note_document(&local_document);
+                    let (merged_markdown, _) =
+                        merge_concurrent_markdown(&base_markdown, &local_markdown, &existing_note.markdown);
+                    note_document_from_markdown(&merged_markdown, &batch.actor_id)
+                };
+                batch.operations = vec![NoteOperation::ReplaceDocument {
+                    blocks: rebased_document.blocks.clone(),
+                }];
+                batch.base_clock = existing_note.document.clock.clone();
+                batch.base_markdown = Some(existing_note.markdown.clone());
+                batch.base_document = Some(existing_note.document.clone());
+            }
+        }
 
         if should_fork_note_document(&existing_note.document, &batch, &batch.actor_id) {
             let local_document = apply_operations_to_document(&existing_note.document, &batch, &batch.actor_id)?;
@@ -3124,6 +3171,14 @@ impl AppState {
         } else {
             batch.actor_id.clone()
         };
+        if state
+            .note_operations
+            .get(&id)
+            .and_then(|operations| operations.iter().find(|entry| entry.operation_id == batch.operation_id))
+            .is_some()
+        {
+            return Ok(existing_note);
+        }
 
         if should_fork_note_document(&existing_note.document, &batch, &actor_id) {
             let local_document = apply_operations_to_document(
@@ -6189,6 +6244,292 @@ fn markdown_from_note_document(document: &NoteDocument) -> String {
         .map(|block| block.text)
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+fn merge_concurrent_markdown(
+    base_markdown: &str,
+    local_markdown: &str,
+    remote_markdown: &str,
+) -> (String, bool) {
+    if local_markdown == remote_markdown {
+        return (local_markdown.to_string(), false);
+    }
+    if local_markdown == base_markdown {
+        return (remote_markdown.to_string(), false);
+    }
+    if remote_markdown == base_markdown {
+        return (local_markdown.to_string(), false);
+    }
+
+    let base_lines = base_markdown.split('\n').collect::<Vec<_>>();
+    let local_lines = local_markdown.split('\n').collect::<Vec<_>>();
+    let remote_lines = remote_markdown.split('\n').collect::<Vec<_>>();
+    let max_length = base_lines.len().max(local_lines.len()).max(remote_lines.len());
+    let mut merged = Vec::new();
+    let mut had_conflict = false;
+
+    for index in 0..max_length {
+        let base_line = base_lines.get(index).copied();
+        let local_line = local_lines.get(index).copied();
+        let remote_line = remote_lines.get(index).copied();
+
+        if local_line == remote_line {
+            if let Some(line) = local_line {
+                merged.push(line.to_string());
+            }
+            continue;
+        }
+        if local_line == base_line {
+            if let Some(line) = remote_line {
+                merged.push(line.to_string());
+            }
+            continue;
+        }
+        if remote_line == base_line {
+            if let Some(line) = local_line {
+                merged.push(line.to_string());
+            }
+            continue;
+        }
+
+        had_conflict = true;
+        merged.push("<<<<<<< Your edit".into());
+        if let Some(line) = local_line {
+            merged.push(line.to_string());
+        }
+        merged.push("=======".into());
+        if let Some(line) = remote_line {
+            merged.push(line.to_string());
+        }
+        merged.push(">>>>>>> Remote edit".into());
+    }
+
+    (merged.join("\n"), had_conflict)
+}
+
+#[derive(Clone)]
+struct TextChange {
+    prefix_len: usize,
+    base_end: usize,
+    replacement: Vec<char>,
+}
+
+fn tokenize_merge_units(text: &str) -> Vec<String> {
+    text.split_whitespace().map(|part| part.to_string()).collect()
+}
+
+fn lcs_table(left: &[String], right: &[String]) -> Vec<Vec<usize>> {
+    let mut table = vec![vec![0; right.len() + 1]; left.len() + 1];
+    for i in (0..left.len()).rev() {
+        for j in (0..right.len()).rev() {
+            table[i][j] = if left[i] == right[j] {
+                table[i + 1][j + 1] + 1
+            } else {
+                table[i + 1][j].max(table[i][j + 1])
+            };
+        }
+    }
+    table
+}
+
+fn shortest_common_supersequence_tokens(left: &[String], right: &[String]) -> Vec<String> {
+    let table = lcs_table(left, right);
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut merged = Vec::new();
+    while i < left.len() && j < right.len() {
+        if left[i] == right[j] {
+            merged.push(left[i].clone());
+            i += 1;
+            j += 1;
+        } else if table[i + 1][j] >= table[i][j + 1] {
+            merged.push(left[i].clone());
+            i += 1;
+        } else {
+            merged.push(right[j].clone());
+            j += 1;
+        }
+    }
+    while i < left.len() {
+        merged.push(left[i].clone());
+        i += 1;
+    }
+    while j < right.len() {
+        merged.push(right[j].clone());
+        j += 1;
+    }
+    merged
+}
+
+fn merge_overlapping_replacements(local: &str, remote: &str) -> String {
+    if local == remote {
+        return local.to_string();
+    }
+    if local.contains(remote) {
+        return local.to_string();
+    }
+    if remote.contains(local) {
+        return remote.to_string();
+    }
+
+    let local_tokens = tokenize_merge_units(local);
+    let remote_tokens = tokenize_merge_units(remote);
+    if local_tokens.is_empty() {
+        return remote.to_string();
+    }
+    if remote_tokens.is_empty() {
+        return local.to_string();
+    }
+
+    let table = lcs_table(&local_tokens, &remote_tokens);
+    let lcs_len = table[0][0];
+    let overlap_ratio = lcs_len as f64 / local_tokens.len().max(remote_tokens.len()) as f64;
+    if overlap_ratio < 0.5 {
+        return format!("{local}\n{remote}");
+    }
+
+    shortest_common_supersequence_tokens(&local_tokens, &remote_tokens).join(" ")
+}
+
+fn diff_text_change(base: &str, variant: &str) -> TextChange {
+    let base_chars = base.chars().collect::<Vec<_>>();
+    let variant_chars = variant.chars().collect::<Vec<_>>();
+    let mut prefix_len = 0usize;
+    while prefix_len < base_chars.len()
+        && prefix_len < variant_chars.len()
+        && base_chars[prefix_len] == variant_chars[prefix_len]
+    {
+        prefix_len += 1;
+    }
+
+    let mut suffix_len = 0usize;
+    while suffix_len < (base_chars.len().saturating_sub(prefix_len))
+        && suffix_len < (variant_chars.len().saturating_sub(prefix_len))
+        && base_chars[base_chars.len() - 1 - suffix_len] == variant_chars[variant_chars.len() - 1 - suffix_len]
+    {
+        suffix_len += 1;
+    }
+
+    let base_end = base_chars.len().saturating_sub(suffix_len);
+    let replacement_end = variant_chars.len().saturating_sub(suffix_len);
+    TextChange {
+        prefix_len,
+        base_end,
+        replacement: variant_chars[prefix_len..replacement_end].to_vec(),
+    }
+}
+
+fn merge_concurrent_plain_text(base: &str, local: &str, remote: &str) -> (String, bool) {
+    if local == remote {
+        return (local.to_string(), false);
+    }
+    if local == base {
+        return (remote.to_string(), false);
+    }
+    if remote == base {
+        return (local.to_string(), false);
+    }
+
+    let base_chars = base.chars().collect::<Vec<_>>();
+    let local_change = diff_text_change(base, local);
+    let remote_change = diff_text_change(base, remote);
+
+    if local_change.prefix_len == remote_change.prefix_len && local_change.base_end == remote_change.base_end {
+        if local_change.replacement == remote_change.replacement {
+            return (local.to_string(), false);
+        }
+        let local_replacement = local_change.replacement.iter().collect::<String>();
+        let remote_replacement = remote_change.replacement.iter().collect::<String>();
+        let merged_replacement = merge_overlapping_replacements(&local_replacement, &remote_replacement);
+        let mut merged = base_chars[..local_change.prefix_len].to_vec();
+        merged.extend(merged_replacement.chars());
+        merged.extend(base_chars[local_change.base_end..].iter().copied());
+        return (merged.into_iter().collect(), false);
+    }
+
+    let (first, second) = if local_change.base_end <= remote_change.prefix_len {
+        (local_change, remote_change)
+    } else if remote_change.base_end <= local_change.prefix_len {
+        (remote_change, local_change)
+    } else {
+        return merge_concurrent_markdown(base, local, remote);
+    };
+
+    let mut merged = Vec::new();
+    merged.extend(base_chars[..first.prefix_len].iter().copied());
+    merged.extend(first.replacement.iter().copied());
+    merged.extend(base_chars[first.base_end..second.prefix_len].iter().copied());
+    merged.extend(second.replacement.iter().copied());
+    merged.extend(base_chars[second.base_end..].iter().copied());
+    (merged.into_iter().collect(), false)
+}
+
+fn merge_documents_from_base(
+    base_document: &NoteDocument,
+    local_document: &NoteDocument,
+    remote_document: &NoteDocument,
+) -> Option<(NoteDocument, bool)> {
+    let base_blocks = base_document
+        .blocks
+        .iter()
+        .filter(|block| !block.deleted)
+        .cloned()
+        .collect::<Vec<_>>();
+    let local_blocks = local_document
+        .blocks
+        .iter()
+        .filter(|block| !block.deleted)
+        .cloned()
+        .collect::<Vec<_>>();
+    let remote_blocks = remote_document
+        .blocks
+        .iter()
+        .filter(|block| !block.deleted)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if local_blocks.len() != remote_blocks.len() {
+        return None;
+    }
+
+    let mut merged_blocks = Vec::with_capacity(remote_blocks.len());
+    let mut had_conflict = false;
+
+    for index in 0..local_blocks.len() {
+        let base_block = base_blocks.get(index);
+        let local_block = &local_blocks[index];
+        let remote_block = &remote_blocks[index];
+
+        if local_block.kind != remote_block.kind
+            || local_block.attrs != remote_block.attrs
+        {
+            return None;
+        }
+        if let Some(base_block) = base_block {
+            if base_block.kind != local_block.kind || base_block.attrs != local_block.attrs {
+                return None;
+            }
+        }
+
+        let (merged_text, block_conflict) = merge_concurrent_plain_text(
+            &base_block.map(|block| block.text.as_str()).unwrap_or(""),
+            &local_block.text,
+            &remote_block.text,
+        );
+        had_conflict |= block_conflict;
+        let mut merged_block = remote_block.clone();
+        merged_block.text = merged_text;
+        merged_blocks.push(merged_block);
+    }
+
+    Some((
+        NoteDocument {
+            blocks: merged_blocks,
+            clock: remote_document.clock.clone(),
+            last_operation_id: remote_document.last_operation_id.clone(),
+        },
+        had_conflict,
+    ))
 }
 
 fn ensure_note_foundation(note: &mut Note) {

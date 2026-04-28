@@ -676,6 +676,10 @@ pub struct NoteDocumentOperationBatch {
     #[serde(default)]
     pub base_clock: HashMap<String, u64>,
     #[serde(default)]
+    pub base_markdown: Option<String>,
+    #[serde(default)]
+    pub base_document: Option<NoteDocument>,
+    #[serde(default)]
     pub operations: Vec<NoteOperation>,
 }
 

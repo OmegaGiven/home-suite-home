@@ -88,12 +88,16 @@ export default function ServersScreen({ onBack }: ServersScreenProps) {
       [account.id]: { state: 'testing', message: 'Testing connection…' },
     }))
     try {
-      const result = await testServerConnection(account.base_url)
+      const token = account.identities[0]?.token
+      const result = await testServerConnection(account.base_url, token)
       setConnectionStates((current) => ({
         ...current,
         [account.id]: {
           state: 'connected',
-          message: `Connected. Server returned ${result.noteCount} note${result.noteCount === 1 ? '' : 's'}.`,
+          message:
+            typeof result.noteCount === 'number'
+              ? `Connected. Server returned ${result.noteCount} note${result.noteCount === 1 ? '' : 's'}.`
+              : 'Connected. Health check passed.',
         },
       }))
     } catch (error) {

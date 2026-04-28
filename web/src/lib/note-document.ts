@@ -88,20 +88,182 @@ function visibleBlocks(document: NoteDocument | null | undefined) {
   return sortBlocks(document?.blocks ?? []).filter((block) => !block.deleted)
 }
 
+type TargetBlockDraft = {
+  text: string
+  kind: NoteBlockKind
+}
+
+function buildTargetBlocks(markdown: string): TargetBlockDraft[] {
+  return splitMarkdownBlocks(markdown).map((text) => ({
+    text,
+    kind: inferBlockKind(text),
+  }))
+}
+
+type DiffStep =
+  | { type: 'keep'; currentIndex: number; targetIndex: number }
+  | { type: 'update'; currentIndex: number; targetIndex: number }
+  | { type: 'delete'; currentIndex: number }
+  | { type: 'insert'; targetIndex: number }
+
+function buildBlockDiffSteps(currentBlocks: NoteBlock[], targetBlocks: TargetBlockDraft[]): DiffStep[] | null {
+  const rows = currentBlocks.length + 1
+  const cols = targetBlocks.length + 1
+  const costs = Array.from({ length: rows }, () => Array<number>(cols).fill(0))
+
+  for (let i = 0; i < rows; i += 1) costs[i][0] = i
+  for (let j = 0; j < cols; j += 1) costs[0][j] = j
+
+  for (let i = 1; i < rows; i += 1) {
+    for (let j = 1; j < cols; j += 1) {
+      const current = currentBlocks[i - 1]
+      const target = targetBlocks[j - 1]
+      const sameKind = current.kind === target.kind && JSON.stringify(current.attrs) === JSON.stringify({})
+      const exact = sameKind && current.text === target.text
+      const updateCost = sameKind ? 1 : Number.POSITIVE_INFINITY
+      costs[i][j] = Math.min(
+        costs[i - 1][j] + 1,
+        costs[i][j - 1] + 1,
+        costs[i - 1][j - 1] + (exact ? 0 : updateCost),
+      )
+    }
+  }
+
+  const steps: DiffStep[] = []
+  let i = currentBlocks.length
+  let j = targetBlocks.length
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0) {
+      const current = currentBlocks[i - 1]
+      const target = targetBlocks[j - 1]
+      const sameKind = current.kind === target.kind && JSON.stringify(current.attrs) === JSON.stringify({})
+      const exact = sameKind && current.text === target.text
+      const updateCost = sameKind ? 1 : Number.POSITIVE_INFINITY
+      if (costs[i][j] === costs[i - 1][j - 1] + (exact ? 0 : updateCost)) {
+        steps.push({
+          type: exact ? 'keep' : 'update',
+          currentIndex: i - 1,
+          targetIndex: j - 1,
+        })
+        i -= 1
+        j -= 1
+        continue
+      }
+    }
+    if (i > 0 && costs[i][j] === costs[i - 1][j] + 1) {
+      steps.push({ type: 'delete', currentIndex: i - 1 })
+      i -= 1
+      continue
+    }
+    if (j > 0 && costs[i][j] === costs[i][j - 1] + 1) {
+      steps.push({ type: 'insert', targetIndex: j - 1 })
+      j -= 1
+      continue
+    }
+    return null
+  }
+
+  return steps.reverse()
+}
+
+function buildGranularOperations(
+  noteId: string,
+  currentBlocks: NoteBlock[],
+  targetBlocks: TargetBlockDraft[],
+  actorId: string,
+  nextCounterStart: number,
+): NoteDocumentOperationBatch['operations'] | null {
+  const steps = buildBlockDiffSteps(currentBlocks, targetBlocks)
+  if (!steps) return null
+  const operations: NoteDocumentOperationBatch['operations'] = []
+  const simulated = currentBlocks.map((block) => ({ ...block }))
+  let simulatedIndex = 0
+  let nextCounter = nextCounterStart
+
+  for (const step of steps) {
+    if (step.type === 'keep') {
+      simulatedIndex += 1
+      continue
+    }
+    if (step.type === 'update') {
+      const target = targetBlocks[step.targetIndex]
+      const current = simulated[simulatedIndex]
+      if (!current || current.kind !== target.kind) return null
+      operations.push({
+        type: 'update_block_text',
+        block_id: current.id,
+        text: target.text,
+      })
+      simulatedIndex += 1
+      continue
+    }
+    if (step.type === 'delete') {
+      const current = simulated[simulatedIndex]
+      if (!current) return null
+      operations.push({
+        type: 'delete_block',
+        block_id: current.id,
+      })
+      simulated.splice(simulatedIndex, 1)
+      continue
+    }
+    const target = targetBlocks[step.targetIndex]
+    const insertedId = `${noteId}:block:${Date.now().toString(36)}:${step.targetIndex}`
+    operations.push({
+      type: 'insert_block',
+      after_block_id: simulatedIndex > 0 ? simulated[simulatedIndex - 1]?.id ?? null : null,
+      block: {
+        id: insertedId,
+        kind: target.kind,
+        text: target.text,
+        attrs: {},
+        order: simulatedIndex,
+        deleted: false,
+        last_modified_by: actorId,
+        last_modified_counter: nextCounter,
+      },
+    })
+    simulated.splice(simulatedIndex, 0, {
+      id: insertedId,
+      kind: target.kind,
+      text: target.text,
+      attrs: {},
+      order: simulatedIndex,
+      deleted: false,
+      last_modified_by: actorId,
+      last_modified_counter: nextCounter,
+    })
+    simulatedIndex += 1
+    nextCounter += 1
+  }
+
+  return operations
+}
+
 export function applyNoteOperationBatch(
   document: NoteDocument | null | undefined,
   batch: NoteDocumentOperationBatch,
 ): NoteDocument {
+  const actorId = batch.actor_id || 'local'
   let next: NoteDocument = {
     blocks: [...(document?.blocks ?? [])],
     clock: { ...(document?.clock ?? {}) },
     last_operation_id: batch.operation_id,
   }
+  let actorCounter = Math.max(next.clock[actorId] ?? 0, batch.base_clock[actorId] ?? 0)
 
   for (const operation of batch.operations) {
     if (operation.type === 'replace_document') {
+      actorCounter += 1
       next = {
-        blocks: renumberBlocks(operation.blocks.map((block, index) => ({ ...block, order: index }))),
+        blocks: renumberBlocks(
+          operation.blocks.map((block, index) => ({
+            ...block,
+            order: index,
+            last_modified_by: actorId,
+            last_modified_counter: actorCounter,
+          })),
+        ),
         clock: { ...next.clock, ...batch.base_clock },
         last_operation_id: batch.operation_id,
       }
@@ -109,24 +271,30 @@ export function applyNoteOperationBatch(
     }
 
     if (operation.type === 'insert_block') {
+      actorCounter += 1
       const blocks = sortBlocks(next.blocks).filter((block) => !block.deleted)
       const insertIndex = operation.after_block_id
         ? blocks.findIndex((block) => block.id === operation.after_block_id) + 1
         : 0
       const normalizedIndex = insertIndex < 0 ? blocks.length : insertIndex
-      blocks.splice(normalizedIndex, 0, { ...operation.block })
+      blocks.splice(normalizedIndex, 0, {
+        ...operation.block,
+        last_modified_by: actorId,
+        last_modified_counter: actorCounter,
+      })
       next.blocks = renumberBlocks(blocks)
       continue
     }
 
     if (operation.type === 'update_block_text') {
+      actorCounter += 1
       next.blocks = next.blocks.map((block) =>
         block.id === operation.block_id
           ? {
               ...block,
               text: operation.text,
-              last_modified_by: batch.actor_id,
-              last_modified_counter: (next.clock[batch.actor_id] ?? 0) + 1,
+              last_modified_by: actorId,
+              last_modified_counter: actorCounter,
             }
           : block,
       )
@@ -134,13 +302,14 @@ export function applyNoteOperationBatch(
     }
 
     if (operation.type === 'update_block_attrs') {
+      actorCounter += 1
       next.blocks = next.blocks.map((block) =>
         block.id === operation.block_id
           ? {
               ...block,
               attrs: operation.attrs,
-              last_modified_by: batch.actor_id,
-              last_modified_counter: (next.clock[batch.actor_id] ?? 0) + 1,
+              last_modified_by: actorId,
+              last_modified_counter: actorCounter,
             }
           : block,
       )
@@ -148,13 +317,14 @@ export function applyNoteOperationBatch(
     }
 
     if (operation.type === 'delete_block') {
+      actorCounter += 1
       next.blocks = next.blocks.map((block) =>
         block.id === operation.block_id
           ? {
               ...block,
               deleted: true,
-              last_modified_by: batch.actor_id,
-              last_modified_counter: (next.clock[batch.actor_id] ?? 0) + 1,
+              last_modified_by: actorId,
+              last_modified_counter: actorCounter,
             }
           : block,
       )
@@ -162,6 +332,7 @@ export function applyNoteOperationBatch(
     }
 
     if (operation.type === 'move_block') {
+      actorCounter += 1
       const blocks = sortBlocks(next.blocks).filter((block) => !block.deleted)
       const movingIndex = blocks.findIndex((block) => block.id === operation.block_id)
       if (movingIndex === -1) continue
@@ -170,7 +341,11 @@ export function applyNoteOperationBatch(
         ? blocks.findIndex((block) => block.id === operation.after_block_id) + 1
         : 0
       const normalizedIndex = targetIndex < 0 ? blocks.length : targetIndex
-      blocks.splice(normalizedIndex, 0, moving)
+      blocks.splice(normalizedIndex, 0, {
+        ...moving,
+        last_modified_by: actorId,
+        last_modified_counter: actorCounter,
+      })
       next.blocks = renumberBlocks(blocks)
     }
   }
@@ -178,7 +353,7 @@ export function applyNoteOperationBatch(
   next.clock = {
     ...next.clock,
     ...batch.base_clock,
-    [batch.actor_id]: Math.max((next.clock[batch.actor_id] ?? 0), (batch.base_clock[batch.actor_id] ?? 0) + 1),
+    [actorId]: actorCounter,
   }
   next.last_operation_id = batch.operation_id
   return next
@@ -193,7 +368,7 @@ export function buildReplaceDocumentBatch(
 ): NoteDocumentOperationBatch {
   const document = noteDocumentFromMarkdown(nextNote.id, markdown, actorId, previousNote.document)
   const currentBlocks = visibleBlocks(previousNote.document)
-  const targetTexts = splitMarkdownBlocks(markdown)
+  const targetBlocks = buildTargetBlocks(markdown)
   const baseClock = { ...(previousNote.document?.clock ?? {}) }
   const operations: NoteDocumentOperationBatch['operations'] = []
 
@@ -211,127 +386,22 @@ export function buildReplaceDocumentBatch(
     })
   }
 
-  if (currentBlocks.length === targetTexts.length) {
-    const metadataOperationCount = operations.length
-    for (let index = 0; index < currentBlocks.length; index += 1) {
-      const current = currentBlocks[index]
-      const targetText = targetTexts[index] ?? ''
-      const targetKind = inferBlockKind(targetText)
-      if (current.kind !== targetKind || JSON.stringify(current.attrs) !== JSON.stringify({})) {
-        operations.length = metadataOperationCount
-        break
-      }
-      if (current.text !== targetText) {
-        operations.push({
-          type: 'update_block_text',
-          block_id: current.id,
-          text: targetText,
-        })
-      }
-    }
-    if (operations.length > 0 || markdownFromNoteDocument(previousNote.document) === markdown) {
-      return {
-        actor_id: actorId,
-        client_id: clientId,
-        operation_id: document.last_operation_id,
-        base_clock: baseClock,
-        operations,
-      }
-    }
-  }
-
-  if (targetTexts.length === currentBlocks.length + 1) {
-    let insertIndex = -1
-    for (let index = 0; index < targetTexts.length; index += 1) {
-      const left = currentBlocks.slice(0, index).map((block) => block.text)
-      const right = currentBlocks.slice(index).map((block) => block.text)
-      if (
-        JSON.stringify(left) === JSON.stringify(targetTexts.slice(0, index)) &&
-        JSON.stringify(right) === JSON.stringify(targetTexts.slice(index + 1))
-      ) {
-        insertIndex = index
-        break
-      }
-    }
-    if (insertIndex >= 0) {
-      const nextCounter = nextActorCounter(previousNote.document, actorId)
-      const text = targetTexts[insertIndex] ?? ''
-      return {
-        actor_id: actorId,
-        client_id: clientId,
-        operation_id: document.last_operation_id,
-        base_clock: baseClock,
-        operations: [
-          ...operations,
-          {
-            type: 'insert_block',
-            after_block_id: insertIndex > 0 ? currentBlocks[insertIndex - 1]?.id ?? null : null,
-            block: {
-              id: `${nextNote.id}:block:${Date.now().toString(36)}`,
-              kind: inferBlockKind(text),
-              text,
-              attrs: {},
-              order: insertIndex,
-              deleted: false,
-              last_modified_by: actorId,
-              last_modified_counter: nextCounter,
-            },
-          },
-        ],
-      }
-    }
-  }
-
-  if (targetTexts.length + 1 === currentBlocks.length) {
-    let deleteIndex = -1
-    for (let index = 0; index < currentBlocks.length; index += 1) {
-      const left = currentBlocks.slice(0, index).map((block) => block.text)
-      const right = currentBlocks.slice(index + 1).map((block) => block.text)
-      if (
-        JSON.stringify(left) === JSON.stringify(targetTexts.slice(0, index)) &&
-        JSON.stringify(right) === JSON.stringify(targetTexts.slice(index))
-      ) {
-        deleteIndex = index
-        break
-      }
-    }
-    if (deleteIndex >= 0) {
-      return {
-        actor_id: actorId,
-        client_id: clientId,
-        operation_id: document.last_operation_id,
-        base_clock: baseClock,
-        operations: [
-          ...operations,
-          {
-            type: 'delete_block',
-            block_id: currentBlocks[deleteIndex].id,
-          },
-        ],
-      }
-    }
-  }
-
-  if (targetTexts.length === currentBlocks.length && targetTexts.every((text) => currentBlocks.some((block) => block.text === text))) {
-    const firstMovedIndex = targetTexts.findIndex((text, index) => currentBlocks[index]?.text !== text)
-    if (firstMovedIndex >= 0) {
-      const movedBlock = currentBlocks.find((block) => block.text === targetTexts[firstMovedIndex])
-      if (movedBlock) {
-        return {
-          actor_id: actorId,
-        client_id: clientId,
-        operation_id: document.last_operation_id,
-        base_clock: baseClock,
-        operations: [
-          ...operations,
-          {
-            type: 'move_block',
-            block_id: movedBlock.id,
-              after_block_id: firstMovedIndex > 0 ? currentBlocks.find((block) => block.text === targetTexts[firstMovedIndex - 1])?.id ?? null : null,
-            },
-          ],
-        }
-      }
+  const granularOperations = buildGranularOperations(
+    nextNote.id,
+    currentBlocks,
+    targetBlocks,
+    actorId,
+    nextActorCounter(previousNote.document, actorId),
+  )
+  if (granularOperations) {
+    return {
+      actor_id: actorId,
+      client_id: clientId,
+      operation_id: document.last_operation_id,
+      base_clock: baseClock,
+      base_markdown: previousNote.markdown,
+      base_document: previousNote.document,
+      operations: [...operations, ...granularOperations],
     }
   }
 
@@ -340,6 +410,8 @@ export function buildReplaceDocumentBatch(
     client_id: clientId,
     operation_id: document.last_operation_id,
     base_clock: baseClock,
+    base_markdown: previousNote.markdown,
+    base_document: previousNote.document,
     operations: [
       ...operations,
       {

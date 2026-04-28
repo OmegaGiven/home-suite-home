@@ -1,0 +1,4145 @@
+{
+  "users": {
+    "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": {
+      "profile": {
+        "id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "username": "admin",
+        "email": "admin@example.com",
+        "display_name": "Homelab Admin",
+        "avatar_path": null,
+        "avatar_content_type": null,
+        "role": "admin",
+        "roles": [
+          "admin"
+        ],
+        "must_change_password": false
+      },
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$7BteroO7SXehFFkvECezkw$aXgPL+/VPFkKBNjTHnAyhlnd8bLJD37pe2mu4tiAc0A",
+      "linked_oidc_subject": null,
+      "storage_limit_mb": 0,
+      "tool_scope": {
+        "notes": true,
+        "files": true,
+        "diagrams": true,
+        "voice": true,
+        "coms": true
+      },
+      "created_at": "2026-04-28T22:23:20.800164Z",
+      "updated_at": "2026-04-28T22:23:20.800202Z"
+    },
+    "07373cfc-879f-41bf-9be8-36a268ec6391": {
+      "profile": {
+        "id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "username": "concurrency2",
+        "email": "concurrency2@example.com",
+        "display_name": "Concurrency Two",
+        "avatar_path": null,
+        "avatar_content_type": null,
+        "role": "member",
+        "roles": [
+          "member"
+        ],
+        "must_change_password": true
+      },
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$iePNSkrAQxenjKuo4JW80g$hHXyJLojIXeSiJk8xrJoC0scyTwsNajTskXKNDgYKcY",
+      "linked_oidc_subject": null,
+      "storage_limit_mb": 512,
+      "tool_scope": {
+        "notes": true,
+        "files": true,
+        "diagrams": true,
+        "voice": true,
+        "coms": true
+      },
+      "created_at": "2026-04-28T22:33:38.169472Z",
+      "updated_at": "2026-04-28T22:33:38.169472Z"
+    }
+  },
+  "admin_settings": {
+    "allow_member_notes": true,
+    "allow_member_files": true,
+    "allow_member_diagrams": true,
+    "allow_member_voice": true,
+    "allow_member_coms": true,
+    "require_account_email": false,
+    "allow_user_credential_changes": true,
+    "confirm_file_delete": true,
+    "allow_user_custom_appearance": true,
+    "enforce_org_appearance": false,
+    "oidc": {
+      "id": "authentik",
+      "title": "Authentik",
+      "enabled": false,
+      "provider": "authentik",
+      "issuer": "",
+      "client_id": "",
+      "client_secret": "",
+      "authorization_url": "",
+      "token_url": "",
+      "userinfo_url": "",
+      "scopes": "openid profile email"
+    },
+    "oidc_providers": [],
+    "active_oidc_provider_id": "",
+    "google_calendar_enabled": false,
+    "google_calendar_client_id": "",
+    "google_calendar_client_secret": "",
+    "role_policies": {
+      "member": {
+        "tool_scope": {
+          "notes": true,
+          "files": true,
+          "diagrams": true,
+          "voice": true,
+          "coms": true
+        },
+        "admin_panel": false,
+        "manage_users": false,
+        "manage_org_settings": false,
+        "customize_appearance": true
+      },
+      "admin": {
+        "tool_scope": {
+          "notes": true,
+          "files": true,
+          "diagrams": true,
+          "voice": true,
+          "coms": true
+        },
+        "admin_panel": true,
+        "manage_users": true,
+        "manage_org_settings": true,
+        "customize_appearance": true
+      }
+    },
+    "org_font_family": "\"IBM Plex Sans\", \"Segoe UI\", sans-serif",
+    "org_accent": "#41b883",
+    "org_background": "#0d1520",
+    "org_disable_gradients": false,
+    "org_gradient_top_left": "#142235",
+    "org_gradient_top_right": "#0b3a2d",
+    "org_gradient_bottom_left": "#24163a",
+    "org_gradient_bottom_right": "#123046",
+    "org_gradient_strength": 36,
+    "org_page_gutter": 16,
+    "org_radius": 20,
+    "per_user_storage_mb": 2048,
+    "public_storage_mb": 4096,
+    "voice_upload_limit_mb": 256
+  },
+  "user": {
+    "id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+    "username": "admin",
+    "email": "admin@example.com",
+    "display_name": "Homelab Admin",
+    "avatar_path": null,
+    "avatar_content_type": null,
+    "role": "admin",
+    "roles": [
+      "admin"
+    ],
+    "must_change_password": false
+  },
+  "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$7BteroO7SXehFFkvECezkw$aXgPL+/VPFkKBNjTHnAyhlnd8bLJD37pe2mu4tiAc0A",
+  "notes": {
+    "a50a8012-6c2f-4129-8bd9-50fc4d7043f6": {
+      "id": "a50a8012-6c2f-4129-8bd9-50fc4d7043f6",
+      "object_id": "note:a50a8012-6c2f-4129-8bd9-50fc4d7043f6",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Granular test",
+      "folder": "Inbox",
+      "markdown": "User two intro\n\nAdmin second paragraph",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "block-0-1",
+            "kind": "paragraph",
+            "text": "User two intro",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          },
+          {
+            "id": "block-1-2",
+            "kind": "paragraph",
+            "text": "Admin second paragraph",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1,
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "gran-b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:37:04.806336Z",
+      "updated_at": "2026-04-28T22:37:04.820301Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "47b6309c-b3c2-4c82-9dc7-c26ab5d65407": {
+      "id": "47b6309c-b3c2-4c82-9dc7-c26ab5d65407",
+      "object_id": "note:47b6309c-b3c2-4c82-9dc7-c26ab5d65407",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "T2",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\nParagraph two from web mobile",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Paragraph one",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 3
+          },
+          {
+            "id": "seed:block:1:2",
+            "kind": "paragraph",
+            "text": "Paragraph two from web mobile",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 3
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+        },
+        "last_operation_id": "t2b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:41:41.160628Z",
+      "updated_at": "2026-04-28T22:41:41.194855Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "17ab6934-0901-449b-aae5-afa394e2e63a": {
+      "id": "17ab6934-0901-449b-aae5-afa394e2e63a",
+      "object_id": "note:17ab6934-0901-449b-aae5-afa394e2e63a",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "T6",
+      "folder": "Inbox",
+      "markdown": "<<<<<<< Your edit\nGamma\n=======\nAlpha\n>>>>>>> Remote edit\n\nBeta admin Delta user",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "<<<<<<< Your edit\nGamma\n=======\nAlpha\n>>>>>>> Remote edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          },
+          {
+            "id": "seed:block:1:2",
+            "kind": "paragraph",
+            "text": "Beta admin Delta user",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2,
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1
+        },
+        "last_operation_id": "t6b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:41:41.372688Z",
+      "updated_at": "2026-04-28T22:41:41.427399Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "7682c203-3b4e-4985-b8d0-138b81ca429d": {
+      "id": "7682c203-3b4e-4985-b8d0-138b81ca429d",
+      "object_id": "note:7682c203-3b4e-4985-b8d0-138b81ca429d",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Conflict Test 3",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\n<<<<<<< Your edit\nParagraph two from mobile\n=======\nParagraph two from web\n>>>>>>> Remote edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "temp:block:1",
+            "kind": "paragraph",
+            "text": "Paragraph one\n\n<<<<<<< Your edit\nParagraph two from mobile\n=======\nParagraph two from web\n>>>>>>> Remote edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 5
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 5
+        },
+        "last_operation_id": "op-b2"
+      },
+      "revision": 5,
+      "created_at": "2026-04-28T22:29:25.357973Z",
+      "updated_at": "2026-04-28T22:29:25.375931Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "4ff2e77e-bb11-432c-881f-1115df58e2b8": {
+      "id": "4ff2e77e-bb11-432c-881f-1115df58e2b8",
+      "object_id": "note:4ff2e77e-bb11-432c-881f-1115df58e2b8",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "T3",
+      "folder": "Inbox",
+      "markdown": "ABC",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "ABC",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 4
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+        },
+        "last_operation_id": "t3c"
+      },
+      "revision": 4,
+      "created_at": "2026-04-28T22:41:41.205185Z",
+      "updated_at": "2026-04-28T22:41:41.242753Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "b97e5228-9b96-4b0c-928d-1913bd054ea9": {
+      "id": "b97e5228-9b96-4b0c-928d-1913bd054ea9",
+      "object_id": "note:b97e5228-9b96-4b0c-928d-1913bd054ea9",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users same block (local conflict)",
+      "folder": "Inbox",
+      "markdown": "User two edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "User two edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1,
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "du-same-b"
+      },
+      "revision": 1,
+      "created_at": "2026-04-28T22:33:38.488570Z",
+      "updated_at": "2026-04-28T22:33:38.488570Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": "4f1fca96-ab93-4381-82fc-74fdee627b60",
+      "conflict_tag": "local_conflict:07373cfc-879f-41bf-9be8-36a268ec6391",
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "fffcc01a-bf95-429a-a9ea-3aa1bda07e12": {
+      "id": "fffcc01a-bf95-429a-a9ea-3aa1bda07e12",
+      "object_id": "note:fffcc01a-bf95-429a-a9ea-3aa1bda07e12",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Conflict Test 4",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\nParagraph two from web mobile",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "temp:block:1",
+            "kind": "paragraph",
+            "text": "Paragraph one",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 5
+          },
+          {
+            "id": "temp:block:1:2",
+            "kind": "paragraph",
+            "text": "Paragraph two from web mobile",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 5
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 5
+        },
+        "last_operation_id": "op-b2"
+      },
+      "revision": 5,
+      "created_at": "2026-04-28T22:30:53.058475Z",
+      "updated_at": "2026-04-28T22:30:53.072848Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "ab60400d-968e-4a7b-810b-5c0539b5bae4": {
+      "id": "ab60400d-968e-4a7b-810b-5c0539b5bae4",
+      "object_id": "note:ab60400d-968e-4a7b-810b-5c0539b5bae4",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "same-block",
+      "folder": "Inbox",
+      "markdown": "User two edit\nAdmin edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "User two edit\nAdmin edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2,
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1
+        },
+        "last_operation_id": "b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:44:02.586146Z",
+      "updated_at": "2026-04-28T22:44:02.614087Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "d6a7ccdb-5930-4374-b73a-c30bdf597767": {
+      "id": "d6a7ccdb-5930-4374-b73a-c30bdf597767",
+      "object_id": "note:d6a7ccdb-5930-4374-b73a-c30bdf597767",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Welcome to Home Suite Home",
+      "folder": "Getting Started",
+      "markdown": "# Welcome to Home Suite Home\n\nThis homelab workspace is seeded with:\n\n- live Markdown notes\n- draw.io-compatible diagram storage\n- voice memo ingestion and transcript jobs\n- chat rooms and call signaling\n- durable JSON state snapshots across restarts\n\nEdit this note and save it from the browser.",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "block-0-1",
+            "kind": "heading",
+            "text": "# Welcome to Home Suite Home",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 1
+          },
+          {
+            "id": "block-1-2",
+            "kind": "paragraph",
+            "text": "This homelab workspace is seeded with:",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 2
+          },
+          {
+            "id": "block-2-3",
+            "kind": "bullet_list",
+            "text": "- live Markdown notes\n- draw.io-compatible diagram storage\n- voice memo ingestion and transcript jobs\n- chat rooms and call signaling\n- durable JSON state snapshots across restarts",
+            "attrs": {},
+            "order": 2.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 3
+          },
+          {
+            "id": "block-3-4",
+            "kind": "paragraph",
+            "text": "Edit this note and save it from the browser.",
+            "attrs": {},
+            "order": 3.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 4
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+        },
+        "last_operation_id": "seed:c6e7d090-cc93-4b3a-9b03-4d6945142bd7:4"
+      },
+      "revision": 1,
+      "created_at": "2026-04-28T22:23:20.800584Z",
+      "updated_at": "2026-04-28T22:23:20.800584Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "2997149b-1f77-4c64-aac4-dd2ebcc3ab93": {
+      "id": "2997149b-1f77-4c64-aac4-dd2ebcc3ab93",
+      "object_id": "note:2997149b-1f77-4c64-aac4-dd2ebcc3ab93",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "complex",
+      "folder": "Inbox",
+      "markdown": "Gamma\nAlpha\n\nDelta user\nBeta admin",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Gamma\nAlpha",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          },
+          {
+            "id": "seed:block:1:2",
+            "kind": "paragraph",
+            "text": "Delta user\nBeta admin",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1,
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "d"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:44:02.620971Z",
+      "updated_at": "2026-04-28T22:44:02.666445Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "842e92d4-d84a-4440-8fa1-1f0cfe09ee18": {
+      "id": "842e92d4-d84a-4440-8fa1-1f0cfe09ee18",
+      "object_id": "note:842e92d4-d84a-4440-8fa1-1f0cfe09ee18",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Same user stale same block",
+      "folder": "Inbox",
+      "markdown": "Hello from web mobile",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Hello from web mobile",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 3
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+        },
+        "last_operation_id": "su-stale-b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:33:38.437608Z",
+      "updated_at": "2026-04-28T22:33:38.444342Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "51e83891-e3bf-47de-b548-8289381c68b6": {
+      "id": "51e83891-e3bf-47de-b548-8289381c68b6",
+      "object_id": "note:51e83891-e3bf-47de-b548-8289381c68b6",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Same user alternating",
+      "folder": "Inbox",
+      "markdown": "ABC",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "ABC",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 4
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+        },
+        "last_operation_id": "su-alt-c"
+      },
+      "revision": 4,
+      "created_at": "2026-04-28T22:33:38.456047Z",
+      "updated_at": "2026-04-28T22:33:38.464812Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "eb8be268-9f4f-408a-9989-8101f3078f34": {
+      "id": "eb8be268-9f4f-408a-9989-8101f3078f34",
+      "object_id": "note:eb8be268-9f4f-408a-9989-8101f3078f34",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "T5",
+      "folder": "Inbox",
+      "markdown": "<<<<<<< Your edit\nUser two edit\n=======\nAdmin edit\n>>>>>>> Remote edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "<<<<<<< Your edit\nUser two edit\n=======\nAdmin edit\n>>>>>>> Remote edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1,
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "t5b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:41:41.306410Z",
+      "updated_at": "2026-04-28T22:41:41.356598Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "b42b5279-044e-4bdf-9356-60883b2fd4c3": {
+      "id": "b42b5279-044e-4bdf-9356-60883b2fd4c3",
+      "object_id": "note:b42b5279-044e-4bdf-9356-60883b2fd4c3",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "T1",
+      "folder": "Inbox",
+      "markdown": "Hello from web mobile",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Hello from web mobile",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 3
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+        },
+        "last_operation_id": "t1b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:41:41.122358Z",
+      "updated_at": "2026-04-28T22:41:41.150734Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "fee27ecf-6165-41d2-ad20-78567981652c": {
+      "id": "fee27ecf-6165-41d2-ad20-78567981652c",
+      "object_id": "note:fee27ecf-6165-41d2-ad20-78567981652c",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users disjoint",
+      "folder": "Inbox",
+      "markdown": "<<<<<<< Your edit\nUser two intro\n=======\nParagraph one\n>>>>>>> Remote edit\n\nAdmin second paragraph Hello",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "<<<<<<< Your edit\nUser two intro\n=======\nParagraph one\n>>>>>>> Remote edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          },
+          {
+            "id": "seed:block:1:2",
+            "kind": "paragraph",
+            "text": "Admin second paragraph Hello",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2,
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1
+        },
+        "last_operation_id": "du-disjoint-b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:36:41.790247Z",
+      "updated_at": "2026-04-28T22:36:41.810835Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "97c6140c-8762-4377-a95e-a7e44a7be802": {
+      "id": "97c6140c-8762-4377-a95e-a7e44a7be802",
+      "object_id": "note:97c6140c-8762-4377-a95e-a7e44a7be802",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "T4",
+      "folder": "Inbox",
+      "markdown": "User two intro\n\nAdmin second paragraph",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "block-0-1",
+            "kind": "paragraph",
+            "text": "User two intro",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          },
+          {
+            "id": "block-1-2",
+            "kind": "paragraph",
+            "text": "Admin second paragraph",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2,
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1
+        },
+        "last_operation_id": "t4b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:41:41.256460Z",
+      "updated_at": "2026-04-28T22:41:41.296765Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "36e6c603-6227-402d-9a2e-6abd1d6fcc12": {
+      "id": "36e6c603-6227-402d-9a2e-6abd1d6fcc12",
+      "object_id": "note:36e6c603-6227-402d-9a2e-6abd1d6fcc12",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users same block",
+      "folder": "Inbox",
+      "markdown": "<<<<<<< Your edit\nUser two edit\n=======\nAdmin edit\n>>>>>>> Remote edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "<<<<<<< Your edit\nUser two edit\n=======\nAdmin edit\n>>>>>>> Remote edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1,
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "du-same-b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:36:41.814901Z",
+      "updated_at": "2026-04-28T22:36:41.834366Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "912d70ea-971c-4960-87a5-1926e24fa257": {
+      "id": "912d70ea-971c-4960-87a5-1926e24fa257",
+      "object_id": "note:912d70ea-971c-4960-87a5-1926e24fa257",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Conflict Test",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\nParagraph two from mobile",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "temp:block:1",
+            "kind": "paragraph",
+            "text": "Paragraph one\n\nParagraph two from mobile",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 5
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 5
+        },
+        "last_operation_id": "op-b2"
+      },
+      "revision": 5,
+      "created_at": "2026-04-28T22:23:49.439486Z",
+      "updated_at": "2026-04-28T22:23:49.473858Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "052b73b7-2a4d-484d-9d98-dcc526826c7e": {
+      "id": "052b73b7-2a4d-484d-9d98-dcc526826c7e",
+      "object_id": "note:052b73b7-2a4d-484d-9d98-dcc526826c7e",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users same block (remote conflict)",
+      "folder": "Inbox",
+      "markdown": "Admin edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Admin edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 2
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "du-same-a"
+      },
+      "revision": 1,
+      "created_at": "2026-04-28T22:33:38.488570Z",
+      "updated_at": "2026-04-28T22:33:38.488570Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": "4f1fca96-ab93-4381-82fc-74fdee627b60",
+      "conflict_tag": "remote_conflict",
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "fc243660-dacf-401f-a24e-097dfcd74bcb": {
+      "id": "fc243660-dacf-401f-a24e-097dfcd74bcb",
+      "object_id": "note:fc243660-dacf-401f-a24e-097dfcd74bcb",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users disjoint",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\nAdmin second paragraph",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Paragraph one",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 2
+          },
+          {
+            "id": "seed:block:1:2",
+            "kind": "paragraph",
+            "text": "Admin second paragraph",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 2
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "du-disjoint-a"
+      },
+      "revision": 2,
+      "created_at": "2026-04-28T22:33:38.467856Z",
+      "updated_at": "2026-04-28T22:33:38.474315Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "651f80d3-0804-4a4c-8c56-e97b45424c7e": {
+      "id": "651f80d3-0804-4a4c-8c56-e97b45424c7e",
+      "object_id": "note:651f80d3-0804-4a4c-8c56-e97b45424c7e",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Same user stale two block",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\nParagraph two from web mobile",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Paragraph one",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 3
+          },
+          {
+            "id": "seed:block:1:2",
+            "kind": "paragraph",
+            "text": "Paragraph two from web mobile",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 3
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+        },
+        "last_operation_id": "su-two-b"
+      },
+      "revision": 3,
+      "created_at": "2026-04-28T22:33:38.446494Z",
+      "updated_at": "2026-04-28T22:33:38.453537Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "ce8c0667-9029-4ac8-b0cb-e170f64f367e": {
+      "id": "ce8c0667-9029-4ac8-b0cb-e170f64f367e",
+      "object_id": "note:ce8c0667-9029-4ac8-b0cb-e170f64f367e",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "private",
+      "shared_user_ids": [],
+      "title": "Conflict Test 2",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\n<<<<<<< Your edit\nParagraph two from mobile\n=======\nParagraph two from web\n>>>>>>> Remote edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "block-0-1",
+            "kind": "paragraph",
+            "text": "Paragraph one",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 5
+          },
+          {
+            "id": "block-1-2",
+            "kind": "paragraph",
+            "text": "<<<<<<< Your edit\nParagraph two from mobile\n=======\nParagraph two from web\n>>>>>>> Remote edit",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 5
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 5
+        },
+        "last_operation_id": "op-b2"
+      },
+      "revision": 5,
+      "created_at": "2026-04-28T22:26:06.038681Z",
+      "updated_at": "2026-04-28T22:26:06.052123Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "4f1fca96-ab93-4381-82fc-74fdee627b60": {
+      "id": "4f1fca96-ab93-4381-82fc-74fdee627b60",
+      "object_id": "note:4f1fca96-ab93-4381-82fc-74fdee627b60",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users same block",
+      "folder": "Inbox",
+      "markdown": "Admin edit",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Admin edit",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 2
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "du-same-a"
+      },
+      "revision": 2,
+      "created_at": "2026-04-28T22:33:38.479179Z",
+      "updated_at": "2026-04-28T22:33:38.486022Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": null,
+      "conflict_tag": null,
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "0f21f60b-2a27-4354-8e3a-7cac7b85c295": {
+      "id": "0f21f60b-2a27-4354-8e3a-7cac7b85c295",
+      "object_id": "note:0f21f60b-2a27-4354-8e3a-7cac7b85c295",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users disjoint (local conflict)",
+      "folder": "Inbox",
+      "markdown": "User two intro\n\nHello",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "User two intro",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          },
+          {
+            "id": "seed:block:1:2b",
+            "kind": "paragraph",
+            "text": "Hello",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+            "last_modified_counter": 1
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2,
+          "07373cfc-879f-41bf-9be8-36a268ec6391": 1
+        },
+        "last_operation_id": "du-disjoint-b"
+      },
+      "revision": 1,
+      "created_at": "2026-04-28T22:33:38.477163Z",
+      "updated_at": "2026-04-28T22:33:38.477163Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": "fc243660-dacf-401f-a24e-097dfcd74bcb",
+      "conflict_tag": "local_conflict:07373cfc-879f-41bf-9be8-36a268ec6391",
+      "deleted_at": null,
+      "purge_at": null
+    },
+    "9cd63bb8-6928-440f-81d7-7a95739d067e": {
+      "id": "9cd63bb8-6928-440f-81d7-7a95739d067e",
+      "object_id": "note:9cd63bb8-6928-440f-81d7-7a95739d067e",
+      "namespace": {
+        "root": "users/c6e7d090-cc93-4b3a-9b03-4d6945142bd7/synced",
+        "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "kind": "synced",
+        "label": "Synced"
+      },
+      "visibility": "users",
+      "shared_user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "title": "Different users disjoint (remote conflict)",
+      "folder": "Inbox",
+      "markdown": "Paragraph one\n\nAdmin second paragraph",
+      "rendered_html": "",
+      "document": {
+        "blocks": [
+          {
+            "id": "seed:block:1",
+            "kind": "paragraph",
+            "text": "Paragraph one",
+            "attrs": {},
+            "order": 0.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 2
+          },
+          {
+            "id": "seed:block:1:2",
+            "kind": "paragraph",
+            "text": "Admin second paragraph",
+            "attrs": {},
+            "order": 1.0,
+            "deleted": false,
+            "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+            "last_modified_counter": 2
+          }
+        ],
+        "clock": {
+          "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+        },
+        "last_operation_id": "du-disjoint-a"
+      },
+      "revision": 1,
+      "created_at": "2026-04-28T22:33:38.477163Z",
+      "updated_at": "2026-04-28T22:33:38.477163Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "forked_from_note_id": "fc243660-dacf-401f-a24e-097dfcd74bcb",
+      "conflict_tag": "remote_conflict",
+      "deleted_at": null,
+      "purge_at": null
+    }
+  },
+  "diagrams": {
+    "d843b294-089e-4312-9efb-aed571022d96": {
+      "id": "d843b294-089e-4312-9efb-aed571022d96",
+      "title": "Homelab Flow",
+      "xml": "<mxfile><diagram name=\"Page-1\"><mxGraphModel><root><mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/><mxCell id=\"2\" value=\"Home Suite Home\" style=\"rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"220\" y=\"90\" width=\"160\" height=\"60\" as=\"geometry\"/></mxCell><mxCell id=\"3\" value=\"Authentik\" style=\"rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"40\" y=\"90\" width=\"120\" height=\"60\" as=\"geometry\"/></mxCell><mxCell id=\"4\" value=\"Snapshots\" style=\"shape=cylinder;whiteSpace=wrap;html=1;boundedLbl=1;fillColor=#fff2cc;strokeColor=#d6b656;\" vertex=\"1\" parent=\"1\"><mxGeometry x=\"430\" y=\"90\" width=\"90\" height=\"80\" as=\"geometry\"/></mxCell><mxCell id=\"5\" value=\"OIDC\" edge=\"1\" parent=\"1\" source=\"2\" target=\"3\"><mxGeometry relative=\"1\" as=\"geometry\"/></mxCell><mxCell id=\"6\" value=\"state\" edge=\"1\" parent=\"1\" source=\"2\" target=\"4\"><mxGeometry relative=\"1\" as=\"geometry\"/></mxCell></root></mxGraphModel></diagram></mxfile>",
+      "revision": 1,
+      "created_at": "2026-04-28T22:23:20.800587Z",
+      "updated_at": "2026-04-28T22:23:20.800587Z",
+      "author_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "last_editor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "deleted_at": null,
+      "purge_at": null
+    }
+  },
+  "memos": {},
+  "jobs": {},
+  "rooms": {
+    "8af97e42-9450-4a5d-b798-8088f8549a5d": {
+      "id": "8af97e42-9450-4a5d-b798-8088f8549a5d",
+      "name": "general",
+      "folder": "",
+      "kind": "channel",
+      "created_at": "2026-04-28T22:23:20.800206Z",
+      "participant_ids": [],
+      "participant_labels": []
+    }
+  },
+  "messages": {
+    "8af97e42-9450-4a5d-b798-8088f8549a5d": [
+      {
+        "id": "875fc904-0411-4420-bf3e-d82e7b91c4b2",
+        "room_id": "8af97e42-9450-4a5d-b798-8088f8549a5d",
+        "author": {
+          "id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "username": "admin",
+          "email": "admin@example.com",
+          "display_name": "Homelab Admin",
+          "avatar_path": null,
+          "avatar_content_type": null,
+          "role": "admin",
+          "roles": [
+            "admin"
+          ],
+          "must_change_password": false
+        },
+        "body": "Home Suite Home is up. Use this room for internal chat and signaling tests.",
+        "created_at": "2026-04-28T22:23:20.800589Z",
+        "reactions": []
+      }
+    ]
+  },
+  "calendar_connections": {
+    "867ce23a-9d3f-4cc6-b5f1-bbf5e7db2054": {
+      "id": "867ce23a-9d3f-4cc6-b5f1-bbf5e7db2054",
+      "owner_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+      "owner_display_name": "Homelab Admin",
+      "title": "Home",
+      "provider": "sweet",
+      "external_id": "",
+      "calendar_id": "sweet:867ce23a-9d3f-4cc6-b5f1-bbf5e7db2054",
+      "account_label": "Home Suite Home calendar",
+      "access_token": null,
+      "refresh_token": null,
+      "token_expires_at": null,
+      "ics_url": null,
+      "created_at": "2026-04-28T22:23:20.800603Z",
+      "updated_at": "2026-04-28T22:23:20.800603Z"
+    }
+  },
+  "calendar_events": {
+    "867ce23a-9d3f-4cc6-b5f1-bbf5e7db2054": []
+  },
+  "tasks": {},
+  "resource_shares": {
+    "note:4f1fca96-ab93-4381-82fc-74fdee627b60": {
+      "resource_key": "note:4f1fca96-ab93-4381-82fc-74fdee627b60",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:33:38.482565Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:fc243660-dacf-401f-a24e-097dfcd74bcb": {
+      "resource_key": "note:fc243660-dacf-401f-a24e-097dfcd74bcb",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:33:38.470107Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:eb8be268-9f4f-408a-9989-8101f3078f34": {
+      "resource_key": "note:eb8be268-9f4f-408a-9989-8101f3078f34",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:41:41.327987Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:97c6140c-8762-4377-a95e-a7e44a7be802": {
+      "resource_key": "note:97c6140c-8762-4377-a95e-a7e44a7be802",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:41:41.267195Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:a50a8012-6c2f-4129-8bd9-50fc4d7043f6": {
+      "resource_key": "note:a50a8012-6c2f-4129-8bd9-50fc4d7043f6",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:37:04.810118Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:17ab6934-0901-449b-aae5-afa394e2e63a": {
+      "resource_key": "note:17ab6934-0901-449b-aae5-afa394e2e63a",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:41:41.388847Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:36e6c603-6227-402d-9a2e-6abd1d6fcc12": {
+      "resource_key": "note:36e6c603-6227-402d-9a2e-6abd1d6fcc12",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:36:41.824260Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:fee27ecf-6165-41d2-ad20-78567981652c": {
+      "resource_key": "note:fee27ecf-6165-41d2-ad20-78567981652c",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:36:41.795751Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:2997149b-1f77-4c64-aac4-dd2ebcc3ab93": {
+      "resource_key": "note:2997149b-1f77-4c64-aac4-dd2ebcc3ab93",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:44:02.629060Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    },
+    "note:ab60400d-968e-4a7b-810b-5c0539b5bae4": {
+      "resource_key": "note:ab60400d-968e-4a7b-810b-5c0539b5bae4",
+      "visibility": "users",
+      "user_ids": [
+        "07373cfc-879f-41bf-9be8-36a268ec6391"
+      ],
+      "updated_at": "2026-04-28T22:44:02.595722Z",
+      "updated_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7"
+    }
+  },
+  "sync_tombstones": [],
+  "pending_credential_changes": {},
+  "note_operations": {
+    "7682c203-3b4e-4985-b8d0-138b81ca429d": [
+      {
+        "note_id": "7682c203-3b4e-4985-b8d0-138b81ca429d",
+        "operation_id": "op-a1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:29:25.362169Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "temp:block:1",
+              "text": "Hello from web"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "7682c203-3b4e-4985-b8d0-138b81ca429d",
+        "operation_id": "op-b1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:29:25.365681Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Hello from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello from web",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "op-a1"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Hello from web from mobile",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "7682c203-3b4e-4985-b8d0-138b81ca429d",
+        "operation_id": "op-a2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:29:25.369818Z",
+        "resulting_revision": 4,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+          },
+          "base_markdown": "Hello from web from mobile",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello from web from mobile",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 3
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+            },
+            "last_operation_id": "op-b1"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one\n\nParagraph two from web",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 3
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "7682c203-3b4e-4985-b8d0-138b81ca429d",
+        "operation_id": "op-b2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:29:25.375958Z",
+        "resulting_revision": 5,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+          },
+          "base_markdown": "Paragraph one\n\nParagraph two from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Paragraph one\n\nParagraph two from web",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 4
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+            },
+            "last_operation_id": "op-a2"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one\n\n<<<<<<< Your edit\nParagraph two from mobile\n=======\nParagraph two from web\n>>>>>>> Remote edit",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 4
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "eb8be268-9f4f-408a-9989-8101f3078f34": [
+      {
+        "note_id": "eb8be268-9f4f-408a-9989-8101f3078f34",
+        "operation_id": "t5a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:41:41.342929Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "t5a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "Admin edit"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "eb8be268-9f4f-408a-9989-8101f3078f34",
+        "operation_id": "t5b",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-user",
+        "created_at": "2026-04-28T22:41:41.356601Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-user",
+          "operation_id": "t5b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Admin edit",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Admin edit",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "t5a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "<<<<<<< Your edit\nUser two edit\n=======\nAdmin edit\n>>>>>>> Remote edit",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "ab60400d-968e-4a7b-810b-5c0539b5bae4": [
+      {
+        "note_id": "ab60400d-968e-4a7b-810b-5c0539b5bae4",
+        "operation_id": "a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:44:02.608599Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "Admin edit"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "ab60400d-968e-4a7b-810b-5c0539b5bae4",
+        "operation_id": "b",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-user",
+        "created_at": "2026-04-28T22:44:02.614089Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-user",
+          "operation_id": "b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Admin edit",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Admin edit",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "User two edit\nAdmin edit",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "651f80d3-0804-4a4c-8c56-e97b45424c7e": [
+      {
+        "note_id": "651f80d3-0804-4a4c-8c56-e97b45424c7e",
+        "operation_id": "su-two-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:33:38.450729Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "su-two-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Paragraph two from web",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "651f80d3-0804-4a4c-8c56-e97b45424c7e",
+        "operation_id": "su-two-b",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:33:38.453539Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "su-two-b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Paragraph one\n\nParagraph two from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Paragraph one",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              },
+              {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Paragraph two from web",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "su-two-a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Paragraph two from web mobile",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "2997149b-1f77-4c64-aac4-dd2ebcc3ab93": [
+      {
+        "note_id": "2997149b-1f77-4c64-aac4-dd2ebcc3ab93",
+        "operation_id": "c",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:44:02.660627Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "c",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Alpha",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Beta admin",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "2997149b-1f77-4c64-aac4-dd2ebcc3ab93",
+        "operation_id": "d",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-user",
+        "created_at": "2026-04-28T22:44:02.666454Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-user",
+          "operation_id": "d",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Alpha\n\nBeta admin",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Alpha",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              },
+              {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Beta admin",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "c"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Gamma\nAlpha",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Delta user\nBeta admin",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "b42b5279-044e-4bdf-9356-60883b2fd4c3": [
+      {
+        "note_id": "b42b5279-044e-4bdf-9356-60883b2fd4c3",
+        "operation_id": "t1a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web",
+        "created_at": "2026-04-28T22:41:41.138229Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web",
+          "operation_id": "t1a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "Hello from web"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "b42b5279-044e-4bdf-9356-60883b2fd4c3",
+        "operation_id": "t1b",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile",
+        "created_at": "2026-04-28T22:41:41.150736Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile",
+          "operation_id": "t1b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Hello from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello from web",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "t1a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Hello from web mobile",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "842e92d4-d84a-4440-8fa1-1f0cfe09ee18": [
+      {
+        "note_id": "842e92d4-d84a-4440-8fa1-1f0cfe09ee18",
+        "operation_id": "su-stale-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:33:38.441840Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "su-stale-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "Hello from web"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "842e92d4-d84a-4440-8fa1-1f0cfe09ee18",
+        "operation_id": "su-stale-b",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:33:38.444344Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "su-stale-b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Hello from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello from web",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "su-stale-a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Hello from web mobile",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "a50a8012-6c2f-4129-8bd9-50fc4d7043f6": [
+      {
+        "note_id": "a50a8012-6c2f-4129-8bd9-50fc4d7043f6",
+        "operation_id": "gran-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:37:04.816688Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "gran-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "insert_block",
+              "block": {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Admin second paragraph",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              },
+              "after_block_id": "seed:block:1"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "a50a8012-6c2f-4129-8bd9-50fc4d7043f6",
+        "operation_id": "gran-b",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-u2",
+        "created_at": "2026-04-28T22:37:04.820304Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-u2",
+          "operation_id": "gran-b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Hello\n\nAdmin second paragraph",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              },
+              {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Admin second paragraph",
+                "attrs": {},
+                "order": 0.5,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "gran-a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "block-0-1",
+                  "kind": "paragraph",
+                  "text": "User two intro",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "block-1-2",
+                  "kind": "paragraph",
+                  "text": "Admin second paragraph",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "fc243660-dacf-401f-a24e-097dfcd74bcb": [
+      {
+        "note_id": "fc243660-dacf-401f-a24e-097dfcd74bcb",
+        "operation_id": "du-disjoint-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:33:38.474318Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "du-disjoint-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Admin second paragraph",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "fffcc01a-bf95-429a-a9ea-3aa1bda07e12": [
+      {
+        "note_id": "fffcc01a-bf95-429a-a9ea-3aa1bda07e12",
+        "operation_id": "op-a1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:30:53.063062Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "temp:block:1",
+              "text": "Hello from web"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "fffcc01a-bf95-429a-a9ea-3aa1bda07e12",
+        "operation_id": "op-b1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:30:53.066671Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Hello from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello from web",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "op-a1"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Hello from web mobile",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "fffcc01a-bf95-429a-a9ea-3aa1bda07e12",
+        "operation_id": "op-a2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:30:53.070479Z",
+        "resulting_revision": 4,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+          },
+          "base_markdown": "Hello from web mobile",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello from web mobile",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 3
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+            },
+            "last_operation_id": "op-b1"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 3
+                },
+                {
+                  "id": "temp:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Paragraph two from web",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 3
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "fffcc01a-bf95-429a-a9ea-3aa1bda07e12",
+        "operation_id": "op-b2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:30:53.072850Z",
+        "resulting_revision": 5,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+          },
+          "base_markdown": "Paragraph one\n\nParagraph two from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Paragraph one",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 4
+              },
+              {
+                "id": "temp:block:1:2",
+                "kind": "paragraph",
+                "text": "Paragraph two from web",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 4
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+            },
+            "last_operation_id": "op-a2"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 4
+                },
+                {
+                  "id": "temp:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Paragraph two from web mobile",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 4
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "36e6c603-6227-402d-9a2e-6abd1d6fcc12": [
+      {
+        "note_id": "36e6c603-6227-402d-9a2e-6abd1d6fcc12",
+        "operation_id": "du-same-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:36:41.829333Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "du-same-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "Admin edit"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "36e6c603-6227-402d-9a2e-6abd1d6fcc12",
+        "operation_id": "du-same-b",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-u2",
+        "created_at": "2026-04-28T22:36:41.834369Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-u2",
+          "operation_id": "du-same-b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Admin edit",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Admin edit",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "du-same-a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "<<<<<<< Your edit\nUser two edit\n=======\nAdmin edit\n>>>>>>> Remote edit",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "912d70ea-971c-4960-87a5-1926e24fa257": [
+      {
+        "note_id": "912d70ea-971c-4960-87a5-1926e24fa257",
+        "operation_id": "op-a1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:23:49.451372Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": null,
+          "base_document": null,
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "temp:block:1",
+              "text": "Hello from web"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "912d70ea-971c-4960-87a5-1926e24fa257",
+        "operation_id": "op-b1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:23:49.459697Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": null,
+          "base_document": null,
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "temp:block:1",
+              "text": "Hello from mobile"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "912d70ea-971c-4960-87a5-1926e24fa257",
+        "operation_id": "op-a2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:23:49.470138Z",
+        "resulting_revision": 4,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+          },
+          "base_markdown": null,
+          "base_document": null,
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one\n\nParagraph two from web",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 3
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "912d70ea-971c-4960-87a5-1926e24fa257",
+        "operation_id": "op-b2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:23:49.473862Z",
+        "resulting_revision": 5,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+          },
+          "base_markdown": null,
+          "base_document": null,
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "temp:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one\n\nParagraph two from mobile",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 3
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "47b6309c-b3c2-4c82-9dc7-c26ab5d65407": [
+      {
+        "note_id": "47b6309c-b3c2-4c82-9dc7-c26ab5d65407",
+        "operation_id": "t2a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web",
+        "created_at": "2026-04-28T22:41:41.177821Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web",
+          "operation_id": "t2a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Paragraph two from web",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "47b6309c-b3c2-4c82-9dc7-c26ab5d65407",
+        "operation_id": "t2b",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile",
+        "created_at": "2026-04-28T22:41:41.194859Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile",
+          "operation_id": "t2b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Paragraph one\n\nParagraph two from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Paragraph one",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              },
+              {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Paragraph two from web",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "t2a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Paragraph two from web mobile",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "17ab6934-0901-449b-aae5-afa394e2e63a": [
+      {
+        "note_id": "17ab6934-0901-449b-aae5-afa394e2e63a",
+        "operation_id": "t6a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:41:41.407572Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "t6a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Alpha",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Beta admin",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "17ab6934-0901-449b-aae5-afa394e2e63a",
+        "operation_id": "t6b",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-user",
+        "created_at": "2026-04-28T22:41:41.427403Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-user",
+          "operation_id": "t6b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Alpha\n\nBeta admin",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Alpha",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              },
+              {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Beta admin",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "t6a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "<<<<<<< Your edit\nGamma\n=======\nAlpha\n>>>>>>> Remote edit",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Beta admin Delta user",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "4ff2e77e-bb11-432c-881f-1115df58e2b8": [
+      {
+        "note_id": "4ff2e77e-bb11-432c-881f-1115df58e2b8",
+        "operation_id": "t3a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web",
+        "created_at": "2026-04-28T22:41:41.215251Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web",
+          "operation_id": "t3a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "A"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "4ff2e77e-bb11-432c-881f-1115df58e2b8",
+        "operation_id": "t3b",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile",
+        "created_at": "2026-04-28T22:41:41.226707Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile",
+          "operation_id": "t3b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "A",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "A",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "t3a"
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "AB"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "4ff2e77e-bb11-432c-881f-1115df58e2b8",
+        "operation_id": "t3c",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web",
+        "created_at": "2026-04-28T22:41:41.242787Z",
+        "resulting_revision": 4,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web",
+          "operation_id": "t3c",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+          },
+          "base_markdown": "AB",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "AB",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 3
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+            },
+            "last_operation_id": "t3b"
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "ABC"
+            }
+          ]
+        }
+      }
+    ],
+    "4f1fca96-ab93-4381-82fc-74fdee627b60": [
+      {
+        "note_id": "4f1fca96-ab93-4381-82fc-74fdee627b60",
+        "operation_id": "du-same-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:33:38.486024Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "du-same-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "Admin edit"
+            }
+          ]
+        }
+      }
+    ],
+    "fee27ecf-6165-41d2-ad20-78567981652c": [
+      {
+        "note_id": "fee27ecf-6165-41d2-ad20-78567981652c",
+        "operation_id": "du-disjoint-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:36:41.804391Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "du-disjoint-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Admin second paragraph",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "fee27ecf-6165-41d2-ad20-78567981652c",
+        "operation_id": "du-disjoint-b",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-u2",
+        "created_at": "2026-04-28T22:36:41.810838Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-u2",
+          "operation_id": "du-disjoint-b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Paragraph one\n\nAdmin second paragraph",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Paragraph one",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              },
+              {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Admin second paragraph",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "du-disjoint-a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "seed:block:1",
+                  "kind": "paragraph",
+                  "text": "<<<<<<< Your edit\nUser two intro\n=======\nParagraph one\n>>>>>>> Remote edit",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                },
+                {
+                  "id": "seed:block:1:2",
+                  "kind": "paragraph",
+                  "text": "Admin second paragraph Hello",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "51e83891-e3bf-47de-b548-8289381c68b6": [
+      {
+        "note_id": "51e83891-e3bf-47de-b548-8289381c68b6",
+        "operation_id": "su-alt-a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:33:38.459239Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "su-alt-a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "A"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "51e83891-e3bf-47de-b548-8289381c68b6",
+        "operation_id": "su-alt-b",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:33:38.462040Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "su-alt-b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "A",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "A",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "su-alt-a"
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "AB"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "51e83891-e3bf-47de-b548-8289381c68b6",
+        "operation_id": "su-alt-c",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:33:38.464821Z",
+        "resulting_revision": 4,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "su-alt-c",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+          },
+          "base_markdown": "AB",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "AB",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 3
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+            },
+            "last_operation_id": "su-alt-b"
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "seed:block:1",
+              "text": "ABC"
+            }
+          ]
+        }
+      }
+    ],
+    "ce8c0667-9029-4ac8-b0cb-e170f64f367e": [
+      {
+        "note_id": "ce8c0667-9029-4ac8-b0cb-e170f64f367e",
+        "operation_id": "op-a1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:26:06.042561Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "update_block_text",
+              "block_id": "temp:block:1",
+              "text": "Hello from web"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "ce8c0667-9029-4ac8-b0cb-e170f64f367e",
+        "operation_id": "op-b1",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:26:06.045426Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b1",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Hello from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "temp:block:1",
+                "kind": "paragraph",
+                "text": "Hello from web",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "op-a1"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "block-0-1",
+                  "kind": "paragraph",
+                  "text": "<<<<<<< Your edit\nHello from mobile\n=======\nHello from web\n>>>>>>> Remote edit",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "ce8c0667-9029-4ac8-b0cb-e170f64f367e",
+        "operation_id": "op-a2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-a",
+        "created_at": "2026-04-28T22:26:06.050055Z",
+        "resulting_revision": 4,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-a",
+          "operation_id": "op-a2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+          },
+          "base_markdown": "<<<<<<< Your edit\nHello from mobile\n=======\nHello from web\n>>>>>>> Remote edit",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "block-0-1",
+                "kind": "paragraph",
+                "text": "<<<<<<< Your edit\nHello from mobile\n=======\nHello from web\n>>>>>>> Remote edit",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 3
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 3
+            },
+            "last_operation_id": "op-b1"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "block-0-1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one\n\nParagraph two from web",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 3
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "ce8c0667-9029-4ac8-b0cb-e170f64f367e",
+        "operation_id": "op-b2",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "mobile-b",
+        "created_at": "2026-04-28T22:26:06.052125Z",
+        "resulting_revision": 5,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "mobile-b",
+          "operation_id": "op-b2",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+          },
+          "base_markdown": "Paragraph one\n\nParagraph two from web",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "block-0-1",
+                "kind": "paragraph",
+                "text": "Paragraph one\n\nParagraph two from web",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 4
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 4
+            },
+            "last_operation_id": "op-a2"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "block-0-1",
+                  "kind": "paragraph",
+                  "text": "Paragraph one",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "block-1-2",
+                  "kind": "paragraph",
+                  "text": "<<<<<<< Your edit\nParagraph two from mobile\n=======\nParagraph two from web\n>>>>>>> Remote edit",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "97c6140c-8762-4377-a95e-a7e44a7be802": [
+      {
+        "note_id": "97c6140c-8762-4377-a95e-a7e44a7be802",
+        "operation_id": "t4a",
+        "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+        "client_id": "web-admin",
+        "created_at": "2026-04-28T22:41:41.279791Z",
+        "resulting_revision": 2,
+        "batch": {
+          "actor_id": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+          "client_id": "web-admin",
+          "operation_id": "t4a",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+          },
+          "base_markdown": "Hello",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 1
+            },
+            "last_operation_id": ""
+          },
+          "operations": [
+            {
+              "type": "insert_block",
+              "block": {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Admin second paragraph",
+                "attrs": {},
+                "order": 1.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              },
+              "after_block_id": "seed:block:1"
+            }
+          ]
+        }
+      },
+      {
+        "note_id": "97c6140c-8762-4377-a95e-a7e44a7be802",
+        "operation_id": "t4b",
+        "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+        "client_id": "mobile-user",
+        "created_at": "2026-04-28T22:41:41.296768Z",
+        "resulting_revision": 3,
+        "batch": {
+          "actor_id": "07373cfc-879f-41bf-9be8-36a268ec6391",
+          "client_id": "mobile-user",
+          "operation_id": "t4b",
+          "base_clock": {
+            "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+          },
+          "base_markdown": "Hello\n\nAdmin second paragraph",
+          "base_document": {
+            "blocks": [
+              {
+                "id": "seed:block:1",
+                "kind": "paragraph",
+                "text": "Hello",
+                "attrs": {},
+                "order": 0.0,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 1
+              },
+              {
+                "id": "seed:block:1:2",
+                "kind": "paragraph",
+                "text": "Admin second paragraph",
+                "attrs": {},
+                "order": 0.5,
+                "deleted": false,
+                "last_modified_by": "c6e7d090-cc93-4b3a-9b03-4d6945142bd7",
+                "last_modified_counter": 2
+              }
+            ],
+            "clock": {
+              "c6e7d090-cc93-4b3a-9b03-4d6945142bd7": 2
+            },
+            "last_operation_id": "t4a"
+          },
+          "operations": [
+            {
+              "type": "replace_document",
+              "blocks": [
+                {
+                  "id": "block-0-1",
+                  "kind": "paragraph",
+                  "text": "User two intro",
+                  "attrs": {},
+                  "order": 0.0,
+                  "deleted": false,
+                  "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+                  "last_modified_counter": 1
+                },
+                {
+                  "id": "block-1-2",
+                  "kind": "paragraph",
+                  "text": "Admin second paragraph",
+                  "attrs": {},
+                  "order": 1.0,
+                  "deleted": false,
+                  "last_modified_by": "07373cfc-879f-41bf-9be8-36a268ec6391",
+                  "last_modified_counter": 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "note_sessions": {},
+  "note_conflicts": {
+    "4f1fca96-ab93-4381-82fc-74fdee627b60": [
+      {
+        "id": "conflict-3d881ede-fe7b-4c5e-969b-ac3fdf0bff3f",
+        "note_id": "4f1fca96-ab93-4381-82fc-74fdee627b60",
+        "operation_id": "du-same-b",
+        "reason": "overlapping_block_edits",
+        "forked_note_ids": [
+          "052b73b7-2a4d-484d-9d98-dcc526826c7e",
+          "b97e5228-9b96-4b0c-928d-1913bd054ea9"
+        ],
+        "created_at": "2026-04-28T22:33:38.488589Z"
+      }
+    ],
+    "fc243660-dacf-401f-a24e-097dfcd74bcb": [
+      {
+        "id": "conflict-efc19a14-d853-48e9-b8f2-45e453b884b1",
+        "note_id": "fc243660-dacf-401f-a24e-097dfcd74bcb",
+        "operation_id": "du-disjoint-b",
+        "reason": "overlapping_block_edits",
+        "forked_note_ids": [
+          "9cd63bb8-6928-440f-81d7-7a95739d067e",
+          "0f21f60b-2a27-4354-8e3a-7cac7b85c295"
+        ],
+        "created_at": "2026-04-28T22:33:38.477184Z"
+      }
+    ]
+  },
+  "deleted_drive_items": {},
+  "audit_log": []
+}

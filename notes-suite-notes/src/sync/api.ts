@@ -66,15 +66,21 @@ export async function loadOidcConfig(baseUrl: string) {
   return requestJson<OidcConfig>(`${baseUrl}/api/v1/auth/oidc/config`)
 }
 
-export async function testServerConnection(baseUrl: string) {
+export async function testServerConnection(baseUrl: string, token?: string) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '')
-  const [health, notes] = await Promise.all([
-    requestJson<{ status: string }>(`${normalizedBaseUrl}/health`),
-    requestJson<RemoteNoteSnapshot[]>(`${normalizedBaseUrl}/api/v1/notes`),
-  ])
+  const health = await requestJson<{ status: string }>(`${normalizedBaseUrl}/health`)
+  let noteCount: number | null = null
+  if (token) {
+    try {
+      const notes = await requestJson<RemoteNoteSnapshot[]>(`${normalizedBaseUrl}/api/v1/notes`, undefined, token)
+      noteCount = notes.length
+    } catch {
+      noteCount = null
+    }
+  }
   return {
     status: health.status,
-    noteCount: notes.length,
+    noteCount,
   }
 }
 
