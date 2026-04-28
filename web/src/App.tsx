@@ -1052,6 +1052,7 @@ function App() {
     deleteManagedPathRecord: deleteManagedPathLocalFirst,
     uploadManagedFileRecord: uploadManagedFileLocalFirst,
     refreshFilesTree,
+    syncNotesAndFilesView,
     rememberPersistedNotes,
     mergeFolderPaths,
     noteIdFromPath,
@@ -3951,6 +3952,36 @@ function App() {
     }
     const nextTree = await api.listFilesTree()
     setFilesTree(nextTree)
+  }
+
+  async function syncNotesAndFilesView() {
+    if (!getConnectivityState()) {
+      return
+    }
+    const [nextNotes, nextTree] = await Promise.all([api.listNotes(), api.listFilesTree()])
+    rememberPersistedNotes(nextNotes)
+    setNotes(nextNotes)
+    setFilesTree(nextTree)
+    setCustomFolders(
+      Array.from(new Set(nextNotes.map((note) => normalizeFolderPath(note.folder || 'Inbox')))).sort((left, right) =>
+        left.localeCompare(right),
+      ),
+    )
+    setSelectedNoteId((current) => {
+      if (current && nextNotes.some((note) => note.id === current)) {
+        return current
+      }
+      return nextNotes[0]?.id ?? null
+    })
+    setSelectedFolderPath((current) => {
+      const currentStillExists = nextNotes.some(
+        (note) => normalizeFolderPath(note.folder || 'Inbox') === normalizeFolderPath(current || 'Inbox'),
+      )
+      if (currentStillExists) {
+        return current
+      }
+      return normalizeFolderPath(nextNotes[0]?.folder || 'Inbox')
+    })
   }
 
   function beginFileDrag(event: React.DragEvent<HTMLElement>, path: string) {

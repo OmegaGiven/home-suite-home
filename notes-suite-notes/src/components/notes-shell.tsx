@@ -375,7 +375,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
           {remoteCursors.slice(0, 8).map((cursor) => (
             <View key={`${cursor.client_id}-${cursor.note_id}`} style={styles.remoteCursorBadge}>
               <View style={styles.remoteCursorBar} />
-              <Text style={styles.remoteCursorInitial}>{cursor.user.slice(0, 1).toUpperCase()}</Text>
             </View>
           ))}
         </View>
@@ -783,21 +782,13 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   remoteCursorBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 4,
+    paddingHorizontal: 2,
   },
   remoteCursorBar: {
     width: 2,
     height: 18,
     borderRadius: 999,
     backgroundColor: screenColors.accent,
-  },
-  remoteCursorInitial: {
-    color: screenColors.accentSoft,
-    fontSize: 10,
-    fontWeight: '700',
   },
   avatar: {
     width: 30,

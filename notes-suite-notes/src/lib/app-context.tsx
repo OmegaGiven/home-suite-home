@@ -119,6 +119,144 @@ const DEFAULT_SERVER_DRAFT: ServerDraft = {
   password: '',
 }
 
+function splitMarkdownBlocks(markdown: string) {
+  return markdown
+    .split('\n\n')
+    .map((raw) => raw.trimEnd())
+    .filter((text, index, all) => text.length > 0 || all.length === 1 || index === 0)
+}
+
+function inferBlockKind(text: string): LocalNoteRecord['document']['blocks'][number]['kind'] {
+  if (text.startsWith('```')) return 'code'
+  if (text.startsWith('>')) return 'quote'
+  if (text.startsWith('- [')) return 'checklist'
+  if (text.startsWith('- ') || text.startsWith('* ')) return 'bullet_list'
+  if (/^\d+\.\s/.test(text)) return 'numbered_list'
+  if (text.startsWith('|')) return 'table'
+  if (text.startsWith('#')) return 'heading'
+  return 'paragraph'
+}
+
+function visibleBlocks(document: LocalNoteRecord['document']) {
+  return [...document.blocks]
+    .filter((block) => !block.deleted)
+    .sort((left, right) => left.order - right.order)
+}
+
+function buildMarkdownBatch(note: LocalNoteRecord, markdown: string, clientId: string): NoteDocumentOperationBatch {
+  const actorId = note.selected_server_identity_id ?? 'local-user'
+  const baseClock = { ...note.document.clock }
+  const currentBlocks = visibleBlocks(note.document)
+  const targetTexts = splitMarkdownBlocks(markdown)
+  const nextDocument = documentFromMarkdown(markdown, actorId)
+
+  if (currentBlocks.length === targetTexts.length) {
+    const operations: NoteDocumentOperationBatch['operations'] = []
+    let canUpdateInPlace = true
+    for (let index = 0; index < currentBlocks.length; index += 1) {
+      const current = currentBlocks[index]
+      const targetText = targetTexts[index] ?? ''
+      if (current.kind !== inferBlockKind(targetText)) {
+        canUpdateInPlace = false
+        break
+      }
+      if (current.text !== targetText) {
+        operations.push({
+          type: 'update_block_text',
+          block_id: current.id,
+          text: targetText,
+        })
+      }
+    }
+    if (canUpdateInPlace) {
+      return {
+        actor_id: actorId,
+        client_id: clientId,
+        operation_id: createId('op'),
+        base_clock: baseClock,
+        operations,
+      }
+    }
+  }
+
+  if (targetTexts.length === currentBlocks.length + 1) {
+    let insertIndex = -1
+    for (let index = 0; index < targetTexts.length; index += 1) {
+      const left = currentBlocks.slice(0, index).map((block) => block.text)
+      const right = currentBlocks.slice(index).map((block) => block.text)
+      if (
+        JSON.stringify(left) === JSON.stringify(targetTexts.slice(0, index)) &&
+        JSON.stringify(right) === JSON.stringify(targetTexts.slice(index + 1))
+      ) {
+        insertIndex = index
+        break
+      }
+    }
+    if (insertIndex >= 0) {
+      const text = targetTexts[insertIndex] ?? ''
+      return {
+        actor_id: actorId,
+        client_id: clientId,
+        operation_id: createId('op'),
+        base_clock: baseClock,
+        operations: [
+          {
+            type: 'insert_block',
+            after_block_id: insertIndex > 0 ? currentBlocks[insertIndex - 1]?.id ?? null : null,
+            block: {
+              id: `${note.id}:block:${Date.now().toString(36)}`,
+              kind: inferBlockKind(text),
+              text,
+              attrs: {},
+              order: insertIndex,
+              deleted: false,
+              last_modified_by: actorId,
+              last_modified_counter: (note.document.clock[actorId] ?? 0) + 1,
+            },
+          },
+        ],
+      }
+    }
+  }
+
+  if (targetTexts.length + 1 === currentBlocks.length) {
+    let deleteIndex = -1
+    for (let index = 0; index < currentBlocks.length; index += 1) {
+      const left = currentBlocks.slice(0, index).map((block) => block.text)
+      const right = currentBlocks.slice(index + 1).map((block) => block.text)
+      if (
+        JSON.stringify(left) === JSON.stringify(targetTexts.slice(0, index)) &&
+        JSON.stringify(right) === JSON.stringify(targetTexts.slice(index))
+      ) {
+        deleteIndex = index
+        break
+      }
+    }
+    if (deleteIndex >= 0) {
+      return {
+        actor_id: actorId,
+        client_id: clientId,
+        operation_id: createId('op'),
+        base_clock: baseClock,
+        operations: [
+          {
+            type: 'delete_block',
+            block_id: currentBlocks[deleteIndex].id,
+          },
+        ],
+      }
+    }
+  }
+
+  return {
+    actor_id: actorId,
+    client_id: clientId,
+    operation_id: createId('op'),
+    base_clock: baseClock,
+    operations: [{ type: 'replace_document', blocks: nextDocument.blocks }],
+  }
+}
+
 function normalizeAppearance(value: Partial<Appearance> | null | undefined): Appearance {
   if (!value) return DEFAULT_APPEARANCE
   return {
@@ -602,13 +740,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     if (!selectedNote) return
     const actorId = selectedNote.selected_server_identity_id ?? 'local-user'
     const document = documentFromMarkdown(value, actorId)
-    const batch: NoteDocumentOperationBatch = {
-      actor_id: actorId,
-      client_id: createId('client'),
-      operation_id: createId('op'),
-      base_clock: selectedNote.document.clock,
-      operations: [{ type: 'replace_document', blocks: document.blocks }],
-    }
+    const batch = buildMarkdownBatch(selectedNote, value, clientIdRef.current)
     await persistNote(
       {
         ...selectedNote,
@@ -640,14 +772,8 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
 
   async function replaceSelectedDocument(document: LocalNoteRecord['document']) {
     if (!selectedNote) return
-    const batch: NoteDocumentOperationBatch = {
-      actor_id: selectedNote.selected_server_identity_id ?? 'local-user',
-      client_id: createId('client'),
-      operation_id: createId('op'),
-      base_clock: selectedNote.document.clock,
-      operations: [{ type: 'replace_document', blocks: document.blocks }],
-    }
     const markdown = markdownFromDocument(document)
+    const batch = buildMarkdownBatch(selectedNote, markdown, clientIdRef.current)
     await persistNote(
       {
         ...selectedNote,

@@ -2877,7 +2877,7 @@ impl AppState {
             batch.operation_id = format!("op-{}", Uuid::new_v4());
         }
 
-        if should_fork_note_document(&existing_note.document, &batch) {
+        if should_fork_note_document(&existing_note.document, &batch, &batch.actor_id) {
             let local_document = apply_operations_to_document(&existing_note.document, &batch, &batch.actor_id)?;
             let forked_ids = create_note_conflict_forks(&mut state, &existing_note, &local_document, &batch.actor_id);
             let conflict = NoteConflictRecord {
@@ -3125,7 +3125,7 @@ impl AppState {
             batch.actor_id.clone()
         };
 
-        if should_fork_note_document(&existing_note.document, &batch) {
+        if should_fork_note_document(&existing_note.document, &batch, &actor_id) {
             let local_document = apply_operations_to_document(
                 &existing_note.document,
                 &batch,
@@ -6254,7 +6254,11 @@ fn summarize_transcript_topic(transcript: &str) -> String {
         .collect()
 }
 
-fn should_fork_note_document(document: &NoteDocument, batch: &NoteDocumentOperationBatch) -> bool {
+fn should_fork_note_document(
+    document: &NoteDocument,
+    batch: &NoteDocumentOperationBatch,
+    actor_id: &str,
+) -> bool {
     if batch.operations.is_empty() {
         return false;
     }
@@ -6263,7 +6267,9 @@ fn should_fork_note_document(document: &NoteDocument, batch: &NoteDocumentOperat
             NoteOperation::SetTitle { .. } | NoteOperation::SetFolder { .. } => {}
             NoteOperation::ReplaceDocument { .. } => {
                 for (actor, counter) in &document.clock {
-                    if batch.base_clock.get(actor).copied().unwrap_or(0) < *counter {
+                    if actor != actor_id
+                        && batch.base_clock.get(actor).copied().unwrap_or(0) < *counter
+                    {
                         return true;
                     }
                 }
@@ -6273,6 +6279,9 @@ fn should_fork_note_document(document: &NoteDocument, batch: &NoteDocumentOperat
             | NoteOperation::DeleteBlock { block_id }
             | NoteOperation::MoveBlock { block_id, .. } => {
                 if let Some(block) = document.blocks.iter().find(|candidate| candidate.id == *block_id) {
+                    if block.last_modified_by == actor_id {
+                        continue;
+                    }
                     let seen_counter = batch
                         .base_clock
                         .get(&block.last_modified_by)
@@ -6286,6 +6295,9 @@ fn should_fork_note_document(document: &NoteDocument, batch: &NoteDocumentOperat
             NoteOperation::InsertBlock { after_block_id, .. } => {
                 if let Some(anchor_id) = after_block_id {
                     if let Some(block) = document.blocks.iter().find(|candidate| candidate.id == *anchor_id) {
+                        if block.last_modified_by == actor_id {
+                            continue;
+                        }
                         let seen_counter = batch
                             .base_clock
                             .get(&block.last_modified_by)

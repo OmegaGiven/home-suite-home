@@ -39,6 +39,7 @@ type CreateFileMutationActionsContext = {
   deleteManagedPathRecord: (path: string) => Promise<void>
   uploadManagedFileRecord: (path: string, file: Blob, filename: string) => Promise<FileNode>
   refreshFilesTree: () => Promise<void>
+  syncNotesAndFilesView: () => Promise<void>
   rememberPersistedNotes: (nextNotes: Note[]) => void
   mergeFolderPaths: (current: string[], incoming: string[]) => string[]
   noteIdFromPath: (path: string) => string | null
@@ -133,10 +134,7 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
     }
     if (sameArea === 'notes') {
       if (getConnectivityState()) {
-        const nextNotes = await api.listNotes()
-        context.rememberPersistedNotes(nextNotes)
-        context.setNotes(nextNotes)
-        context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
+        await context.syncNotesAndFilesView()
       }
     }
     if (sameArea === 'diagrams') {
@@ -252,11 +250,7 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
     )
     if (path.startsWith('notes/')) {
       if (getConnectivityState()) {
-        const nextNotes = await api.listNotes()
-        context.rememberPersistedNotes(nextNotes)
-        context.setNotes(nextNotes)
-        context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
-        context.setSelectedNoteId((current) => (current && nextNotes.some((note) => note.id === current) ? current : null))
+        await context.syncNotesAndFilesView()
       }
     }
     if (path.startsWith('voice/')) {
@@ -313,13 +307,7 @@ export function createFileMutationActions(context: CreateFileMutationActionsCont
     )
     if (affectedRoots.has('notes')) {
       if (getConnectivityState()) {
-        const nextNotes = await api.listNotes()
-        context.rememberPersistedNotes(nextNotes)
-        context.setNotes(nextNotes)
-        context.setSelectedNoteId((current) =>
-          current && nextNotes.some((note) => note.id === current) ? current : null,
-        )
-        context.setCustomFolders((current) => context.mergeFolderPaths(current, nextNotes.map((note) => note.folder || 'Inbox')))
+        await context.syncNotesAndFilesView()
       }
     }
     if (affectedRoots.has('diagrams')) {
