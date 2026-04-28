@@ -1,4 +1,4 @@
-import { useEffect, useState, type DragEvent } from 'react'
+import { useEffect, useState, type DragEvent, type MouseEvent as ReactMouseEvent } from 'react'
 import type { FileNode } from '../lib/types'
 import type { FileTreeSortKey, FileTreeSortState } from '../lib/ui-helpers'
 
@@ -25,7 +25,7 @@ type Props = {
   markedPaths: string[]
   draggingPath: string | null
   dropTargetPath: string | null
-  onSelect: (path: string) => void
+  onSelect: (path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) => void
   onDragStart: (event: DragEvent<HTMLElement>, path: string) => void
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -143,7 +143,14 @@ export function FileTreeNode({
           if (node.kind !== 'directory') return
           void onDrop(event, node.path)
         }}
-        onClick={() => onSelect(node.path)}
+        data-file-tree-path={node.path}
+        onClick={(event: ReactMouseEvent<HTMLButtonElement>) =>
+          onSelect(node.path, {
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+          })
+        }
       >
         <span className="tree-row-markers" aria-hidden="true">
           {isCurrent ? <span className="tree-active-arrow">&gt;</span> : null}

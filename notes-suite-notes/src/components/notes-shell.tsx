@@ -13,7 +13,6 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
-import Markdown from 'react-native-markdown-display'
 import type { NativeSyntheticEvent, TextInputSelectionChangeEventData } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useNotesApp } from '../lib/app-context'
@@ -84,12 +83,6 @@ function plainTextFromMarkdown(markdown: string) {
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/~~([^~]+)~~/g, '$1')
     .replace(/<u>(.*?)<\/u>/g, '$1')
-}
-
-function renderableMarkdown(markdown: string) {
-  return markdown
-    .replace(/^- \[ \] /gim, '- ☐ ')
-    .replace(/^- \[x\] /gim, '- ☑ ')
 }
 
 function normalizeSelection(selection: TextSelection | null, text: string) {
@@ -170,7 +163,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   const [showHeaderPicker, setShowHeaderPicker] = useState(false)
   const [showListPicker, setShowListPicker] = useState(false)
   const [showLinkEditor, setShowLinkEditor] = useState(false)
-  const [isEditingMarkdown, setIsEditingMarkdown] = useState(false)
   const [openSearch, setOpenSearch] = useState('')
   const [selectedOpenNoteId, setSelectedOpenNoteId] = useState<string | null>(null)
   const [inviteDraft, setInviteDraft] = useState('')
@@ -199,7 +191,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   const note = selectedNote
   const isMarkdownMode = editorMode === 'markdown'
   const editorText = isMarkdownMode ? note.markdown : plainTextFromMarkdown(note.markdown)
-  const previewMarkdown = renderableMarkdown(note.markdown)
   const activeOpenNote = filteredNotes.find((entry) => entry.id === selectedOpenNoteId) ?? null
   const saveIconColor = saveStatus === 'saved' ? screenColors.success : saveStatus === 'saving' ? screenColors.accent : screenColors.warning
   const animationType = appearance.enableAnimations ? 'fade' : 'none'
@@ -224,15 +215,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     const currentSelection = normalizeSelection(selection, editorText)
     const result = transform(editorText, currentSelection)
     await commitEditorText(result.text, result.selection)
-  }
-
-  function enterMarkdownEdit() {
-    if (!isMarkdownMode) return
-    setIsEditingMarkdown(true)
-  }
-
-  function exitMarkdownEdit() {
-    setIsEditingMarkdown(false)
   }
 
   async function applyHeaderLevel(level: '1' | '2' | '3') {
@@ -329,12 +311,7 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
               <TouchableOpacity
                 key={mode}
                 style={[styles.modeToggleButton, editorMode === mode ? styles.modeToggleButtonActive : null]}
-                onPress={() => {
-                  setEditorMode(mode)
-                  if (mode !== 'markdown') {
-                    setIsEditingMarkdown(false)
-                  }
-                }}
+                onPress={() => setEditorMode(mode)}
               >
                 <Text style={styles.modeToggleText}>{mode === 'markdown' ? 'MD' : 'TXT'}</Text>
               </TouchableOpacity>
@@ -351,16 +328,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
           </TouchableOpacity>
         </View>
       </View>
-
-      {presenceSessions.length > 0 ? (
-        <View style={styles.presenceRail}>
-          {presenceSessions.slice(0, 5).map((session) => (
-            <View key={session.session_id} style={styles.avatar}>
-              <Text style={styles.avatarText}>{session.user_label.slice(0, 2).toUpperCase()}</Text>
-            </View>
-          ))}
-        </View>
-      ) : null}
 
       <View style={styles.toolbarWrap}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.toolbar}>
@@ -393,72 +360,39 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
         </ScrollView>
       </View>
 
-      {remoteCursors.length > 0 ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.cursorStrip}>
-          {remoteCursors.slice(0, 6).map((cursor) => (
-            <Text key={`${cursor.client_id}-${cursor.note_id}`} style={styles.cursorText}>
-              {cursor.user}: {cursor.offset ?? 0}
-            </Text>
+      {presenceSessions.length > 0 ? (
+        <View style={[styles.presenceOverlay, { top: insets.top + 112 }]} pointerEvents="box-none">
+          {presenceSessions.slice(0, 8).map((session) => (
+            <View key={session.session_id} style={styles.avatar}>
+              <Text style={styles.avatarText}>{session.user_label.slice(0, 2).toUpperCase()}</Text>
+            </View>
           ))}
-        </ScrollView>
+        </View>
+      ) : null}
+
+      {remoteCursors.length > 0 ? (
+        <View style={[styles.remoteCursorOverlay, { top: insets.top + 112 }]} pointerEvents="none">
+          {remoteCursors.slice(0, 8).map((cursor) => (
+            <View key={`${cursor.client_id}-${cursor.note_id}`} style={styles.remoteCursorBadge}>
+              <View style={styles.remoteCursorBar} />
+              <Text style={styles.remoteCursorInitial}>{cursor.user.slice(0, 1).toUpperCase()}</Text>
+            </View>
+          ))}
+        </View>
       ) : null}
 
       <View style={styles.editorStage}>
-        {isMarkdownMode ? (
-          isEditingMarkdown ? (
-            <View style={styles.editorPane}>
-              <View style={styles.editorModeRow}>
-                <Text style={styles.editorModeLabel}>Markdown source</Text>
-                <TouchableOpacity style={styles.inlineModeButton} onPress={exitMarkdownEdit}>
-                  <Text style={styles.inlineModeButtonText}>Preview</Text>
-                </TouchableOpacity>
-              </View>
-              <TextInput
-                multiline
-                autoFocus
-                style={[styles.editor, styles.markdownSourceEditor]}
-                value={editorText}
-                onChangeText={(value) => void commitEditorText(value)}
-                onSelectionChange={handleSelectionChange}
-                textAlignVertical="top"
-                placeholder="Edit markdown"
-                placeholderTextColor={screenColors.muted}
-              />
-            </View>
-          ) : (
-            <Pressable style={styles.editorPane} onPress={enterMarkdownEdit}>
-              <View style={styles.editorModeRow}>
-                <Text style={styles.editorModeLabel}>Markdown preview</Text>
-                <TouchableOpacity style={styles.inlineModeButton} onPress={enterMarkdownEdit}>
-                  <Text style={styles.inlineModeButtonText}>Edit</Text>
-                </TouchableOpacity>
-              </View>
-              <ScrollView style={styles.markdownScroll} contentContainerStyle={styles.markdownScrollContent}>
-                {previewMarkdown.trim().length > 0 ? (
-                  <Markdown style={markdownStyles}>{previewMarkdown}</Markdown>
-                ) : (
-                  <Text style={styles.emptyMarkdownText}>Tap to start writing this note.</Text>
-                )}
-              </ScrollView>
-            </Pressable>
-          )
-        ) : (
-          <View style={styles.editorPane}>
-            <View style={styles.editorModeRow}>
-              <Text style={styles.editorModeLabel}>Plain text</Text>
-            </View>
-            <TextInput
-              multiline
-              style={[styles.editor, styles.txtEditor]}
-              value={editorText}
-              onChangeText={(value) => void commitEditorText(value)}
-              onSelectionChange={handleSelectionChange}
-              textAlignVertical="top"
-              placeholder="Edit plain text"
-              placeholderTextColor={screenColors.muted}
-            />
-          </View>
-        )}
+        <TextInput
+          multiline
+          autoFocus={isMarkdownMode}
+          style={[styles.editor, isMarkdownMode ? styles.markdownEditor : styles.txtEditor]}
+          value={editorText}
+          onChangeText={(value) => void commitEditorText(value)}
+          onSelectionChange={handleSelectionChange}
+          textAlignVertical="top"
+          placeholder={isMarkdownMode ? 'Edit markdown' : 'Edit plain text'}
+          placeholderTextColor={screenColors.muted}
+        />
       </View>
 
       <Modal visible={showHeaderPicker} transparent animationType={animationType} onRequestClose={() => setShowHeaderPicker(false)}>
@@ -834,12 +768,36 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
-  presenceRail: {
-    flexDirection: 'row',
+  presenceOverlay: {
+    position: 'absolute',
+    right: 14,
+    zIndex: 20,
+    alignItems: 'center',
     gap: 8,
-    justifyContent: 'flex-end',
-    paddingHorizontal: 14,
-    paddingBottom: 8,
+  },
+  remoteCursorOverlay: {
+    position: 'absolute',
+    right: 18,
+    zIndex: 19,
+    alignItems: 'center',
+    gap: 6,
+  },
+  remoteCursorBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 4,
+  },
+  remoteCursorBar: {
+    width: 2,
+    height: 18,
+    borderRadius: 999,
+    backgroundColor: screenColors.accent,
+  },
+  remoteCursorInitial: {
+    color: screenColors.accentSoft,
+    fontSize: 10,
+    fontWeight: '700',
   },
   avatar: {
     width: 30,
@@ -897,64 +855,8 @@ const styles = StyleSheet.create({
   strikeText: {
     textDecorationLine: 'line-through',
   },
-  cursorStrip: {
-    gap: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-  },
-  cursorText: {
-    color: screenColors.accentSoft,
-    fontSize: 12,
-    backgroundColor: 'rgba(249,115,22,0.12)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
-  },
   editorStage: {
     flex: 1,
-  },
-  editorPane: {
-    flex: 1,
-  },
-  editorModeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 12,
-    paddingBottom: 8,
-  },
-  editorModeLabel: {
-    color: screenColors.muted,
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
-  inlineModeButton: {
-    borderRadius: 999,
-    backgroundColor: '#16283a',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  inlineModeButtonText: {
-    color: screenColors.text,
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  markdownScroll: {
-    flex: 1,
-  },
-  markdownScrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 32,
-  },
-  emptyMarkdownText: {
-    color: screenColors.muted,
-    fontSize: 16,
-    lineHeight: 24,
-    paddingTop: 8,
   },
   editor: {
     flex: 1,
@@ -965,10 +867,10 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     textAlignVertical: 'top',
   },
-  markdownSourceEditor: {
-    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+  markdownEditor: {
+    fontFamily: Platform.select({ ios: 'Times New Roman', default: 'serif' }),
     fontSize: 17,
-    lineHeight: 31,
+    lineHeight: 30,
   },
   txtEditor: {
     fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
@@ -1280,136 +1182,5 @@ const styles = StyleSheet.create({
   conflictItemMeta: {
     color: screenColors.muted,
     fontSize: 12,
-  },
-})
-
-const markdownStyles = StyleSheet.create({
-  body: {
-    color: screenColors.text,
-    fontSize: 17,
-    lineHeight: 28,
-  },
-  heading1: {
-    color: screenColors.text,
-    fontSize: 34,
-    lineHeight: 40,
-    fontWeight: '700',
-    marginBottom: 16,
-  },
-  heading2: {
-    color: screenColors.text,
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: '700',
-    marginBottom: 16,
-  },
-  heading3: {
-    color: screenColors.text,
-    fontSize: 24,
-    lineHeight: 30,
-    fontWeight: '700',
-    marginBottom: 14,
-  },
-  heading4: {
-    color: screenColors.text,
-    fontSize: 20,
-    lineHeight: 26,
-    fontWeight: '700',
-    marginBottom: 14,
-  },
-  heading5: {
-    color: screenColors.text,
-    fontSize: 18,
-    lineHeight: 24,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  heading6: {
-    color: screenColors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '700',
-    marginBottom: 12,
-  },
-  paragraph: {
-    color: screenColors.text,
-    fontSize: 17,
-    lineHeight: 28,
-    marginTop: 0,
-    marginBottom: 16,
-  },
-  blockquote: {
-    color: '#d5dee9',
-    borderLeftWidth: 3,
-    borderLeftColor: screenColors.accent,
-    paddingLeft: 12,
-    marginBottom: 16,
-  },
-  bullet_list: {
-    marginBottom: 16,
-  },
-  ordered_list: {
-    marginBottom: 16,
-  },
-  list_item: {
-    color: screenColors.text,
-    fontSize: 17,
-    lineHeight: 28,
-    marginBottom: 4,
-  },
-  code_inline: {
-    color: '#f6f9ff',
-    backgroundColor: '#182b42',
-    borderRadius: 6,
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
-  },
-  code_block: {
-    color: '#f6f9ff',
-    backgroundColor: '#122338',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 16,
-    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
-  },
-  fence: {
-    color: '#f6f9ff',
-    backgroundColor: '#122338',
-    borderRadius: 16,
-    padding: 14,
-    marginBottom: 16,
-    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
-  },
-  hr: {
-    backgroundColor: '#29435d',
-    height: 1,
-    marginVertical: 16,
-  },
-  table: {
-    borderWidth: 1,
-    borderColor: '#29435d',
-    marginBottom: 16,
-  },
-  thead: {
-    backgroundColor: '#122338',
-  },
-  th: {
-    color: screenColors.text,
-    padding: 8,
-    borderRightWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#29435d',
-    fontWeight: '700',
-  },
-  td: {
-    color: screenColors.text,
-    padding: 8,
-    borderRightWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#29435d',
-  },
-  link: {
-    color: '#7cc4ff',
   },
 })

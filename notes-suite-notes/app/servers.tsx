@@ -41,9 +41,12 @@ export default function ServersScreen({ onBack }: ServersScreenProps) {
     connectingServer,
     upsertPasswordServer,
     upsertOidcServer,
+    deleteServerAccount,
   } = useNotesApp()
   const [showEditor, setShowEditor] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null)
+  const [deletingAccountId, setDeletingAccountId] = useState<string | null>(null)
   const [editor, setEditor] = useState<ServerEditorState>(EMPTY_EDITOR)
   const [connectionStates, setConnectionStates] = useState<Record<string, ConnectionState>>({})
   const [savingMode, setSavingMode] = useState<'password' | 'oidc'>('password')
@@ -85,10 +88,13 @@ export default function ServersScreen({ onBack }: ServersScreenProps) {
       [account.id]: { state: 'testing', message: 'Testing connection…' },
     }))
     try {
-      await testServerConnection(account.base_url)
+      const result = await testServerConnection(account.base_url)
       setConnectionStates((current) => ({
         ...current,
-        [account.id]: { state: 'connected', message: 'Connected' },
+        [account.id]: {
+          state: 'connected',
+          message: `Connected. Server returned ${result.noteCount} note${result.noteCount === 1 ? '' : 's'}.`,
+        },
       }))
     } catch (error) {
       setConnectionStates((current) => ({
@@ -99,6 +105,23 @@ export default function ServersScreen({ onBack }: ServersScreenProps) {
         },
       }))
     }
+  }
+
+  function confirmDeleteServer(accountId: string) {
+    setDeletingAccountId(accountId)
+    setShowDeleteConfirm(true)
+  }
+
+  async function handleDeleteServer() {
+    if (!deletingAccountId) return
+    await deleteServerAccount(deletingAccountId)
+    setConnectionStates((current) => {
+      const next = { ...current }
+      delete next[deletingAccountId]
+      return next
+    })
+    setDeletingAccountId(null)
+    setShowDeleteConfirm(false)
   }
 
   async function submitServerEditor(mode: 'password' | 'oidc') {
@@ -143,31 +166,33 @@ export default function ServersScreen({ onBack }: ServersScreenProps) {
           return (
             <View key={account.id} style={styles.serverCard}>
               <View style={styles.serverHeader}>
-                <TouchableOpacity style={styles.editButton} onPress={() => openEditServerModal(account)}>
-                  <PencilIcon />
-                </TouchableOpacity>
                 <View style={styles.serverHeading}>
                   <Text style={styles.serverName}>{account.label}</Text>
                   <Text style={styles.serverUrl}>{account.base_url}</Text>
                 </View>
+                <View style={styles.serverActions}>
+                  <TouchableOpacity style={styles.headerActionButton} onPress={() => openEditServerModal(account)}>
+                    <PencilIcon />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.headerActionButton, styles.deleteButton]} onPress={() => confirmDeleteServer(account.id)}>
+                    <Text style={styles.deleteButtonText}>Delete</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <View style={styles.fieldRow}>
-                <PencilIcon />
                 <View style={styles.fieldCopy}>
                   <Text style={styles.fieldLabel}>Identity</Text>
                   <Text style={styles.fieldValue}>{identity?.label ?? 'Unknown identity'}</Text>
                 </View>
               </View>
               <View style={styles.fieldRow}>
-                <PencilIcon />
                 <View style={styles.fieldCopy}>
                   <Text style={styles.fieldLabel}>Username / email</Text>
                   <Text style={styles.fieldValue}>{identity?.user.email || identity?.user.username || 'Not available'}</Text>
                 </View>
               </View>
               <View style={styles.fieldRow}>
-                <PencilIcon />
                 <View style={styles.fieldCopy}>
                   <Text style={styles.fieldLabel}>Auth type</Text>
                   <Text style={styles.fieldValue}>{identity?.auth_type.toUpperCase() ?? 'UNKNOWN'}</Text>
@@ -274,6 +299,25 @@ export default function ServersScreen({ onBack }: ServersScreenProps) {
           </Pressable>
         </Pressable>
       </Modal>
+
+      <Modal visible={showDeleteConfirm} transparent animationType="fade" onRequestClose={() => setShowDeleteConfirm(false)}>
+        <Pressable style={styles.modalWrap} onPress={() => setShowDeleteConfirm(false)}>
+          <Pressable style={styles.modalCard} onPress={(event) => event.stopPropagation()}>
+            <Text style={styles.modalTitle}>Delete server</Text>
+            <Text style={styles.confirmationText}>
+              Remove this server entry from the app? Local notes will stay on the device so you can recover and reconnect later.
+            </Text>
+            <View style={styles.buttonRow}>
+              <TouchableOpacity style={[styles.actionButton, styles.secondaryButton]} onPress={() => setShowDeleteConfirm(false)}>
+                <Text style={styles.actionButtonText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.actionButton, styles.dangerButton]} onPress={() => void handleDeleteServer()}>
+                <Text style={styles.actionButtonText}>Delete</Text>
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   )
 }
@@ -341,24 +385,38 @@ const styles = StyleSheet.create({
   },
   serverHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 12,
   },
   serverHeading: {
     flex: 1,
     gap: 4,
   },
-  editButton: {
-    width: 38,
+  serverActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerActionButton: {
+    minWidth: 38,
     height: 38,
     borderRadius: 12,
     backgroundColor: '#16283a',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 12,
   },
   pencilIcon: {
     color: screenColors.accentSoft,
     fontSize: 18,
+    fontWeight: '700',
+  },
+  deleteButton: {
+    backgroundColor: '#3a1c24',
+  },
+  deleteButtonText: {
+    color: '#fda4af',
+    fontSize: 13,
     fontWeight: '700',
   },
   serverName: {
@@ -372,7 +430,6 @@ const styles = StyleSheet.create({
   fieldRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
   },
   fieldCopy: {
     flex: 1,
@@ -486,5 +543,13 @@ const styles = StyleSheet.create({
   actionButtonText: {
     color: '#fff',
     fontWeight: '700',
+  },
+  dangerButton: {
+    backgroundColor: '#b91c1c',
+  },
+  confirmationText: {
+    color: screenColors.muted,
+    fontSize: 14,
+    lineHeight: 21,
   },
 })

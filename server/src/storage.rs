@@ -202,15 +202,6 @@ impl BlobStorage {
         })
     }
 
-    pub async fn list_tree(&self) -> AppResult<Vec<FileNode>> {
-        let mut nodes = Vec::new();
-        nodes.push(build_node_from_fs(&self.root.join("notes"), "notes")?);
-        nodes.push(build_node_from_fs(&self.root.join("diagrams"), "diagrams")?);
-        nodes.push(build_node_from_fs(&self.root.join("voice"), "voice")?);
-        nodes.push(build_node_from_fs(&self.root.join("drive"), "drive")?);
-        Ok(nodes)
-    }
-
     pub async fn list_drive_tree(&self) -> AppResult<FileNode> {
         build_node_from_fs(&self.root.join("drive"), "drive")
     }
@@ -317,28 +308,6 @@ impl BlobStorage {
             updated_at: metadata_timestamp_rfc3339(&source_metadata, false),
             children: Vec::new(),
         })
-    }
-
-    pub async fn delete_drive_path(&self, relative_path: &str) -> AppResult<()> {
-        let relative = sanitize_drive_managed_path(relative_path)?;
-        if relative == "drive" {
-            return Err(AppError::BadRequest("cannot delete drive root".into()));
-        }
-        let full = self.resolve(&relative);
-        let metadata = fs::metadata(&full)
-            .await
-            .map_err(|err| AppError::Internal(err.to_string()))?;
-        if metadata.is_dir() {
-            fs::remove_dir_all(&full)
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        } else {
-            fs::remove_file(&full)
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        }
-        cleanup_empty_managed_parents(&self.root.join("drive"), full.parent()).await?;
-        Ok(())
     }
 
     pub async fn move_drive_path_to_trash(
@@ -540,28 +509,6 @@ impl BlobStorage {
         })
     }
 
-    pub async fn delete_voice_path(&self, relative_path: &str) -> AppResult<()> {
-        let relative = sanitize_voice_managed_path(relative_path)?;
-        if relative == "voice" {
-            return Err(AppError::BadRequest("cannot delete voice root".into()));
-        }
-        let full = self.resolve(&relative);
-        let metadata = fs::metadata(&full)
-            .await
-            .map_err(|err| AppError::Internal(err.to_string()))?;
-        if metadata.is_dir() {
-            fs::remove_dir_all(&full)
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        } else {
-            fs::remove_file(&full)
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        }
-        cleanup_empty_managed_parents(&self.root.join("voice"), full.parent()).await?;
-        Ok(())
-    }
-
     pub async fn rename_voice_path(
         &self,
         relative_path: &str,
@@ -617,38 +564,6 @@ impl BlobStorage {
         })
     }
 
-    pub async fn delete_note_markdown(
-        &self,
-        folder: &str,
-        title: &str,
-        note_id: Uuid,
-    ) -> AppResult<()> {
-        let relative = note_relative_path(folder, title, note_id);
-        let full = self.resolve(&relative);
-        if fs::try_exists(&full)
-            .await
-            .map_err(|err| AppError::Internal(err.to_string()))?
-        {
-            fs::remove_file(&full)
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        }
-        Ok(())
-    }
-
-    pub async fn delete_diagram_xml(&self, title: &str, diagram_id: Uuid) -> AppResult<()> {
-        let relative = diagram_relative_path(title, diagram_id);
-        let full = self.resolve(&relative);
-        if fs::try_exists(&full)
-            .await
-            .map_err(|err| AppError::Internal(err.to_string()))?
-        {
-            fs::remove_file(&full)
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        }
-        Ok(())
-    }
 }
 
 fn bytes_to_mb(value: u64) -> u64 {

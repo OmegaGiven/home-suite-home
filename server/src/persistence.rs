@@ -546,19 +546,6 @@ impl PersistenceBackend {
         }
     }
 
-    pub async fn delete_note(&self, id: Uuid) -> AppResult<bool> {
-        match self {
-            Self::File { .. } => Ok(false),
-            Self::Postgres { client, .. } => {
-                client
-                    .execute("delete from notes where id=$1", &[&id.to_string()])
-                    .await
-                    .map_err(|err| AppError::Internal(err.to_string()))?;
-                Ok(true)
-            }
-        }
-    }
-
     pub async fn list_diagrams(&self) -> AppResult<Option<Vec<Diagram>>> {
         match self {
             Self::File { .. } => Ok(None),
@@ -649,22 +636,6 @@ impl PersistenceBackend {
                 if updated == 0 {
                     return Err(AppError::BadRequest("revision mismatch".into()));
                 }
-                Ok(true)
-            }
-        }
-    }
-
-    pub async fn delete_diagram(&self, diagram_id: Uuid) -> AppResult<bool> {
-        match self {
-            Self::File { .. } => Ok(false),
-            Self::Postgres { client, .. } => {
-                client
-                    .execute(
-                        "delete from diagrams where id=$1",
-                        &[&diagram_id.to_string()],
-                    )
-                    .await
-                    .map_err(|err| AppError::Internal(err.to_string()))?;
                 Ok(true)
             }
         }

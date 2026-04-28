@@ -782,8 +782,6 @@ pub struct UpdateNoteRequest {
     #[serde(default)]
     pub document: Option<NoteDocument>,
     #[serde(default)]
-    pub operation_batch: Option<NoteDocumentOperationBatch>,
-    #[serde(default)]
     pub visibility: Option<ResourceVisibility>,
 }
 

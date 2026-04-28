@@ -140,6 +140,22 @@ export async function getBinding(localNoteId: string) {
   return row ? (JSON.parse(row.binding_json) as NoteBinding) : null
 }
 
+export async function findBindingByRemoteNoteId(remoteNoteId: string) {
+  const database = await openDatabase()
+  const rows = await database.getAllAsync<{ binding_json: string }>('SELECT binding_json FROM note_bindings')
+  for (const row of rows) {
+    try {
+      const binding = JSON.parse(row.binding_json) as NoteBinding
+      if (binding.remote_note_id === remoteNoteId) {
+        return binding
+      }
+    } catch (error) {
+      console.warn('Skipping unreadable binding row', error)
+    }
+  }
+  return null
+}
+
 export async function queueOperation(record: PendingNoteOperationRecord) {
   const database = await openDatabase()
   await database.runAsync(
@@ -209,6 +225,11 @@ export async function saveServerAccount(account: ServerAccount) {
       console.warn('Unable to persist server token in secure store', identity.id, error)
     }
   }
+}
+
+export async function deleteServerAccount(accountId: string) {
+  const database = await openDatabase()
+  await database.runAsync('DELETE FROM server_accounts WHERE id = ?', [accountId])
 }
 
 export async function listServerAccounts() {

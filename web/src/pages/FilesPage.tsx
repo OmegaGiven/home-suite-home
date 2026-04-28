@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type ChangeEvent, type DragEvent, type ReactNode, type RefObject } from 'react'
+import { useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type DragEvent, type ReactNode, type RefObject } from 'react'
 import { LibraryActionBar } from '../components/LibraryActionBar'
 import { NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { FileTreeHeader, FileTreeNode, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
@@ -58,6 +58,7 @@ type Props = {
   onSetNewDriveFolderName: (value: string) => void
   onCreateDriveFolderFromSelection: () => void
   onSetPendingDeletePaths: (paths: string[]) => void
+  onSetMarkedFilePaths: (paths: string[] | ((current: string[]) => string[])) => void
   onDeleteManagedPaths: (paths: string[]) => void
   onSetRenamingFilePath: (path: string | null) => void
   onSetRenameFileName: (value: string) => void
@@ -121,6 +122,7 @@ export function FilesPage({
   onSetNewDriveFolderName,
   onCreateDriveFolderFromSelection,
   onSetPendingDeletePaths,
+  onSetMarkedFilePaths,
   onDeleteManagedPaths,
   onSetRenamingFilePath,
   onSetRenameFileName,
@@ -148,6 +150,7 @@ export function FilesPage({
   onDownloadManagedPath,
   onBeginRenameCurrentFile,
 }: Props) {
+  const treeContainerRef = useRef<HTMLDivElement | null>(null)
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
   const [metaFilterOpen, setMetaFilterOpen] = useState(false)
@@ -170,6 +173,34 @@ export function FilesPage({
     () => ancestorDirectoryPaths(selectedFilePath),
     [selectedFilePath],
   )
+
+  function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
+    if (options?.shiftKey && selectedFilePath && treeContainerRef.current) {
+      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
+        .map((element) => element.dataset.fileTreePath)
+        .filter((value): value is string => Boolean(value))
+      const anchorIndex = orderedPaths.indexOf(selectedFilePath)
+      const targetIndex = orderedPaths.indexOf(path)
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
+        const range = orderedPaths.slice(start, end + 1)
+        onSetMarkedFilePaths(Array.from(new Set(range)))
+        selectFileTreeNode(path)
+        return
+      }
+    }
+
+    if (options?.metaKey || options?.ctrlKey) {
+      onSetMarkedFilePaths((current) =>
+        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
+      )
+      selectFileTreeNode(path)
+      return
+    }
+
+    onSetMarkedFilePaths(path ? [path] : [])
+    selectFileTreeNode(path)
+  }
 
   return (
     <>
@@ -254,7 +285,7 @@ export function FilesPage({
                 },
               ]}
             />
-            <div className="folder-tree file-tree">
+            <div ref={treeContainerRef} className="folder-tree file-tree">
             <FileTreeHeader
               rowMetaVisibility={rowMetaVisibility}
               sortState={sortState}
@@ -271,7 +302,7 @@ export function FilesPage({
                 markedPaths={markedFilePaths}
                 draggingPath={draggingFilePath}
                 dropTargetPath={dropTargetPath}
-                onSelect={selectFileTreeNode}
+                onSelect={handleTreeSelection}
                 onDragStart={beginFileDrag}
                 onDragEnd={onFileDragEnd}
                 onDropTargetChange={onDropTargetChange}

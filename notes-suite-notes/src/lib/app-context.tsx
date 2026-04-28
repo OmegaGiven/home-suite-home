@@ -18,6 +18,8 @@ import {
   markdownFromDocument,
 } from 'notes-suite-contracts'
 import {
+  deleteServerAccount as deleteStoredServerAccount,
+  findBindingByRemoteNoteId,
   getBinding,
   getSetting,
   initializeLocalStore,
@@ -39,6 +41,7 @@ import {
   createServerAccount,
   loginWithOidc,
   loginWithPassword,
+  listRemoteNotes,
   noteSocketUrl,
   openNoteSession,
   pullNoteOperations,
@@ -92,6 +95,7 @@ type NotesAppContextValue = {
   startOidcLogin: () => Promise<void>
   upsertPasswordServer: (draft: ServerDraft, existingAccountId?: string | null) => Promise<ServerAccount>
   upsertOidcServer: (draft: ServerDraft, existingAccountId?: string | null) => Promise<ServerAccount>
+  deleteServerAccount: (accountId: string) => Promise<void>
   connectingServer: boolean
   saveStatus: 'saved' | 'saving' | 'offline'
 }
@@ -163,11 +167,21 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const clientIdRef = useRef(createId('client'))
   const sessionIdRef = useRef<string | null>(null)
+  const notesRef = useRef<LocalNoteRecord[]>([])
+  const selectedNoteRef = useRef<LocalNoteRecord | null>(null)
 
   const selectedNote = useMemo(
     () => notes.find((note) => note.id === selectedNoteId) ?? notes[0] ?? null,
     [notes, selectedNoteId],
   )
+
+  useEffect(() => {
+    notesRef.current = notes
+  }, [notes])
+
+  useEffect(() => {
+    selectedNoteRef.current = selectedNote
+  }, [selectedNote])
 
   useEffect(() => {
     void (async () => {
@@ -231,6 +245,11 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }, [ready, serverAccounts, notes])
 
   useEffect(() => {
+    if (!ready || serverAccounts.length === 0) return
+    void syncRemoteLibraries(serverAccounts)
+  }, [ready, serverAccounts])
+
+  useEffect(() => {
     if (!selectedNote) return
     void hydrateAndConnectNote(selectedNote.id)
     return () => {
@@ -268,6 +287,51 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     connectRealtime(noteId)
   }
 
+  async function syncRemoteLibraries(targetAccounts: ServerAccount[]) {
+    for (const account of targetAccounts) {
+      try {
+        const remoteNotes = await listRemoteNotes(account.base_url)
+        const identity = account.identities[0]
+        for (const remoteNote of remoteNotes) {
+          const existingBinding = await findBindingByRemoteNoteId(remoteNote.id)
+          const localNoteId = existingBinding?.local_note_id ?? remoteNote.id
+          const existingLocal = notesRef.current.find((entry) => entry.id === localNoteId)
+          const nextNote: LocalNoteRecord = {
+            id: localNoteId,
+            title: remoteNote.title,
+            folder: remoteNote.folder,
+            markdown: remoteNote.markdown,
+            document: remoteNote.document as LocalNoteRecord['document'],
+            storage_mode: 'synced',
+            visibility: remoteNote.visibility ?? 'private',
+            selected_server_identity_id: identity?.id ?? existingLocal?.selected_server_identity_id ?? null,
+            created_at: existingLocal?.created_at ?? remoteNote.updated_at,
+            updated_at: remoteNote.updated_at,
+          }
+          await upsertNote(nextNote)
+          await saveBinding({
+            local_note_id: localNoteId,
+            server_account_id: account.id,
+            server_identity_id: identity?.id ?? null,
+            remote_note_id: remoteNote.id,
+            remote_revision: remoteNote.revision,
+            last_pulled_at: remoteNote.updated_at,
+            last_pushed_at: existingBinding?.last_pushed_at ?? null,
+          })
+          setNotes((current) => {
+            const found = current.some((entry) => entry.id === localNoteId)
+            if (found) {
+              return current.map((entry) => (entry.id === localNoteId ? nextNote : entry))
+            }
+            return [nextNote, ...current]
+          })
+        }
+      } catch (error) {
+        console.warn('Unable to import remote notes for server', account.base_url, error)
+      }
+    }
+  }
+
   async function hydrateFromServer(noteId: string) {
     const binding = await getBinding(noteId)
     if (!binding?.remote_note_id || !binding.server_identity_id) return
@@ -276,7 +340,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     if (!account || !identity) return
     try {
       const response = await pullNoteOperations(account.base_url, identity.token, binding.remote_note_id, binding.remote_revision)
-      const current = notes.find((entry) => entry.id === noteId)
+      const current = notesRef.current.find((entry) => entry.id === noteId)
       if (current) {
         const nextNote: LocalNoteRecord = {
           ...current,
@@ -332,7 +396,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       if (!binding?.remote_note_id || !binding.server_identity_id) return
       const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
       const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
-      const current = notes.find((entry) => entry.id === noteId)
+      const current = notesRef.current.find((entry) => entry.id === noteId)
       if (!account || !identity || !binding.remote_note_id || !current) return
       if (wsRef.current) {
         wsRef.current.close()
@@ -387,9 +451,13 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         }
         if ((payload.type === 'note_patch' || payload.type === 'note_operations') && payload.note_id === binding.remote_note_id) {
           if (payload.type === 'note_operations' && payload.client_id === clientIdRef.current) return
-          const nextDocument = payload.document ?? current.document
+          const latestNote =
+            notesRef.current.find((entry) => entry.id === noteId) ??
+            (selectedNoteRef.current?.id === noteId ? selectedNoteRef.current : null)
+          if (!latestNote) return
+          const nextDocument = payload.document ?? latestNote.document
           const nextNote: LocalNoteRecord = {
-            ...current,
+            ...latestNote,
             title: payload.title,
             folder: payload.folder,
             markdown: payload.markdown,
@@ -698,6 +766,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         return [account, ...current]
       })
       if (!existing) setServerDraft(DEFAULT_SERVER_DRAFT)
+      await syncRemoteLibraries(existing ? [account] : [account])
       return account
     } finally {
       setConnectingServer(false)
@@ -735,10 +804,16 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         return [account, ...current]
       })
       if (!existing) setServerDraft(DEFAULT_SERVER_DRAFT)
+      await syncRemoteLibraries(existing ? [account] : [account])
       return account
     } finally {
       setConnectingServer(false)
     }
+  }
+
+  async function deleteServerAccount(accountId: string) {
+    await deleteStoredServerAccount(accountId)
+    setServerAccounts((current) => current.filter((entry) => entry.id !== accountId))
   }
 
   async function linkNoteRecordToFirstServer(note: LocalNoteRecord) {
@@ -799,20 +874,22 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
           setConflicts(await listConflicts())
         }
         await removeQueuedOperation(operation.id)
-        const note = notes.find((entry) => entry.id === operation.note_id)
+        const note = notesRef.current.find((entry) => entry.id === operation.note_id)
         if (note) {
+          const nextNote: LocalNoteRecord = {
+            ...note,
+            markdown: response.note.markdown,
+            document: response.note.document,
+            updated_at: response.note.updated_at,
+          }
           const nextBinding: NoteBinding = {
             ...binding,
             remote_revision: response.note.revision,
             last_pushed_at: new Date().toISOString(),
           }
           await saveBinding(nextBinding)
-          await upsertNote({
-            ...note,
-            markdown: response.note.markdown,
-            document: response.note.document,
-            updated_at: response.note.updated_at,
-          })
+          await upsertNote(nextNote)
+          setNotes((current) => current.map((entry) => (entry.id === operation.note_id ? nextNote : entry)))
         }
       } catch {
         // Keep queued operation for retry.
@@ -851,6 +928,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         startOidcLogin,
         upsertPasswordServer,
         upsertOidcServer,
+        deleteServerAccount,
         connectingServer,
         saveStatus,
       }}

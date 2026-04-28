@@ -453,6 +453,79 @@ function App() {
     applySelectedNoteDocument(nextDocument, { note, markdown })
   }
 
+  function rebaseDirtySelectedNote(
+    authoritativeNote: Note,
+    currentSelected: Note,
+    localMarkdown: string,
+  ) {
+    const actorId = session?.user.id ?? currentSelected.last_editor_id ?? authoritativeNote.last_editor_id ?? 'local'
+    const localFolder = selectedFolderPathRef.current || currentSelected.folder
+    const localDocument =
+      selectedNoteDocumentRef.current ??
+      buildSelectedNoteDocumentState(localMarkdown, currentSelected, currentSelected.document)
+    const localNote: Note = {
+      ...currentSelected,
+      title: currentSelected.title,
+      folder: localFolder,
+      markdown: localMarkdown,
+      document: localDocument,
+    }
+    const persisted = persistedNoteStateRef.current[authoritativeNote.id]
+    const baseMarkdown = persisted?.markdown ?? authoritativeNote.markdown
+    const baseNote: Note = {
+      ...authoritativeNote,
+      title: persisted?.title ?? authoritativeNote.title,
+      folder: persisted?.folder ?? authoritativeNote.folder,
+      markdown: baseMarkdown,
+      document: noteDocumentFromMarkdown(
+        authoritativeNote.id,
+        baseMarkdown,
+        actorId,
+        authoritativeNote.document,
+      ),
+    }
+    const batch = buildReplaceDocumentBatch(
+      baseNote,
+      localNote,
+      localMarkdown,
+      actorId,
+      clientIdRef.current,
+    )
+
+    if (!batch.operations.some((operation) => operation.type === 'replace_document')) {
+      const document = applyNoteOperationBatch(authoritativeNote.document, batch)
+      const markdown = markdownFromNoteDocument(document)
+      return {
+        note: {
+          ...authoritativeNote,
+          title: localNote.title,
+          folder: localNote.folder,
+          markdown,
+          document,
+        },
+        hadConflict: false,
+      }
+    }
+
+    const merged = mergeConcurrentMarkdown(baseNote.markdown, localMarkdown, authoritativeNote.markdown)
+    const document = noteDocumentFromMarkdown(
+      authoritativeNote.id,
+      merged.markdown,
+      actorId,
+      authoritativeNote.document,
+    )
+    return {
+      note: {
+        ...authoritativeNote,
+        title: localNote.title,
+        folder: localNote.folder,
+        markdown: merged.markdown,
+        document,
+      },
+      hadConflict: merged.hadConflict,
+    }
+  }
+
   const {
     saveAdminSettings,
     createAdminUser,
@@ -2982,203 +3055,160 @@ function App() {
             }
           }
           if (payload.type === 'note_patch') {
-        const currentSelected = selectedNoteRef.current
-        const editorHasLocalFocus =
-          document.activeElement === noteEditorRef.current ||
-          (document.activeElement instanceof HTMLTextAreaElement &&
-            document.activeElement.classList.contains('note-markdown-editor'))
-        const selectedDirty =
-          payload.note_id === selectedNoteIdRef.current &&
-          currentSelected?.id === payload.note_id &&
-          currentNoteIsDirty() &&
-          editorHasLocalFocus
-        const realtimeBaseBeforeUpdate =
-          realtimeDraftBaseRef.current[payload.note_id] ??
-          persistedNoteStateRef.current[payload.note_id]?.markdown ??
-          currentSelected?.markdown ??
-          ''
-        const localSelectedMarkdown =
-          selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
-        const mergedSelectedPatch =
-          selectedDirty && localSelectedMarkdown !== null
-            ? mergeConcurrentMarkdown(
-                realtimeBaseBeforeUpdate,
-                localSelectedMarkdown,
-                payload.markdown,
-              )
-            : null
-
-        startTransition(() => {
-          persistedNoteStateRef.current[payload.note_id] = {
-            title: payload.title,
-            folder: payload.folder,
-            markdown: payload.markdown,
-          }
-          realtimeDraftBaseRef.current[payload.note_id] = payload.markdown
-          if (!locallyDirtyNoteIdsRef.current.has(payload.note_id)) {
-            clearNoteLocallyDirty(payload.note_id)
-          }
-          setNotes((current) =>
-            current.map((note) =>
-              note.id === payload.note_id
-                ? {
-                    ...note,
-                    title: payload.title,
-                    folder: payload.folder,
-                    markdown:
-                      selectedDirty && mergedSelectedPatch && note.id === payload.note_id
-                        ? mergedSelectedPatch.markdown
-                        : payload.markdown,
-                    document:
-                      selectedDirty && mergedSelectedPatch && note.id === payload.note_id
-                        ? noteDocumentFromMarkdown(
-                            note.id,
-                            mergedSelectedPatch.markdown,
-                            session?.user.id ?? note.last_editor_id,
-                            note.document,
-                          )
-                        : (payload.document ?? note.document),
-                    revision: payload.revision,
-                  }
-                : note,
-            ),
-          )
-        })
-
-        if (payload.note_id === selectedNoteIdRef.current) {
-          if (!selectedDirty) {
-            applySelectedNoteDocument(payload.document ?? currentSelected?.document, {
-              note:
-                currentSelected && currentSelected.id === payload.note_id
-                  ? { ...currentSelected, title: payload.title, folder: payload.folder }
-                  : null,
+            const currentSelected = selectedNoteRef.current
+            const currentNote =
+              notesRef.current.find((note) => note.id === payload.note_id) ??
+              (currentSelected?.id === payload.note_id ? currentSelected : null)
+            if (!currentNote) return
+            const authoritativeNote: Note = {
+              ...currentNote,
+              title: payload.title,
+              folder: payload.folder,
               markdown: payload.markdown,
+              document: payload.document ?? currentNote.document,
+              revision: payload.revision,
+            }
+            const editorHasLocalFocus =
+              document.activeElement === noteEditorRef.current ||
+              (document.activeElement instanceof HTMLTextAreaElement &&
+                document.activeElement.classList.contains('note-markdown-editor'))
+            const selectedDirty =
+              payload.note_id === selectedNoteIdRef.current &&
+              currentSelected?.id === payload.note_id &&
+              currentNoteIsDirty() &&
+              editorHasLocalFocus
+            const localSelectedMarkdown =
+              selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
+            const rebasedSelectedPatch =
+              selectedDirty && localSelectedMarkdown !== null
+                ? rebaseDirtySelectedNote(authoritativeNote, currentSelected, localSelectedMarkdown)
+                : null
+
+            startTransition(() => {
+              persistedNoteStateRef.current[payload.note_id] = {
+                title: authoritativeNote.title,
+                folder: authoritativeNote.folder,
+                markdown: authoritativeNote.markdown,
+              }
+              realtimeDraftBaseRef.current[payload.note_id] = authoritativeNote.markdown
+              if (!locallyDirtyNoteIdsRef.current.has(payload.note_id)) {
+                clearNoteLocallyDirty(payload.note_id)
+              }
+              setNotes((current) =>
+                current.map((note) =>
+                  note.id === payload.note_id
+                    ? {
+                        ...authoritativeNote,
+                        document: authoritativeNote.document,
+                      }
+                    : note,
+                ),
+              )
             })
-            setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (
-              noteEditorModeRef.current === 'rich' &&
-              noteEditorRef.current &&
-              noteEditorRef.current.dataset.noteEditorModel !== 'blocks'
-            ) {
-              noteEditorRef.current.innerHTML = markdownToEditableHtml(payload.markdown)
+
+            if (payload.note_id === selectedNoteIdRef.current) {
+              const visibleSelected = rebasedSelectedPatch?.note ?? authoritativeNote
+              applySelectedNoteDocument(visibleSelected.document, {
+                note: visibleSelected,
+                markdown: visibleSelected.markdown,
+              })
+              setSelectedFolderPath(normalizeFolderPath(visibleSelected.folder || 'Inbox'))
+              if (
+                noteEditorModeRef.current === 'rich' &&
+                noteEditorRef.current &&
+                noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
+                !editorHasLocalFocus
+              ) {
+                noteEditorRef.current.innerHTML = markdownToEditableHtml(visibleSelected.markdown)
+              }
+              if (rebasedSelectedPatch) {
+                setStatus(
+                  rebasedSelectedPatch.hadConflict
+                    ? 'Concurrent note edits merged with conflict markers'
+                    : 'Concurrent note edits merged',
+                )
+              }
             }
-          } else if (mergedSelectedPatch) {
-            applySelectedNoteMarkdown(mergedSelectedPatch.markdown)
-            setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (
-              noteEditorModeRef.current === 'rich' &&
-              noteEditorRef.current &&
-              noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
-              !editorHasLocalFocus
-            ) {
-              noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedPatch.markdown)
-            }
-            setStatus(
-              mergedSelectedPatch.hadConflict
-                ? 'Concurrent note edits merged with conflict markers'
-                : 'Concurrent note edits merged',
-            )
-          }
-        }
           }
           if (payload.type === 'note_draft' || payload.type === 'note_operations') {
-        if (payload.client_id === clientIdRef.current) return
-        const isSelectedNote = payload.note_id === selectedNoteIdRef.current
-        const editorHasLocalFocus =
-          document.activeElement === noteEditorRef.current ||
-          (document.activeElement instanceof HTMLTextAreaElement &&
-            document.activeElement.classList.contains('note-markdown-editor'))
-        const selectedDirty = isSelectedNote && currentNoteIsDirty()
-        const currentSelected = selectedNoteRef.current
-        const incomingDocument =
-          payload.type === 'note_operations'
-            ? applyNoteOperationBatch(currentSelected?.id === payload.note_id ? currentSelected.document : undefined, payload.batch)
-            : (payload.document ?? (currentSelected?.id === payload.note_id ? currentSelected.document : { blocks: [], clock: {}, last_operation_id: '' }))
-        const incomingMarkdown =
-          payload.type === 'note_operations'
-            ? markdownFromNoteDocument(incomingDocument)
-            : payload.markdown
-        const realtimeBaseBeforeUpdate =
-          realtimeDraftBaseRef.current[payload.note_id] ??
-          persistedNoteStateRef.current[payload.note_id]?.markdown ??
-          currentSelected?.markdown ??
-          ''
-        const localSelectedMarkdown =
-          isSelectedNote && selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
-        const mergedSelectedDraft =
-          isSelectedNote && selectedDirty && localSelectedMarkdown !== null
-            ? mergeConcurrentMarkdown(
-                realtimeBaseBeforeUpdate,
-                localSelectedMarkdown,
-                incomingMarkdown,
-              )
-            : null
-
-        startTransition(() => {
-          realtimeDraftBaseRef.current[payload.note_id] = incomingMarkdown
-          setNotes((current) =>
-            current.map((note) =>
-              note.id === payload.note_id
-                ? {
-                    ...note,
-                    title: payload.title,
-                    folder: payload.folder,
-                    markdown:
-                      isSelectedNote && selectedDirty && mergedSelectedDraft && note.id === payload.note_id
-                        ? mergedSelectedDraft.markdown
-                        : incomingMarkdown,
-                    document:
-                      isSelectedNote && selectedDirty && mergedSelectedDraft && note.id === payload.note_id
-                        ? noteDocumentFromMarkdown(
-                            note.id,
-                            mergedSelectedDraft.markdown,
-                            session?.user.id ?? note.last_editor_id,
-                            note.document,
-                          )
-                        : incomingDocument,
-                    revision: Math.max(note.revision, payload.revision),
-                  }
-                : note,
-            ),
-          )
-        })
-
-        if (isSelectedNote) {
-          registerPresence(payload.note_id, payload.user)
-          if (!(selectedDirty && editorHasLocalFocus)) {
-            applySelectedNoteDocument(incomingDocument, {
-              note:
-                currentSelected && currentSelected.id === payload.note_id
-                  ? { ...currentSelected, title: payload.title, folder: payload.folder }
-                  : null,
+            if (payload.client_id === clientIdRef.current) return
+            const currentSelected = selectedNoteRef.current
+            const currentNote =
+              notesRef.current.find((note) => note.id === payload.note_id) ??
+              (currentSelected?.id === payload.note_id ? currentSelected : null)
+            if (!currentNote) return
+            const isSelectedNote = payload.note_id === selectedNoteIdRef.current
+            const editorHasLocalFocus =
+              document.activeElement === noteEditorRef.current ||
+              (document.activeElement instanceof HTMLTextAreaElement &&
+                document.activeElement.classList.contains('note-markdown-editor'))
+            const selectedDirty = isSelectedNote && currentNoteIsDirty()
+            const incomingDocument =
+              payload.type === 'note_operations'
+                ? applyNoteOperationBatch(currentNote.document, payload.batch)
+                : (payload.document ?? currentNote.document)
+            const incomingMarkdown =
+              payload.type === 'note_operations'
+                ? markdownFromNoteDocument(incomingDocument)
+                : payload.markdown
+            const authoritativeNote: Note = {
+              ...currentNote,
+              title: payload.title,
+              folder: payload.folder,
               markdown: incomingMarkdown,
+              document: incomingDocument,
+              revision: Math.max(currentNote.revision, payload.revision),
+            }
+            const localSelectedMarkdown =
+              isSelectedNote && selectedDirty && currentSelected?.id === payload.note_id ? currentNoteMarkdown() : null
+            const rebasedSelectedDraft =
+              isSelectedNote && selectedDirty && localSelectedMarkdown !== null
+                ? rebaseDirtySelectedNote(authoritativeNote, currentSelected!, localSelectedMarkdown)
+                : null
+
+            startTransition(() => {
+              persistedNoteStateRef.current[payload.note_id] = {
+                title: authoritativeNote.title,
+                folder: authoritativeNote.folder,
+                markdown: authoritativeNote.markdown,
+              }
+              realtimeDraftBaseRef.current[payload.note_id] = authoritativeNote.markdown
+              setNotes((current) =>
+                current.map((note) =>
+                  note.id === payload.note_id
+                    ? {
+                        ...authoritativeNote,
+                        document: authoritativeNote.document,
+                      }
+                    : note,
+                ),
+              )
             })
-            setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (
-              noteEditorModeRef.current === 'rich' &&
-              noteEditorRef.current &&
-              noteEditorRef.current.dataset.noteEditorModel !== 'blocks'
-            ) {
-              noteEditorRef.current.innerHTML = markdownToEditableHtml(incomingMarkdown)
+
+            if (isSelectedNote) {
+              registerPresence(payload.note_id, payload.user)
+              const visibleSelected = rebasedSelectedDraft?.note ?? authoritativeNote
+              applySelectedNoteDocument(visibleSelected.document, {
+                note: visibleSelected,
+                markdown: visibleSelected.markdown,
+              })
+              setSelectedFolderPath(normalizeFolderPath(visibleSelected.folder || 'Inbox'))
+              if (
+                noteEditorModeRef.current === 'rich' &&
+                noteEditorRef.current &&
+                noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
+                !editorHasLocalFocus
+              ) {
+                noteEditorRef.current.innerHTML = markdownToEditableHtml(visibleSelected.markdown)
+              }
+              if (rebasedSelectedDraft) {
+                setStatus(
+                  rebasedSelectedDraft.hadConflict
+                    ? 'Concurrent note edits merged with conflict markers'
+                    : 'Concurrent note edits merged',
+                )
+              }
             }
-          } else if (mergedSelectedDraft) {
-            applySelectedNoteMarkdown(mergedSelectedDraft.markdown)
-            setSelectedFolderPath(normalizeFolderPath(payload.folder || 'Inbox'))
-            if (
-              noteEditorModeRef.current === 'rich' &&
-              noteEditorRef.current &&
-              noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
-              !editorHasLocalFocus
-            ) {
-              noteEditorRef.current.innerHTML = markdownToEditableHtml(mergedSelectedDraft.markdown)
-            }
-            setStatus(
-              mergedSelectedDraft.hadConflict
-                ? 'Concurrent note edits merged with conflict markers'
-                : 'Concurrent note edits merged',
-            )
-          }
-        }
           }
           if (payload.type === 'note_presence') {
             registerPresence(payload.note_id, payload.user)
@@ -3280,7 +3310,7 @@ function App() {
               )
             : response.note.document
         const pulledMarkdown = pulledDocument ? markdownFromNoteDocument(pulledDocument) : response.note.markdown
-        const pulledNote = {
+        const pulledNote: Note = {
           ...response.note,
           document: pulledDocument,
           markdown: pulledMarkdown,
@@ -3291,15 +3321,10 @@ function App() {
           document.activeElement === noteEditorRef.current ||
           (document.activeElement instanceof HTMLTextAreaElement &&
             document.activeElement.classList.contains('note-markdown-editor'))
-        const merged =
-          selectedDirty
-            ? mergeConcurrentMarkdown(
-                realtimeDraftBaseRef.current[selectedNoteId] ??
-                  persistedNoteStateRef.current[selectedNoteId]?.markdown ??
-                  currentSelected.markdown,
-                currentNoteMarkdown(),
-                pulledNote.markdown,
-              )
+        const localSelectedMarkdown = selectedDirty ? currentNoteMarkdown() : null
+        const rebasedSelected =
+          selectedDirty && localSelectedMarkdown !== null
+            ? rebaseDirtySelectedNote(pulledNote, currentSelected, localSelectedMarkdown)
             : null
 
         persistedNoteStateRef.current[selectedNoteId] = {
@@ -3313,45 +3338,29 @@ function App() {
           setNotes((current) =>
             current.map((note) =>
               note.id === selectedNoteId
-                ? {
-                    ...pulledNote,
-                    markdown: selectedDirty && merged ? merged.markdown : pulledNote.markdown,
-                    document:
-                      selectedDirty && merged
-                        ? noteDocumentFromMarkdown(
-                            pulledNote.id,
-                            merged.markdown,
-                            currentSession.user.id,
-                            pulledNote.document,
-                          )
-                        : pulledNote.document,
-                  }
+                ? pulledNote
                 : note,
             ),
           )
         })
 
-        if (!selectedDirty) {
-          applySelectedNoteDocument(pulledNote.document, { note: pulledNote, markdown: pulledNote.markdown })
-          setSelectedFolderPath(normalizeFolderPath(pulledNote.folder || 'Inbox'))
-          if (
-            noteEditorModeRef.current === 'rich' &&
-            noteEditorRef.current &&
-            noteEditorRef.current.dataset.noteEditorModel !== 'blocks'
-          ) {
-            noteEditorRef.current.innerHTML = markdownToEditableHtml(pulledNote.markdown)
-          }
-        } else if (merged) {
-          applySelectedNoteMarkdown(merged.markdown)
-          if (
-            noteEditorModeRef.current === 'rich' &&
-            noteEditorRef.current &&
-            noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
-            !editorHasLocalFocus
-          ) {
-            noteEditorRef.current.innerHTML = markdownToEditableHtml(merged.markdown)
-          }
-          setStatus(merged.hadConflict ? 'Concurrent note edits merged with conflict markers' : 'Concurrent note edits merged')
+        const visibleSelected = rebasedSelected?.note ?? pulledNote
+        applySelectedNoteDocument(visibleSelected.document, { note: visibleSelected, markdown: visibleSelected.markdown })
+        setSelectedFolderPath(normalizeFolderPath(visibleSelected.folder || 'Inbox'))
+        if (
+          noteEditorModeRef.current === 'rich' &&
+          noteEditorRef.current &&
+          noteEditorRef.current.dataset.noteEditorModel !== 'blocks' &&
+          !editorHasLocalFocus
+        ) {
+          noteEditorRef.current.innerHTML = markdownToEditableHtml(visibleSelected.markdown)
+        }
+        if (rebasedSelected) {
+          setStatus(
+            rebasedSelected.hadConflict
+              ? 'Concurrent note edits merged with conflict markers'
+              : 'Concurrent note edits merged',
+          )
         }
       } catch (error) {
         if (!cancelled) {
@@ -5034,6 +5043,7 @@ function App() {
     onSetNewDriveFolderName: setNewDriveFolderName,
     onCreateDriveFolderFromSelection: () => void createDriveFolderFromSelection(),
     onSetPendingDeletePaths: setPendingDeletePaths,
+    onSetMarkedFilePaths: setMarkedFilePaths,
     onDeleteManagedPaths: (paths: string[]) => void deleteManagedPaths(paths),
     onSetRenamingFilePath: setRenamingFilePath,
     onSetRenameFileName: setRenameFileName,

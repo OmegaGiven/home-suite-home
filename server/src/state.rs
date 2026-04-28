@@ -630,7 +630,6 @@ impl AppState {
                             markdown,
                             revision,
                             document: None,
-                            operation_batch: None,
                             visibility: None,
                         },
                     )

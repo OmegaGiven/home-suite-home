@@ -28,6 +28,17 @@ type OidcConfig = {
   redirect_url: string
 }
 
+export type RemoteNoteSnapshot = {
+  id: string
+  title: string
+  folder: string
+  markdown: string
+  document: unknown
+  revision: number
+  updated_at: string
+  visibility?: 'private' | 'org' | 'users'
+}
+
 async function requestJson<T>(url: string, init?: RequestInit, token?: string): Promise<T> {
   const response = await fetch(url, {
     ...init,
@@ -56,7 +67,19 @@ export async function loadOidcConfig(baseUrl: string) {
 }
 
 export async function testServerConnection(baseUrl: string) {
-  return requestJson<{ status: string }>(`${baseUrl.replace(/\/$/, '')}/health`)
+  const normalizedBaseUrl = baseUrl.replace(/\/$/, '')
+  const [health, notes] = await Promise.all([
+    requestJson<{ status: string }>(`${normalizedBaseUrl}/health`),
+    requestJson<RemoteNoteSnapshot[]>(`${normalizedBaseUrl}/api/v1/notes`),
+  ])
+  return {
+    status: health.status,
+    noteCount: notes.length,
+  }
+}
+
+export async function listRemoteNotes(baseUrl: string) {
+  return requestJson<RemoteNoteSnapshot[]>(`${baseUrl.replace(/\/$/, '')}/api/v1/notes`)
 }
 
 export async function loginWithOidc(baseUrl: string): Promise<SessionResponse> {
