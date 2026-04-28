@@ -227,6 +227,8 @@ function App() {
   const [adminUsers, setAdminUsers] = useState<import('./lib/types').AdminUserSummary[]>([])
   const [adminStorageOverview, setAdminStorageOverview] = useState<import('./lib/types').AdminStorageOverview | null>(null)
   const [adminDatabaseOverview, setAdminDatabaseOverview] = useState<import('./lib/types').AdminDatabaseOverview | null>(null)
+  const [adminDeletedItems, setAdminDeletedItems] = useState<import('./lib/types').AdminDeletedItem[]>([])
+  const [adminAuditEntries, setAdminAuditEntries] = useState<import('./lib/types').AdminAuditEntry[]>([])
   const [systemUpdateStatus, setSystemUpdateStatus] = useState<SystemUpdateStatus | null>(null)
   const [notes, setNotes] = useState<Note[]>([])
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null)
@@ -458,13 +460,18 @@ function App() {
     updateAdminUserAccess,
     resolveAdminUserCredentialRequest,
     refreshAdminDatabaseOverview,
+    refreshAdminDeletedItems,
+    refreshAdminAuditEntries,
     refreshSystemUpdateStatus,
+    restoreAdminDeletedItem,
     runSystemUpdate,
   } = createAdminActions({
     session,
     setAdminSettings,
     setAdminStorageOverview,
     setAdminDatabaseOverview,
+    setAdminDeletedItems,
+    setAdminAuditEntries,
     setSystemUpdateStatus,
     setAdminUsers,
     setSetupStatus,
@@ -3492,12 +3499,14 @@ function App() {
   useEffect(() => {
     if (authMode !== 'ready' || !session || !currentRolePolicy.manage_org_settings) {
       setAdminDatabaseOverview(null)
+      setAdminDeletedItems([])
+      setAdminAuditEntries([])
       return
     }
     if (route !== '/admin') {
       return
     }
-    void refreshAdminDatabaseOverview().catch((error) => {
+    void Promise.all([refreshAdminDatabaseOverview(), refreshAdminDeletedItems(), refreshAdminAuditEntries()]).catch((error) => {
       console.error(error)
     })
   }, [authMode, session, currentRolePolicy.manage_org_settings, route])
@@ -5512,6 +5521,8 @@ function App() {
     users: adminUsers,
     storageOverview: adminStorageOverview,
     databaseOverview: adminDatabaseOverview,
+    deletedItems: adminDeletedItems,
+    auditEntries: adminAuditEntries,
     currentFontFamily: appearance.fontFamily,
     currentAccent: appearance.accent,
     currentPageGutter: appearance.pageGutter,
@@ -5519,6 +5530,9 @@ function App() {
     oidcConfig: oidc,
     systemUpdateStatus,
     onRefreshDatabaseOverview: () => void refreshAdminDatabaseOverview(),
+    onRefreshDeletedItems: () => void refreshAdminDeletedItems(),
+    onRefreshAuditEntries: () => void refreshAdminAuditEntries(),
+    onRestoreDeletedItem: (id: string) => void restoreAdminDeletedItem(id),
     onSave: (settings: AdminSettings) => void saveAdminSettings(settings),
     onRefreshSystemUpdateStatus: () => void refreshSystemUpdateStatus(),
     onRunSystemUpdate: () => void runSystemUpdate(),

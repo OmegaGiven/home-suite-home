@@ -132,6 +132,30 @@ export interface AdminDatabaseOverview {
   tables: AdminDatabaseTable[]
 }
 
+export type DeletedResourceKind = 'note' | 'diagram' | 'voice_memo' | 'drive_path'
+
+export interface AdminDeletedItem {
+  id: string
+  kind: DeletedResourceKind
+  label: string
+  original_path: string
+  deleted_at: string
+  purge_at: string
+}
+
+export interface AdminAuditEntry {
+  id: string
+  occurred_at: string
+  actor_id: string
+  actor_label: string
+  source: string
+  action: string
+  target_kind: string
+  target_id: string
+  target_label: string
+  details: Record<string, unknown> | null
+}
+
 export interface SystemUpdateStatus {
   current_version: string
   update_target: string

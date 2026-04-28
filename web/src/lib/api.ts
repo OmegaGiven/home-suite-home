@@ -34,6 +34,8 @@ import type {
   VoiceMemo,
   AdminSettings,
   AdminDatabaseOverview,
+  AdminAuditEntry,
+  AdminDeletedItem,
   UpdateAccountCredentialsRequest,
   UserProfile,
 } from './types'
@@ -486,6 +488,17 @@ export const api = {
   },
   getAdminDatabaseOverview() {
     return request<AdminDatabaseOverview>('/api/v1/admin/db')
+  },
+  getAdminAuditEntries() {
+    return request<AdminAuditEntry[]>('/api/v1/admin/audit')
+  },
+  getAdminDeletedItems() {
+    return request<AdminDeletedItem[]>('/api/v1/admin/deleted-items')
+  },
+  restoreAdminDeletedItem(id: string) {
+    return request<{ ok: boolean }>(`/api/v1/admin/deleted-items/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+    })
   },
   getSystemUpdateStatus() {
     return request<SystemUpdateStatus>('/api/v1/admin/system/update')

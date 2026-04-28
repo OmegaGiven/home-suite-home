@@ -1,6 +1,6 @@
 import type { Dispatch, SetStateAction } from 'react'
 import { api } from './api'
-import type { AdminDatabaseOverview, AdminSettings, Message, SessionResponse, SystemUpdateStatus, UserProfile } from './types'
+import type { AdminAuditEntry, AdminDatabaseOverview, AdminDeletedItem, AdminSettings, Message, SessionResponse, SystemUpdateStatus, UserProfile } from './types'
 
 type AdminUserSummary = import('./types').AdminUserSummary
 type AdminStorageOverview = import('./types').AdminStorageOverview
@@ -13,6 +13,8 @@ type CreateAdminActionsContext = {
   setAdminSettings: Dispatch<SetStateAction<AdminSettings | null>>
   setAdminStorageOverview: Dispatch<SetStateAction<AdminStorageOverview | null>>
   setAdminDatabaseOverview: Dispatch<SetStateAction<AdminDatabaseOverview | null>>
+  setAdminDeletedItems: Dispatch<SetStateAction<AdminDeletedItem[]>>
+  setAdminAuditEntries: Dispatch<SetStateAction<AdminAuditEntry[]>>
   setSystemUpdateStatus: Dispatch<SetStateAction<SystemUpdateStatus | null>>
   setAdminUsers: Dispatch<SetStateAction<AdminUserSummary[]>>
   setSetupStatus: Dispatch<SetStateAction<SetupStatusResponse | null>>
@@ -126,6 +128,25 @@ export function createAdminActions(context: CreateAdminActionsContext) {
     return overview
   }
 
+  async function refreshAdminDeletedItems() {
+    const items = await api.getAdminDeletedItems()
+    context.setAdminDeletedItems(items)
+    return items
+  }
+
+  async function refreshAdminAuditEntries() {
+    const items = await api.getAdminAuditEntries()
+    context.setAdminAuditEntries(items)
+    return items
+  }
+
+  async function restoreAdminDeletedItem(id: string) {
+    await api.restoreAdminDeletedItem(id)
+    const items = await api.getAdminDeletedItems()
+    context.setAdminDeletedItems(items)
+    context.showActionNotice('Restored deleted item')
+  }
+
   async function runSystemUpdate() {
     const status = await api.triggerSystemUpdate()
     context.setSystemUpdateStatus(status)
@@ -140,7 +161,10 @@ export function createAdminActions(context: CreateAdminActionsContext) {
     updateAdminUserAccess,
     resolveAdminUserCredentialRequest,
     refreshAdminDatabaseOverview,
+    refreshAdminDeletedItems,
+    refreshAdminAuditEntries,
     refreshSystemUpdateStatus,
+    restoreAdminDeletedItem,
     runSystemUpdate,
   }
 }

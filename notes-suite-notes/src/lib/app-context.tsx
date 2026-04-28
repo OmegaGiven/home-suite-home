@@ -90,6 +90,8 @@ type NotesAppContextValue = {
   setServerDraft: Dispatch<SetStateAction<ServerDraft>>
   savePasswordServer: () => Promise<void>
   startOidcLogin: () => Promise<void>
+  upsertPasswordServer: (draft: ServerDraft, existingAccountId?: string | null) => Promise<ServerAccount>
+  upsertOidcServer: (draft: ServerDraft, existingAccountId?: string | null) => Promise<ServerAccount>
   connectingServer: boolean
   saveStatus: 'saved' | 'saving' | 'offline'
 }
@@ -111,6 +113,37 @@ const DEFAULT_SERVER_DRAFT: ServerDraft = {
   baseUrl: '',
   identifier: '',
   password: '',
+}
+
+function normalizeAppearance(value: Partial<Appearance> | null | undefined): Appearance {
+  if (!value) return DEFAULT_APPEARANCE
+  return {
+    ...DEFAULT_APPEARANCE,
+    ...value,
+    gradientCorners:
+      Array.isArray(value.gradientCorners) && value.gradientCorners.length === 4
+        ? [
+            value.gradientCorners[0] ?? DEFAULT_APPEARANCE.gradientCorners[0],
+            value.gradientCorners[1] ?? DEFAULT_APPEARANCE.gradientCorners[1],
+            value.gradientCorners[2] ?? DEFAULT_APPEARANCE.gradientCorners[2],
+            value.gradientCorners[3] ?? DEFAULT_APPEARANCE.gradientCorners[3],
+          ]
+        : DEFAULT_APPEARANCE.gradientCorners,
+  }
+}
+
+function createFallbackNote(existingCount: number) {
+  return {
+    id: createId('note'),
+    title: existingCount > 0 ? `Recovered note ${existingCount + 1}` : 'New note',
+    folder: 'Inbox',
+    markdown: '',
+    document: createEmptyDocument('local-user'),
+    storage_mode: 'local' as const,
+    visibility: 'private' as const,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  } satisfies LocalNoteRecord
 }
 
 export function NotesAppProvider({ children }: PropsWithChildren) {
@@ -138,36 +171,49 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     void (async () => {
-      await initializeLocalStore()
-      const [storedNotes, storedAccounts, storedAppearance, storedConflicts] = await Promise.all([
-        listNotes(),
-        listServerAccounts(),
-        getSetting<Appearance>('appearance'),
-        listConflicts(),
-      ])
-      if (storedNotes.length === 0) {
-        const note: LocalNoteRecord = {
-          id: createId('note'),
-          title: 'New note',
-          folder: 'Inbox',
-          markdown: '',
-          document: createEmptyDocument('local-user'),
-          storage_mode: 'local',
-          visibility: 'private',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+      try {
+        await initializeLocalStore()
+        const [storedNotesResult, storedAccountsResult, storedAppearanceResult, storedConflictsResult] = await Promise.allSettled([
+          listNotes(),
+          listServerAccounts(),
+          getSetting<Appearance>('appearance'),
+          listConflicts(),
+        ])
+
+        const storedNotes = storedNotesResult.status === 'fulfilled' ? storedNotesResult.value : []
+        const storedAccounts = storedAccountsResult.status === 'fulfilled' ? storedAccountsResult.value : []
+        const storedAppearance = storedAppearanceResult.status === 'fulfilled' ? storedAppearanceResult.value : null
+        const storedConflicts = storedConflictsResult.status === 'fulfilled' ? storedConflictsResult.value : []
+
+        if (storedNotes.length === 0) {
+          const note = createFallbackNote(0)
+          await upsertNote(note)
+          setNotes([note])
+          setSelectedNoteId(note.id)
+        } else {
+          setNotes(storedNotes)
+          setSelectedNoteId(storedNotes[0]?.id ?? null)
         }
-        await upsertNote(note)
-        setNotes([note])
-        setSelectedNoteId(note.id)
-      } else {
-        setNotes(storedNotes)
-        setSelectedNoteId(storedNotes[0]?.id ?? null)
+        setServerAccounts(storedAccounts)
+        setAppearance(normalizeAppearance(storedAppearance))
+        setConflicts(storedConflicts)
+      } catch (error) {
+        console.error('Notes app boot failed', error)
+        const fallbackNote = createFallbackNote(notes.length)
+        try {
+          await initializeLocalStore()
+          await upsertNote(fallbackNote)
+        } catch (persistError) {
+          console.error('Unable to persist fallback note', persistError)
+        }
+        setNotes([fallbackNote])
+        setSelectedNoteId(fallbackNote.id)
+        setServerAccounts([])
+        setAppearance(DEFAULT_APPEARANCE)
+        setConflicts([])
+      } finally {
+        setReady(true)
       }
-      setServerAccounts(storedAccounts)
-      if (storedAppearance) setAppearance(storedAppearance)
-      setConflicts(storedConflicts)
-      setReady(true)
     })()
   }, [])
 
@@ -622,26 +668,74 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function savePasswordServer() {
+    await upsertPasswordServer(serverDraft)
+  }
+
+  async function upsertPasswordServer(draft: ServerDraft, existingAccountId?: string | null) {
     setConnectingServer(true)
     try {
-      const session = await loginWithPassword(serverDraft.baseUrl.replace(/\/$/, ''), serverDraft.identifier, serverDraft.password)
-      const account = createServerAccount(serverDraft.baseUrl, serverDraft.label, 'password', session)
+      const session = await loginWithPassword(draft.baseUrl.replace(/\/$/, ''), draft.identifier, draft.password)
+      const generated = createServerAccount(draft.baseUrl, draft.label, 'password', session)
+      const existing = existingAccountId ? serverAccounts.find((entry) => entry.id === existingAccountId) ?? null : null
+      const existingIdentityId = existing?.identities[0]?.id
+      const account: ServerAccount = existing
+        ? {
+            ...generated,
+            id: existing.id,
+            created_at: existing.created_at,
+            identities: generated.identities.map((identity) => ({
+              ...identity,
+              id: existingIdentityId ?? identity.id,
+              server_account_id: existing.id,
+            })),
+          }
+        : generated
       await saveServerAccount(account)
-      setServerAccounts((current) => [account, ...current])
-      setServerDraft(DEFAULT_SERVER_DRAFT)
+      setServerAccounts((current) => {
+        if (existing) {
+          return current.map((entry) => (entry.id === existing.id ? account : entry))
+        }
+        return [account, ...current]
+      })
+      if (!existing) setServerDraft(DEFAULT_SERVER_DRAFT)
+      return account
     } finally {
       setConnectingServer(false)
     }
   }
 
   async function startOidcLogin() {
+    await upsertOidcServer(serverDraft)
+  }
+
+  async function upsertOidcServer(draft: ServerDraft, existingAccountId?: string | null) {
     setConnectingServer(true)
     try {
-      const session = await loginWithOidc(serverDraft.baseUrl.replace(/\/$/, ''))
-      const account = createServerAccount(serverDraft.baseUrl, serverDraft.label, 'oidc', session)
+      const session = await loginWithOidc(draft.baseUrl.replace(/\/$/, ''))
+      const generated = createServerAccount(draft.baseUrl, draft.label, 'oidc', session)
+      const existing = existingAccountId ? serverAccounts.find((entry) => entry.id === existingAccountId) ?? null : null
+      const existingIdentityId = existing?.identities[0]?.id
+      const account: ServerAccount = existing
+        ? {
+            ...generated,
+            id: existing.id,
+            created_at: existing.created_at,
+            identities: generated.identities.map((identity) => ({
+              ...identity,
+              id: existingIdentityId ?? identity.id,
+              server_account_id: existing.id,
+            })),
+          }
+        : generated
       await saveServerAccount(account)
-      setServerAccounts((current) => [account, ...current])
-      setServerDraft(DEFAULT_SERVER_DRAFT)
+      setServerAccounts((current) => {
+        if (existing) {
+          return current.map((entry) => (entry.id === existing.id ? account : entry))
+        }
+        return [account, ...current]
+      })
+      if (!existing) setServerDraft(DEFAULT_SERVER_DRAFT)
+      return account
     } finally {
       setConnectingServer(false)
     }
@@ -755,6 +849,8 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         setServerDraft,
         savePasswordServer,
         startOidcLogin,
+        upsertPasswordServer,
+        upsertOidcServer,
         connectingServer,
         saveStatus,
       }}

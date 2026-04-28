@@ -1324,6 +1324,29 @@
   width: 100%;
 }
 
+.notes-toc-modal {
+  width: min(540px, 100%);
+}
+
+.notes-toc-list {
+  display: grid;
+  gap: 4px;
+  max-height: min(52vh, 420px);
+  overflow: auto;
+  margin: 12px 0 16px;
+}
+
+.notes-toc-item {
+  color: var(--text);
+  padding: 8px 0;
+  font-size: 0.96rem;
+  line-height: 1.4;
+}
+
+.notes-toc-empty {
+  padding: 8px 0;
+}
+
 .notes-editor-actions {
   display: flex;
   align-items: center;
@@ -3974,6 +3997,79 @@
 .admin-users-table {
   width: 100%;
   border-collapse: collapse;
+}
+
+.admin-db-controls {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-db-column-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-db-column-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-surface) 88%, transparent);
+  font-size: 0.9rem;
+}
+
+.admin-db-column-chip input {
+  margin: 0;
+}
+
+.admin-db-table-wrap {
+  padding-bottom: 4px;
+}
+
+.admin-db-table {
+  table-layout: fixed;
+}
+
+.admin-db-header-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.admin-db-resize-handle {
+  width: 10px;
+  min-width: 10px;
+  align-self: stretch;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+}
+
+.admin-db-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  left: 4px;
+  width: 2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
+}
+
+.admin-db-resize-handle:hover::before,
+.admin-db-resize-handle:focus-visible::before {
+  background: var(--accent);
+}
+
+.admin-db-cell-value {
+  display: block;
+  min-width: 0;
 }
 
 .admin-users-table th,

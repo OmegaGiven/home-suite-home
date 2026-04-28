@@ -175,6 +175,7 @@ export function NotesPage({
   const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
   const [metaFilterOpen, setMetaFilterOpen] = useState(false)
+  const [showToc, setShowToc] = useState(false)
   const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
   const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
     type: true,
@@ -204,6 +205,7 @@ export function NotesPage({
   const [undoStack, setUndoStack] = useState<NoteDocument[]>([])
   const [redoStack, setRedoStack] = useState<NoteDocument[]>([])
   const blockInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+  void isCompactViewport
   void handleNoteEditorClick
   void handleNoteEditorInput
   void handleNoteEditorKeyDown
@@ -221,6 +223,20 @@ export function NotesPage({
     visibleBlocks.find((block) => block.id === activeBlockId) ??
     visibleBlocks[0] ??
     null
+
+  const toc = useMemo(
+    () =>
+      noteDraft
+        .split('\n')
+        .map((line, index) => ({ line, index }))
+        .filter(({ line }) => /^#{1,6}\s/.test(line))
+        .map(({ line, index }) => ({
+          id: `${index}`,
+          level: line.match(/^#{1,6}/)?.[0].length ?? 1,
+          label: line.replace(/^#{1,6}\s/, ''),
+        })),
+    [noteDraft],
+  )
 
   function normalizeDocumentBlocks(blocks: NoteBlock[]) {
     return blocks.map((block, index) => ({
@@ -614,22 +630,13 @@ export function NotesPage({
           {selectedNote ? (
             <>
               <div className="notes-editor-header">
-                {isCompactViewport ? (
-                  <button
-                    className="button-secondary notes-title-button"
-                    onClick={onOpenTitleModal}
-                    title={selectedNote.title}
-                  >
-                    {selectedNote.title || 'Untitled note'}
-                  </button>
-                ) : (
-                  <input
-                    className="input note-title-input notes-title-input"
-                    value={selectedNote.title}
-                    placeholder="Select or create a note"
-                    onChange={(event) => onChangeSelectedNoteTitle(event.target.value)}
-                  />
-                )}
+                <button
+                  className="button-secondary notes-title-button"
+                  onClick={onOpenTitleModal}
+                  title={selectedNote.title}
+                >
+                  {selectedNote.title || 'Untitled note'}
+                </button>
                 <div className="notes-editor-actions">
                   {notePersistenceState ? (
                     <button
@@ -759,6 +766,20 @@ export function NotesPage({
                   </div>
                   <button
                     type="button"
+                    className="notes-share-button notes-toc-button"
+                    aria-label="Table of contents"
+                    title="Table of contents"
+                    onClick={() => setShowToc(true)}
+                  >
+                    <svg viewBox="0 0 24 24" className="notes-share-button-icon" aria-hidden="true">
+                      <path d="M5 7h14" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                      <path d="M5 12h10" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                      <path d="M5 17h12" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+                      <circle cx="18" cy="12" r="1.2" fill="currentColor" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
                     className="notes-fullscreen-button"
                     aria-label={noteFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
                     title={noteFullscreen ? 'Exit fullscreen' : 'Expand editor'}
@@ -786,7 +807,7 @@ export function NotesPage({
                   </button>
                 </div>
               </div>
-              {isCompactViewport && noteTitleModalOpen ? (
+              {noteTitleModalOpen ? (
                 <div className="modal-backdrop" onClick={onCloseTitleModal}>
                   <div className="modal-card notes-title-modal" onClick={(event) => event.stopPropagation()}>
                     <h3>Edit title</h3>
@@ -806,6 +827,29 @@ export function NotesPage({
                     <div className="button-row">
                       <button className="button" onClick={onCloseTitleModal}>
                         Done
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+              {showToc ? (
+                <div className="modal-backdrop" onClick={() => setShowToc(false)}>
+                  <div className="modal-card notes-toc-modal" onClick={(event) => event.stopPropagation()}>
+                    <h3>Table of contents</h3>
+                    <div className="notes-toc-list">
+                      {toc.length > 0 ? (
+                        toc.map((item) => (
+                          <div key={item.id} className="notes-toc-item" style={{ marginLeft: `${(item.level - 1) * 16}px` }}>
+                            {item.label}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="muted notes-toc-empty">No headings yet.</div>
+                      )}
+                    </div>
+                    <div className="button-row">
+                      <button className="button" onClick={() => setShowToc(false)}>
+                        Close
                       </button>
                     </div>
                   </div>

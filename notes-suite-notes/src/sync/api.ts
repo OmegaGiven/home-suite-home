@@ -55,6 +55,10 @@ export async function loadOidcConfig(baseUrl: string) {
   return requestJson<OidcConfig>(`${baseUrl}/api/v1/auth/oidc/config`)
 }
 
+export async function testServerConnection(baseUrl: string) {
+  return requestJson<{ status: string }>(`${baseUrl.replace(/\/$/, '')}/health`)
+}
+
 export async function loginWithOidc(baseUrl: string): Promise<SessionResponse> {
   const config = await loadOidcConfig(baseUrl)
   const redirectUri = AuthSession.makeRedirectUri({ scheme: 'notessuitenotes' })

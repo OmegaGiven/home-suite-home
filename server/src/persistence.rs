@@ -87,7 +87,9 @@ impl PersistenceBackend {
                                 author_id text not null,
                                 last_editor_id text not null,
                                 forked_from_note_id text,
-                                conflict_tag text
+                                conflict_tag text,
+                                deleted_at text,
+                                purge_at text
                             );
                             alter table notes add column if not exists object_id text not null default '';
                             alter table notes add column if not exists namespace_json text not null default '{}';
@@ -96,6 +98,8 @@ impl PersistenceBackend {
                             alter table notes add column if not exists document_json text not null default '{}';
                             alter table notes add column if not exists forked_from_note_id text;
                             alter table notes add column if not exists conflict_tag text;
+                            alter table notes add column if not exists deleted_at text;
+                            alter table notes add column if not exists purge_at text;
                             create table if not exists diagrams (
                                 id text primary key,
                                 title text not null,
@@ -104,10 +108,14 @@ impl PersistenceBackend {
                                 created_at text not null,
                                 updated_at text not null,
                                 author_id text not null default '',
-                                last_editor_id text not null default ''
+                                last_editor_id text not null default '',
+                                deleted_at text,
+                                purge_at text
                             );
                             alter table diagrams add column if not exists author_id text not null default '';
                             alter table diagrams add column if not exists last_editor_id text not null default '';
+                            alter table diagrams add column if not exists deleted_at text;
+                            alter table diagrams add column if not exists purge_at text;
                             create table if not exists voice_memos (
                                 id text primary key,
                                 object_id text not null default '',
@@ -127,7 +135,9 @@ impl PersistenceBackend {
                                 created_at text not null,
                                 updated_at text not null,
                                 failure_reason text,
-                                owner_id text not null default ''
+                                owner_id text not null default '',
+                                deleted_at text,
+                                purge_at text
                             );
                             alter table voice_memos add column if not exists object_id text not null default '';
                             alter table voice_memos add column if not exists namespace_json text not null default '{}';
@@ -137,6 +147,29 @@ impl PersistenceBackend {
                             alter table voice_memos add column if not exists topic_summary text;
                             alter table voice_memos add column if not exists source_channels_json text not null default '[]';
                             alter table voice_memos add column if not exists owner_id text not null default '';
+                            alter table voice_memos add column if not exists deleted_at text;
+                            alter table voice_memos add column if not exists purge_at text;
+                            create table if not exists deleted_drive_items (
+                                id text primary key,
+                                original_path text not null,
+                                backup_path text not null,
+                                label text not null,
+                                is_dir boolean not null default false,
+                                deleted_at text not null,
+                                purge_at text not null
+                            );
+                            create table if not exists audit_log (
+                                id text primary key,
+                                occurred_at text not null,
+                                actor_id text not null,
+                                actor_label text not null,
+                                source text not null,
+                                action text not null,
+                                target_kind text not null,
+                                target_id text not null,
+                                target_label text not null,
+                                details_json text not null default '{}'
+                            );
                             create table if not exists transcription_jobs (
                                 id text primary key,
                                 memo_id text not null,
@@ -379,7 +412,7 @@ impl PersistenceBackend {
                 let mut notes = HashMap::new();
                 for row in client
                     .query(
-                        "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag from notes",
+                        "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at from notes",
                         &[],
                     )
                     .await
@@ -409,6 +442,8 @@ impl PersistenceBackend {
                         last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
                         forked_from_note_id: optional_uuid_from_string(row.get(15))?,
                         conflict_tag: string_column_to_option(row.get::<_, Option<String>>(16)),
+                        deleted_at: optional_datetime_from_string(row.get(17))?,
+                        purge_at: optional_datetime_from_string(row.get(18))?,
                     };
                     notes.insert(note.id, note);
                 }
@@ -432,8 +467,8 @@ impl PersistenceBackend {
                 client
                     .execute(
                         "insert into notes
-                         (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag)
-                         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+                         (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at)
+                         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
                         &[
                             &note.id.to_string(),
                             &note.object_id,
@@ -452,6 +487,8 @@ impl PersistenceBackend {
                             &note.last_editor_id.to_string(),
                             &note.forked_from_note_id.map(|value| value.to_string()),
                             &note.conflict_tag,
+                            &note.deleted_at.map(|value| value.to_rfc3339()),
+                            &note.purge_at.map(|value| value.to_rfc3339()),
                         ],
                     )
                     .await
@@ -476,8 +513,8 @@ impl PersistenceBackend {
                 let updated = client
                     .execute(
                         "update notes
-                         set object_id=$2, namespace_json=$3, visibility=$4, shared_user_ids_json=$5, title=$6, folder=$7, markdown=$8, rendered_html=$9, document_json=$10, revision=$11, updated_at=$12, last_editor_id=$13, forked_from_note_id=$14, conflict_tag=$15
-                         where id=$1 and revision=$16",
+                         set object_id=$2, namespace_json=$3, visibility=$4, shared_user_ids_json=$5, title=$6, folder=$7, markdown=$8, rendered_html=$9, document_json=$10, revision=$11, updated_at=$12, last_editor_id=$13, forked_from_note_id=$14, conflict_tag=$15, deleted_at=$16, purge_at=$17
+                         where id=$1 and revision=$18",
                         &[
                             &note.id.to_string(),
                             &note.object_id,
@@ -494,6 +531,8 @@ impl PersistenceBackend {
                             &note.last_editor_id.to_string(),
                             &note.forked_from_note_id.map(|value| value.to_string()),
                             &note.conflict_tag,
+                            &note.deleted_at.map(|value| value.to_rfc3339()),
+                            &note.purge_at.map(|value| value.to_rfc3339()),
                             &(expected_revision as i64),
                         ],
                     )
@@ -527,7 +566,7 @@ impl PersistenceBackend {
                 let mut diagrams = HashMap::new();
                 for row in client
                     .query(
-                        "select id, title, xml, revision, created_at, updated_at, author_id, last_editor_id from diagrams",
+                        "select id, title, xml, revision, created_at, updated_at, author_id, last_editor_id, deleted_at, purge_at from diagrams",
                         &[],
                     )
                     .await
@@ -542,6 +581,8 @@ impl PersistenceBackend {
                         updated_at: parse_datetime(row.get::<_, String>(5).as_str())?,
                         author_id: parse_uuid(row.get::<_, String>(6).as_str())?,
                         last_editor_id: parse_uuid(row.get::<_, String>(7).as_str())?,
+                        deleted_at: optional_datetime_from_string(row.get(8))?,
+                        purge_at: optional_datetime_from_string(row.get(9))?,
                     };
                     diagrams.insert(diagram.id, diagram);
                 }
@@ -556,8 +597,8 @@ impl PersistenceBackend {
             Self::Postgres { client, .. } => {
                 client
                     .execute(
-                        "insert into diagrams (id, title, xml, revision, created_at, updated_at, author_id, last_editor_id)
-                         values ($1,$2,$3,$4,$5,$6,$7,$8)",
+                        "insert into diagrams (id, title, xml, revision, created_at, updated_at, author_id, last_editor_id, deleted_at, purge_at)
+                         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
                         &[
                             &diagram.id.to_string(),
                             &diagram.title,
@@ -567,6 +608,8 @@ impl PersistenceBackend {
                             &diagram.updated_at.to_rfc3339(),
                             &diagram.author_id.to_string(),
                             &diagram.last_editor_id.to_string(),
+                            &diagram.deleted_at.map(|value| value.to_rfc3339()),
+                            &diagram.purge_at.map(|value| value.to_rfc3339()),
                         ],
                     )
                     .await
@@ -587,8 +630,8 @@ impl PersistenceBackend {
                 let updated = client
                     .execute(
                         "update diagrams
-                         set title=$2, xml=$3, revision=$4, updated_at=$5, last_editor_id=$6
-                         where id=$1 and revision=$7",
+                         set title=$2, xml=$3, revision=$4, updated_at=$5, last_editor_id=$6, deleted_at=$7, purge_at=$8
+                         where id=$1 and revision=$9",
                         &[
                             &diagram.id.to_string(),
                             &diagram.title,
@@ -596,6 +639,8 @@ impl PersistenceBackend {
                             &(diagram.revision as i64),
                             &diagram.updated_at.to_rfc3339(),
                             &diagram.last_editor_id.to_string(),
+                            &diagram.deleted_at.map(|value| value.to_rfc3339()),
+                            &diagram.purge_at.map(|value| value.to_rfc3339()),
                             &(expected_revision as i64),
                         ],
                     )
@@ -846,6 +891,8 @@ async fn sync_relational_state(
 ) -> AppResult<()> {
     for statement in [
         "delete from sync_tombstones",
+        "delete from audit_log",
+        "delete from deleted_drive_items",
         "delete from note_conflicts",
         "delete from note_sessions",
         "delete from note_operations",
@@ -909,8 +956,8 @@ async fn sync_relational_state(
         client
             .execute(
                 "insert into notes
-                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag)
-                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
                 &[
                     &note.id.to_string(),
                     &note.object_id,
@@ -929,6 +976,8 @@ async fn sync_relational_state(
                     &note.last_editor_id.to_string(),
                     &note.forked_from_note_id.map(|value| value.to_string()),
                     &note.conflict_tag,
+                    &note.deleted_at.map(|value| value.to_rfc3339()),
+                    &note.purge_at.map(|value| value.to_rfc3339()),
                 ],
             )
             .await
@@ -938,8 +987,8 @@ async fn sync_relational_state(
     for diagram in snapshot.diagrams.values() {
         client
             .execute(
-                "insert into diagrams (id, title, xml, revision, created_at, updated_at, author_id, last_editor_id)
-                 values ($1,$2,$3,$4,$5,$6,$7,$8)",
+                "insert into diagrams (id, title, xml, revision, created_at, updated_at, author_id, last_editor_id, deleted_at, purge_at)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
                 &[
                     &diagram.id.to_string(),
                     &diagram.title,
@@ -949,6 +998,49 @@ async fn sync_relational_state(
                     &diagram.updated_at.to_rfc3339(),
                     &diagram.author_id.to_string(),
                     &diagram.last_editor_id.to_string(),
+                    &diagram.deleted_at.map(|value| value.to_rfc3339()),
+                    &diagram.purge_at.map(|value| value.to_rfc3339()),
+                ],
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+    }
+
+    for deleted in snapshot.deleted_drive_items.values() {
+        client
+            .execute(
+                "insert into deleted_drive_items (id, original_path, backup_path, label, is_dir, deleted_at, purge_at)
+                 values ($1,$2,$3,$4,$5,$6,$7)",
+                &[
+                    &deleted.id,
+                    &deleted.original_path,
+                    &deleted.backup_path,
+                    &deleted.label,
+                    &deleted.is_dir,
+                    &deleted.deleted_at.to_rfc3339(),
+                    &deleted.purge_at.to_rfc3339(),
+                ],
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+    }
+
+    for entry in &snapshot.audit_log {
+        client
+            .execute(
+                "insert into audit_log (id, occurred_at, actor_id, actor_label, source, action, target_kind, target_id, target_label, details_json)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+                &[
+                    &entry.id,
+                    &entry.occurred_at.to_rfc3339(),
+                    &entry.actor_id,
+                    &entry.actor_label,
+                    &entry.source,
+                    &entry.action,
+                    &entry.target_kind,
+                    &entry.target_id,
+                    &entry.target_label,
+                    &serde_json::to_string(&entry.details).map_err(|err| AppError::Internal(err.to_string()))?,
                 ],
             )
             .await
@@ -971,8 +1063,8 @@ async fn sync_relational_state(
         client
             .execute(
                 "insert into voice_memos
-                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, audio_path, transcript, transcript_segments_json, transcript_tags_json, topic_summary, source_channels_json, status, model, device, created_at, updated_at, failure_reason, owner_id)
-                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
+                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, audio_path, transcript, transcript_segments_json, transcript_tags_json, topic_summary, source_channels_json, status, model, device, created_at, updated_at, failure_reason, owner_id, deleted_at, purge_at)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
                 &[
                     &memo.id.to_string(),
                     &memo.object_id,
@@ -993,6 +1085,8 @@ async fn sync_relational_state(
                     &memo.updated_at.to_rfc3339(),
                     &memo.failure_reason,
                     &memo.owner_id.to_string(),
+                    &memo.deleted_at.map(|value| value.to_rfc3339()),
+                    &memo.purge_at.map(|value| value.to_rfc3339()),
                 ],
             )
             .await
@@ -1320,7 +1414,7 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     let mut notes = HashMap::new();
     for row in client
         .query(
-            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag from notes",
+            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at from notes",
             &[],
         )
         .await
@@ -1348,6 +1442,8 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
             forked_from_note_id: optional_uuid_from_string(row.get(15))?,
             conflict_tag: string_column_to_option(row.get::<_, Option<String>>(16)),
+            deleted_at: optional_datetime_from_string(row.get(17))?,
+            purge_at: optional_datetime_from_string(row.get(18))?,
         };
         notes.insert(note.id, note);
     }
@@ -1355,7 +1451,7 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     let mut diagrams = HashMap::new();
     for row in client
         .query(
-            "select id, title, xml, revision, created_at, updated_at, author_id, last_editor_id from diagrams",
+            "select id, title, xml, revision, created_at, updated_at, author_id, last_editor_id, deleted_at, purge_at from diagrams",
             &[],
         )
         .await
@@ -1370,14 +1466,63 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             updated_at: parse_datetime(row.get::<_, String>(5).as_str())?,
             author_id: parse_uuid(row.get::<_, String>(6).as_str())?,
             last_editor_id: parse_uuid(row.get::<_, String>(7).as_str())?,
+            deleted_at: optional_datetime_from_string(row.get(8))?,
+            purge_at: optional_datetime_from_string(row.get(9))?,
         };
         diagrams.insert(diagram.id, diagram);
+    }
+
+    let mut deleted_drive_items = HashMap::new();
+    for row in client
+        .query(
+            "select id, original_path, backup_path, label, is_dir, deleted_at, purge_at from deleted_drive_items",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        deleted_drive_items.insert(
+            row.get::<_, String>(0).clone(),
+            crate::state::DeletedDriveItem {
+                id: row.get(0),
+                original_path: row.get(1),
+                backup_path: row.get(2),
+                label: row.get(3),
+                is_dir: row.get(4),
+                deleted_at: parse_datetime(row.get::<_, String>(5).as_str())?,
+                purge_at: parse_datetime(row.get::<_, String>(6).as_str())?,
+            },
+        );
+    }
+
+    let mut audit_log = Vec::new();
+    for row in client
+        .query(
+            "select id, occurred_at, actor_id, actor_label, source, action, target_kind, target_id, target_label, details_json from audit_log order by occurred_at desc",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        audit_log.push(crate::models::AdminAuditEntry {
+            id: row.get(0),
+            occurred_at: parse_datetime(row.get::<_, String>(1).as_str())?,
+            actor_id: row.get(2),
+            actor_label: row.get(3),
+            source: row.get(4),
+            action: row.get(5),
+            target_kind: row.get(6),
+            target_id: row.get(7),
+            target_label: row.get(8),
+            details: serde_json::from_str::<serde_json::Value>(row.get::<_, String>(9).as_str())
+                .unwrap_or(serde_json::Value::Null),
+        });
     }
 
     let mut memos = HashMap::new();
     for row in client
         .query(
-            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, audio_path, transcript, transcript_segments_json, transcript_tags_json, topic_summary, source_channels_json, status, model, device, created_at, updated_at, failure_reason, owner_id from voice_memos",
+            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, audio_path, transcript, transcript_segments_json, transcript_tags_json, topic_summary, source_channels_json, status, model, device, created_at, updated_at, failure_reason, owner_id, deleted_at, purge_at from voice_memos",
             &[],
         )
         .await
@@ -1410,6 +1555,8 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             updated_at: parse_datetime(row.get::<_, String>(16).as_str())?,
             failure_reason: row.get(17),
             owner_id: parse_uuid(row.get::<_, String>(18).as_str())?,
+            deleted_at: optional_datetime_from_string(row.get(19))?,
+            purge_at: optional_datetime_from_string(row.get(20))?,
         };
         memos.insert(memo.id, memo);
     }
@@ -1725,6 +1872,8 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         note_sessions,
         note_conflicts,
         pending_credential_changes: HashMap::new(),
+        deleted_drive_items,
+        audit_log,
     }))
 }
 
@@ -1765,6 +1914,13 @@ fn string_column_to_option(value: Option<String>) -> Option<String> {
 fn optional_uuid_from_string(value: Option<String>) -> AppResult<Option<Uuid>> {
     match value {
         Some(raw) if !raw.trim().is_empty() => Ok(Some(parse_uuid(raw.as_str())?)),
+        _ => Ok(None),
+    }
+}
+
+fn optional_datetime_from_string(value: Option<String>) -> AppResult<Option<DateTime<Utc>>> {
+    match value {
+        Some(raw) if !raw.trim().is_empty() => Ok(Some(parse_datetime(raw.as_str())?)),
         _ => Ok(None),
     }
 }

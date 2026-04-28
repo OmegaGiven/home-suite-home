@@ -33,6 +33,9 @@ impl BlobStorage {
         fs::create_dir_all(root.join("avatars"))
             .await
             .map_err(|err| AppError::Internal(err.to_string()))?;
+        fs::create_dir_all(root.join("_trash").join("drive"))
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
         Ok(Self { root })
     }
 
@@ -335,6 +338,67 @@ impl BlobStorage {
                 .map_err(|err| AppError::Internal(err.to_string()))?;
         }
         cleanup_empty_managed_parents(&self.root.join("drive"), full.parent()).await?;
+        Ok(())
+    }
+
+    pub async fn move_drive_path_to_trash(
+        &self,
+        relative_path: &str,
+        trash_id: &str,
+    ) -> AppResult<(String, bool)> {
+        let relative = sanitize_drive_managed_path(relative_path)?;
+        if relative == "drive" {
+            return Err(AppError::BadRequest("cannot delete drive root".into()));
+        }
+        let full = self.resolve(&relative);
+        let metadata = fs::metadata(&full)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        let original_name = full
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| AppError::BadRequest("invalid drive path".into()))?;
+        let backup_relative = format!("_trash/drive/{}-{}", trash_id.trim(), sanitize_file_name(original_name));
+        let backup_full = self.resolve(&backup_relative);
+        if let Some(parent) = backup_full.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+        fs::rename(&full, &backup_full)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+        cleanup_empty_managed_parents(&self.root.join("drive"), full.parent()).await?;
+        Ok((backup_relative, metadata.is_dir()))
+    }
+
+    pub async fn restore_drive_path_from_trash(
+        &self,
+        backup_relative_path: &str,
+        original_relative_path: &str,
+    ) -> AppResult<()> {
+        let backup_full = self.resolve(backup_relative_path);
+        let original_relative = sanitize_drive_managed_path(original_relative_path)?;
+        if original_relative == "drive" {
+            return Err(AppError::BadRequest("cannot restore drive root".into()));
+        }
+        let original_full = self.resolve(&original_relative);
+        if fs::try_exists(&original_full)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?
+        {
+            return Err(AppError::BadRequest(
+                "cannot restore because the original path already exists".into(),
+            ));
+        }
+        if let Some(parent) = original_full.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|err| AppError::Internal(err.to_string()))?;
+        }
+        fs::rename(&backup_full, &original_full)
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
         Ok(())
     }
 

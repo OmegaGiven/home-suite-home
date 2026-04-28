@@ -99,8 +99,13 @@ function mergeEnvelope(current: SyncEnvelope | null, incoming: SyncEnvelope): Sy
     return incoming
   }
 
-  const tombstones = [...current.tombstones]
-  const seenTombstoneKeys = new Set(current.tombstones.map((entry) => `${entry.entity}:${entry.id}`))
+  const restoredKeys = new Set<string>()
+  for (const note of incoming.notes) restoredKeys.add(`notes:${note.id}`)
+  for (const diagram of incoming.diagrams) restoredKeys.add(`diagrams:${diagram.id}`)
+  for (const memo of incoming.voice_memos) restoredKeys.add(`voice_memos:${memo.id}`)
+
+  const tombstones = current.tombstones.filter((entry) => !restoredKeys.has(`${entry.entity}:${entry.id}`))
+  const seenTombstoneKeys = new Set(tombstones.map((entry) => `${entry.entity}:${entry.id}`))
   for (const tombstone of incoming.tombstones) {
     const key = `${tombstone.entity}:${tombstone.id}`
     if (seenTombstoneKeys.has(key)) continue
@@ -109,6 +114,8 @@ function mergeEnvelope(current: SyncEnvelope | null, incoming: SyncEnvelope): Sy
   }
 
   const noteDeletes = new Set(tombstones.filter((entry) => entry.entity === 'notes').map((entry) => entry.id))
+  const diagramDeletes = new Set(tombstones.filter((entry) => entry.entity === 'diagrams').map((entry) => entry.id))
+  const voiceMemoDeletes = new Set(tombstones.filter((entry) => entry.entity === 'voice_memos').map((entry) => entry.id))
   const taskDeletes = new Set(tombstones.filter((entry) => entry.entity === 'tasks').map((entry) => entry.id))
   const calendarConnectionDeletes = new Set(
     tombstones.filter((entry) => entry.entity === 'calendar_connections').map((entry) => entry.id),
@@ -120,8 +127,8 @@ function mergeEnvelope(current: SyncEnvelope | null, incoming: SyncEnvelope): Sy
   return {
     cursors: incoming.cursors,
     notes: mergeEntityCollection(current.notes, incoming.notes, noteDeletes),
-    diagrams: mergeEntityCollection(current.diagrams, incoming.diagrams, new Set()),
-    voice_memos: mergeEntityCollection(current.voice_memos, incoming.voice_memos, new Set()),
+    diagrams: mergeEntityCollection(current.diagrams, incoming.diagrams, diagramDeletes),
+    voice_memos: mergeEntityCollection(current.voice_memos, incoming.voice_memos, voiceMemoDeletes),
     rooms: mergeEntityCollection(current.rooms, incoming.rooms, new Set()),
     messages: mergeEntityCollection(current.messages, incoming.messages, new Set()),
     calendar_connections: mergeEntityCollection(

@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native'
+import Markdown from 'react-native-markdown-display'
 import type { NativeSyntheticEvent, TextInputSelectionChangeEventData } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useNotesApp } from '../lib/app-context'
@@ -83,6 +84,12 @@ function plainTextFromMarkdown(markdown: string) {
     .replace(/\*([^*]+)\*/g, '$1')
     .replace(/~~([^~]+)~~/g, '$1')
     .replace(/<u>(.*?)<\/u>/g, '$1')
+}
+
+function renderableMarkdown(markdown: string) {
+  return markdown
+    .replace(/^- \[ \] /gim, '- ☐ ')
+    .replace(/^- \[x\] /gim, '- ☑ ')
 }
 
 function normalizeSelection(selection: TextSelection | null, text: string) {
@@ -159,9 +166,11 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   const [showOpenManager, setShowOpenManager] = useState(false)
   const [showVisibility, setShowVisibility] = useState(false)
   const [showConflicts, setShowConflicts] = useState(false)
+  const [showTitleEditor, setShowTitleEditor] = useState(false)
   const [showHeaderPicker, setShowHeaderPicker] = useState(false)
   const [showListPicker, setShowListPicker] = useState(false)
   const [showLinkEditor, setShowLinkEditor] = useState(false)
+  const [isEditingMarkdown, setIsEditingMarkdown] = useState(false)
   const [openSearch, setOpenSearch] = useState('')
   const [selectedOpenNoteId, setSelectedOpenNoteId] = useState<string | null>(null)
   const [inviteDraft, setInviteDraft] = useState('')
@@ -190,6 +199,7 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   const note = selectedNote
   const isMarkdownMode = editorMode === 'markdown'
   const editorText = isMarkdownMode ? note.markdown : plainTextFromMarkdown(note.markdown)
+  const previewMarkdown = renderableMarkdown(note.markdown)
   const activeOpenNote = filteredNotes.find((entry) => entry.id === selectedOpenNoteId) ?? null
   const saveIconColor = saveStatus === 'saved' ? screenColors.success : saveStatus === 'saving' ? screenColors.accent : screenColors.warning
   const animationType = appearance.enableAnimations ? 'fade' : 'none'
@@ -214,6 +224,15 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     const currentSelection = normalizeSelection(selection, editorText)
     const result = transform(editorText, currentSelection)
     await commitEditorText(result.text, result.selection)
+  }
+
+  function enterMarkdownEdit() {
+    if (!isMarkdownMode) return
+    setIsEditingMarkdown(true)
+  }
+
+  function exitMarkdownEdit() {
+    setIsEditingMarkdown(false)
   }
 
   async function applyHeaderLevel(level: '1' | '2' | '3') {
@@ -296,13 +315,11 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.topBar}>
-        <TextInput
-          style={styles.titleInput}
-          value={note.title}
-          onChangeText={(value) => void updateNoteTitle(value)}
-          placeholder="Note title"
-          placeholderTextColor={screenColors.muted}
-        />
+        <TouchableOpacity style={styles.titleButton} onPress={() => setShowTitleEditor(true)}>
+          <Text style={styles.titleButtonText} numberOfLines={1}>
+            {note.title || 'Untitled note'}
+          </Text>
+        </TouchableOpacity>
         <View style={styles.topControls}>
           <TouchableOpacity style={styles.iconButton}>
             <SaveStateIcon color={saveIconColor} size={20} />
@@ -312,7 +329,12 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
               <TouchableOpacity
                 key={mode}
                 style={[styles.modeToggleButton, editorMode === mode ? styles.modeToggleButtonActive : null]}
-                onPress={() => setEditorMode(mode)}
+                onPress={() => {
+                  setEditorMode(mode)
+                  if (mode !== 'markdown') {
+                    setIsEditingMarkdown(false)
+                  }
+                }}
               >
                 <Text style={styles.modeToggleText}>{mode === 'markdown' ? 'MD' : 'TXT'}</Text>
               </TouchableOpacity>
@@ -351,7 +373,21 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
               ]}
               onPress={() => void applyToolbarAction(item.key)}
             >
-              {typeof item.content === 'string' ? <Text style={styles.toolbarGlyph}>{item.content}</Text> : item.content}
+              {typeof item.content === 'string' ? (
+                <Text
+                  style={[
+                    styles.toolbarGlyph,
+                    item.key === 'bold' ? styles.boldText : null,
+                    item.key === 'italic' ? styles.italicText : null,
+                    item.key === 'underline' ? styles.underlineText : null,
+                    item.key === 'strike' ? styles.strikeText : null,
+                  ]}
+                >
+                  {item.content}
+                </Text>
+              ) : (
+                item.content
+              )}
             </TouchableOpacity>
           ))}
         </ScrollView>
@@ -367,16 +403,63 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
         </ScrollView>
       ) : null}
 
-      <TextInput
-        multiline
-        style={[styles.editor, isMarkdownMode ? styles.markdownEditor : styles.txtEditor]}
-        value={editorText}
-        onChangeText={(value) => void commitEditorText(value)}
-        onSelectionChange={handleSelectionChange}
-        textAlignVertical="top"
-        placeholder={isMarkdownMode ? 'Edit markdown' : 'Edit plain text'}
-        placeholderTextColor={screenColors.muted}
-      />
+      <View style={styles.editorStage}>
+        {isMarkdownMode ? (
+          isEditingMarkdown ? (
+            <View style={styles.editorPane}>
+              <View style={styles.editorModeRow}>
+                <Text style={styles.editorModeLabel}>Markdown source</Text>
+                <TouchableOpacity style={styles.inlineModeButton} onPress={exitMarkdownEdit}>
+                  <Text style={styles.inlineModeButtonText}>Preview</Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                multiline
+                autoFocus
+                style={[styles.editor, styles.markdownSourceEditor]}
+                value={editorText}
+                onChangeText={(value) => void commitEditorText(value)}
+                onSelectionChange={handleSelectionChange}
+                textAlignVertical="top"
+                placeholder="Edit markdown"
+                placeholderTextColor={screenColors.muted}
+              />
+            </View>
+          ) : (
+            <Pressable style={styles.editorPane} onPress={enterMarkdownEdit}>
+              <View style={styles.editorModeRow}>
+                <Text style={styles.editorModeLabel}>Markdown preview</Text>
+                <TouchableOpacity style={styles.inlineModeButton} onPress={enterMarkdownEdit}>
+                  <Text style={styles.inlineModeButtonText}>Edit</Text>
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.markdownScroll} contentContainerStyle={styles.markdownScrollContent}>
+                {previewMarkdown.trim().length > 0 ? (
+                  <Markdown style={markdownStyles}>{previewMarkdown}</Markdown>
+                ) : (
+                  <Text style={styles.emptyMarkdownText}>Tap to start writing this note.</Text>
+                )}
+              </ScrollView>
+            </Pressable>
+          )
+        ) : (
+          <View style={styles.editorPane}>
+            <View style={styles.editorModeRow}>
+              <Text style={styles.editorModeLabel}>Plain text</Text>
+            </View>
+            <TextInput
+              multiline
+              style={[styles.editor, styles.txtEditor]}
+              value={editorText}
+              onChangeText={(value) => void commitEditorText(value)}
+              onSelectionChange={handleSelectionChange}
+              textAlignVertical="top"
+              placeholder="Edit plain text"
+              placeholderTextColor={screenColors.muted}
+            />
+          </View>
+        )}
+      </View>
 
       <Modal visible={showHeaderPicker} transparent animationType={animationType} onRequestClose={() => setShowHeaderPicker(false)}>
         <Pressable style={styles.popoverWrap} onPress={() => setShowHeaderPicker(false)}>
@@ -387,6 +470,25 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
                 <Text style={styles.popoverOptionText}>Heading {level}</Text>
               </TouchableOpacity>
             ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={showTitleEditor} transparent animationType={animationType} onRequestClose={() => setShowTitleEditor(false)}>
+        <Pressable style={styles.popoverWrap} onPress={() => setShowTitleEditor(false)}>
+          <Pressable style={styles.popover} onPress={(event) => event.stopPropagation()}>
+            <Text style={styles.popoverTitle}>Note title</Text>
+            <TextInput
+              style={styles.popoverInput}
+              value={note.title}
+              onChangeText={(value) => void updateNoteTitle(value)}
+              placeholder="Untitled note"
+              placeholderTextColor={screenColors.muted}
+              autoFocus
+            />
+            <TouchableOpacity style={styles.popoverPrimary} onPress={() => setShowTitleEditor(false)}>
+              <Text style={styles.popoverPrimaryText}>Done</Text>
+            </TouchableOpacity>
           </Pressable>
         </Pressable>
       </Modal>
@@ -689,12 +791,16 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#1a2d41',
   },
-  titleInput: {
+  titleButton: {
     flex: 1,
+    minWidth: 0,
+    justifyContent: 'center',
+    paddingVertical: 4,
+  },
+  titleButtonText: {
     color: screenColors.text,
     fontSize: 22,
     fontWeight: '700',
-    paddingVertical: 0,
   },
   topControls: {
     flexDirection: 'row',
@@ -804,6 +910,52 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
   },
+  editorStage: {
+    flex: 1,
+  },
+  editorPane: {
+    flex: 1,
+  },
+  editorModeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  editorModeLabel: {
+    color: screenColors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  inlineModeButton: {
+    borderRadius: 999,
+    backgroundColor: '#16283a',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  inlineModeButtonText: {
+    color: screenColors.text,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  markdownScroll: {
+    flex: 1,
+  },
+  markdownScrollContent: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 32,
+  },
+  emptyMarkdownText: {
+    color: screenColors.muted,
+    fontSize: 16,
+    lineHeight: 24,
+    paddingTop: 8,
+  },
   editor: {
     flex: 1,
     color: screenColors.text,
@@ -813,11 +965,15 @@ const styles = StyleSheet.create({
     lineHeight: 24,
     textAlignVertical: 'top',
   },
-  markdownEditor: {
+  markdownSourceEditor: {
     fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+    fontSize: 17,
+    lineHeight: 31,
   },
   txtEditor: {
-    fontFamily: Platform.select({ ios: 'Times New Roman', default: 'serif' }),
+    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+    fontSize: 15,
+    lineHeight: 25,
   },
   popoverWrap: {
     flex: 1,
@@ -1124,5 +1280,136 @@ const styles = StyleSheet.create({
   conflictItemMeta: {
     color: screenColors.muted,
     fontSize: 12,
+  },
+})
+
+const markdownStyles = StyleSheet.create({
+  body: {
+    color: screenColors.text,
+    fontSize: 17,
+    lineHeight: 28,
+  },
+  heading1: {
+    color: screenColors.text,
+    fontSize: 34,
+    lineHeight: 40,
+    fontWeight: '700',
+    marginBottom: 16,
+  },
+  heading2: {
+    color: screenColors.text,
+    fontSize: 28,
+    lineHeight: 34,
+    fontWeight: '700',
+    marginBottom: 16,
+  },
+  heading3: {
+    color: screenColors.text,
+    fontSize: 24,
+    lineHeight: 30,
+    fontWeight: '700',
+    marginBottom: 14,
+  },
+  heading4: {
+    color: screenColors.text,
+    fontSize: 20,
+    lineHeight: 26,
+    fontWeight: '700',
+    marginBottom: 14,
+  },
+  heading5: {
+    color: screenColors.text,
+    fontSize: 18,
+    lineHeight: 24,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  heading6: {
+    color: screenColors.text,
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  paragraph: {
+    color: screenColors.text,
+    fontSize: 17,
+    lineHeight: 28,
+    marginTop: 0,
+    marginBottom: 16,
+  },
+  blockquote: {
+    color: '#d5dee9',
+    borderLeftWidth: 3,
+    borderLeftColor: screenColors.accent,
+    paddingLeft: 12,
+    marginBottom: 16,
+  },
+  bullet_list: {
+    marginBottom: 16,
+  },
+  ordered_list: {
+    marginBottom: 16,
+  },
+  list_item: {
+    color: screenColors.text,
+    fontSize: 17,
+    lineHeight: 28,
+    marginBottom: 4,
+  },
+  code_inline: {
+    color: '#f6f9ff',
+    backgroundColor: '#182b42',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+  },
+  code_block: {
+    color: '#f6f9ff',
+    backgroundColor: '#122338',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 16,
+    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+  },
+  fence: {
+    color: '#f6f9ff',
+    backgroundColor: '#122338',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 16,
+    fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),
+  },
+  hr: {
+    backgroundColor: '#29435d',
+    height: 1,
+    marginVertical: 16,
+  },
+  table: {
+    borderWidth: 1,
+    borderColor: '#29435d',
+    marginBottom: 16,
+  },
+  thead: {
+    backgroundColor: '#122338',
+  },
+  th: {
+    color: screenColors.text,
+    padding: 8,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#29435d',
+    fontWeight: '700',
+  },
+  td: {
+    color: screenColors.text,
+    padding: 8,
+    borderRightWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: '#29435d',
+  },
+  link: {
+    color: '#7cc4ff',
   },
 })

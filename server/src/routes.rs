@@ -97,6 +97,12 @@ pub fn router(state: AppState) -> Router {
             get(get_admin_storage_overview),
         )
         .route("/api/v1/admin/db", get(get_admin_database_overview))
+        .route("/api/v1/admin/audit", get(list_admin_audit_entries))
+        .route("/api/v1/admin/deleted-items", get(list_admin_deleted_items))
+        .route(
+            "/api/v1/admin/deleted-items/{id}/restore",
+            post(restore_admin_deleted_item),
+        )
         .route(
             "/api/v1/admin/system/update",
             get(get_system_update_status).post(trigger_system_update),
@@ -312,6 +318,32 @@ async fn get_admin_database_overview(
 ) -> AppResult<Json<AdminDatabaseOverview>> {
     let _user = require_manage_org_settings_user(&state, &headers).await?;
     Ok(Json(state.admin_database_overview().await))
+}
+
+async fn list_admin_deleted_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<Vec<crate::models::AdminDeletedItem>>> {
+    let _user = require_manage_org_settings_user(&state, &headers).await?;
+    Ok(Json(state.list_deleted_items().await))
+}
+
+async fn list_admin_audit_entries(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<Vec<crate::models::AdminAuditEntry>>> {
+    let _user = require_manage_org_settings_user(&state, &headers).await?;
+    Ok(Json(state.list_audit_entries().await))
+}
+
+async fn restore_admin_deleted_item(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<serde_json::Value>> {
+    let _user = require_manage_org_settings_user(&state, &headers).await?;
+    state.restore_deleted_item(&id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn require_manage_org_settings_user(

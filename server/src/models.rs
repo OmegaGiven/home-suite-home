@@ -237,6 +237,40 @@ pub struct AdminDatabaseOverview {
     pub tables: Vec<AdminDatabaseTable>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletedResourceKind {
+    Note,
+    Diagram,
+    VoiceMemo,
+    DrivePath,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdminDeletedItem {
+    pub id: String,
+    pub kind: DeletedResourceKind,
+    pub label: String,
+    pub original_path: String,
+    pub deleted_at: DateTime<Utc>,
+    pub purge_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdminAuditEntry {
+    pub id: String,
+    pub occurred_at: DateTime<Utc>,
+    pub actor_id: String,
+    pub actor_label: String,
+    pub source: String,
+    pub action: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub target_label: String,
+    #[serde(default)]
+    pub details: serde_json::Value,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ChangePasswordRequest {
     pub identifier: String,
@@ -689,6 +723,10 @@ pub struct Note {
     pub forked_from_note_id: Option<Uuid>,
     #[serde(default)]
     pub conflict_tag: Option<String>,
+    #[serde(default)]
+    pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub purge_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -892,6 +930,10 @@ pub struct Diagram {
     pub author_id: Uuid,
     #[serde(default)]
     pub last_editor_id: Uuid,
+    #[serde(default)]
+    pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub purge_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -952,6 +994,10 @@ pub struct VoiceMemo {
     pub failure_reason: Option<String>,
     #[serde(default)]
     pub owner_id: Uuid,
+    #[serde(default)]
+    pub deleted_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub purge_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

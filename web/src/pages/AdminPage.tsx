@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { OverflowCategoryNav } from '../components/OverflowCategoryNav'
 import { UserAvatar } from '../components/UserAvatar'
 import type {
+  AdminAuditEntry,
   AdminDatabaseOverview,
+  AdminDeletedItem,
   AdminSettings,
   AdminStorageOverview,
   AdminUserSummary,
@@ -24,6 +26,8 @@ type Props = {
   users: AdminUserSummary[]
   storageOverview: AdminStorageOverview | null
   databaseOverview: AdminDatabaseOverview | null
+  deletedItems: AdminDeletedItem[]
+  auditEntries: AdminAuditEntry[]
   currentFontFamily: string
   currentAccent: string
   currentPageGutter: number
@@ -31,6 +35,9 @@ type Props = {
   oidcConfig: OidcConfig | null
   systemUpdateStatus: SystemUpdateStatus | null
   onRefreshDatabaseOverview: () => void
+  onRefreshDeletedItems: () => void
+  onRefreshAuditEntries: () => void
+  onRestoreDeletedItem: (id: string) => void
   onSave: (settings: AdminSettings) => void
   onRefreshSystemUpdateStatus: () => void
   onRunSystemUpdate: () => void
@@ -41,7 +48,7 @@ type Props = {
   onResolveCredentialRequest: (userId: string, approve: boolean) => void
 }
 
-type AdminCategory = 'roles' | 'users' | 'storage' | 'authentication' | 'deployment' | 'db'
+type AdminCategory = 'roles' | 'users' | 'storage' | 'authentication' | 'deployment' | 'db' | 'audit'
 
 const TOOL_SCOPE_FIELDS: Array<{ key: keyof UserToolScope; label: string }> = [
   { key: 'notes', label: 'Notes' },
@@ -65,6 +72,7 @@ const ADMIN_CATEGORIES: Array<{ key: AdminCategory; label: string }> = [
   { key: 'authentication', label: 'Authentication' },
   { key: 'deployment', label: 'Deployment' },
   { key: 'db', label: 'DB' },
+  { key: 'audit', label: 'Audit' },
 ]
 
 const EMPTY_OIDC_SETTINGS: OidcProviderSettings = {
@@ -152,6 +160,8 @@ export function AdminPage({
   users,
   storageOverview,
   databaseOverview,
+  deletedItems,
+  auditEntries,
   currentFontFamily,
   currentAccent,
   currentPageGutter,
@@ -159,6 +169,9 @@ export function AdminPage({
   oidcConfig,
   systemUpdateStatus,
   onRefreshDatabaseOverview,
+  onRefreshDeletedItems,
+  onRefreshAuditEntries,
+  onRestoreDeletedItem,
   onSave,
   onRefreshSystemUpdateStatus,
   onRunSystemUpdate,
@@ -208,6 +221,14 @@ export function AdminPage({
   )
   const scopeMenuRef = useRef<HTMLDivElement | null>(null)
   const [selectedDbTableKey, setSelectedDbTableKey] = useState<string>('')
+  const [dbVisibleColumns, setDbVisibleColumns] = useState<Record<string, string[]>>({})
+  const [dbColumnWidths, setDbColumnWidths] = useState<Record<string, Record<string, number>>>({})
+  const dbResizeStateRef = useRef<{
+    tableKey: string
+    column: string
+    startX: number
+    startWidth: number
+  } | null>(null)
 
   useEffect(() => {
     setUserAccessDrafts((current) => {
@@ -264,6 +285,19 @@ export function AdminPage({
     (selectedAuthProvider.issuer.trim() ? `${selectedAuthProvider.issuer.trim().replace(/\/+$/, '')}/userinfo` : '')
   const selectedDbTable =
     databaseOverview?.tables.find((table) => table.key === selectedDbTableKey) ?? databaseOverview?.tables[0] ?? null
+  const selectedDbVisibleColumns = useMemo(() => {
+    if (!selectedDbTable) return []
+    const saved = dbVisibleColumns[selectedDbTable.key]
+    if (!saved?.length) return selectedDbTable.columns
+    const allowed = new Set(selectedDbTable.columns)
+    const filtered = saved.filter((column) => allowed.has(column))
+    return filtered.length ? filtered : selectedDbTable.columns
+  }, [dbVisibleColumns, selectedDbTable])
+  const selectedDbColumnWidths = dbColumnWidths[selectedDbTable?.key ?? ''] ?? {}
+  const selectedDbTableWidth = useMemo(() => {
+    if (!selectedDbTable) return undefined
+    return selectedDbVisibleColumns.reduce((total, column) => total + (selectedDbColumnWidths[column] ?? 220), 0)
+  }, [selectedDbColumnWidths, selectedDbTable, selectedDbVisibleColumns])
 
   useEffect(() => {
     if (!openScopeUserId || !scopeMenuRef.current || !scopeMenuPosition) return
@@ -305,11 +339,64 @@ export function AdminPage({
     }
   }, [openScopeUserId])
 
+  useEffect(() => {
+    function stopResize() {
+      dbResizeStateRef.current = null
+    }
+
+    function onPointerMove(event: MouseEvent) {
+      const active = dbResizeStateRef.current
+      if (!active) return
+      const delta = event.clientX - active.startX
+      const nextWidth = Math.max(120, active.startWidth + delta)
+      setDbColumnWidths((current) => ({
+        ...current,
+        [active.tableKey]: {
+          ...(current[active.tableKey] ?? {}),
+          [active.column]: nextWidth,
+        },
+      }))
+    }
+
+    window.addEventListener('mouseup', stopResize)
+    window.addEventListener('mousemove', onPointerMove)
+    return () => {
+      window.removeEventListener('mouseup', stopResize)
+      window.removeEventListener('mousemove', onPointerMove)
+    }
+  }, [])
+
   if (!isAdmin) {
     return <section className="panel"><div className="empty-state">Admin access required.</div></section>
   }
   if (!settings) {
     return <section className="panel"><div className="empty-state">Loading admin settings…</div></section>
+  }
+
+  function toggleDbColumn(tableKey: string, column: string) {
+    setDbVisibleColumns((current) => {
+      const table = databaseOverview?.tables.find((entry) => entry.key === tableKey)
+      if (!table) return current
+      const currentVisible = current[tableKey]?.length ? current[tableKey] : table.columns
+      const next = currentVisible.includes(column)
+        ? currentVisible.filter((entry) => entry !== column)
+        : [...currentVisible, column]
+      return {
+        ...current,
+        [tableKey]: next.length ? next : [column],
+      }
+    })
+  }
+
+  function startDbColumnResize(tableKey: string, column: string, event: ReactMouseEvent<HTMLButtonElement>) {
+    event.preventDefault()
+    event.stopPropagation()
+    dbResizeStateRef.current = {
+      tableKey,
+      column,
+      startX: event.clientX,
+      startWidth: selectedDbColumnWidths[column] ?? 220,
+    }
   }
 
   return (
@@ -606,37 +693,85 @@ export function AdminPage({
           ) : null}
 
           {activeCategory === 'storage' ? (
-            <div className="settings-card">
-              <h3>Storage Limits</h3>
-              <div className="admin-storage-summary">
-                <div className="admin-storage-summary-row">
-                  <strong>Public share storage</strong>
-                  <span className="muted">
-                    {storageOverview?.public_storage_mb ?? settings.public_storage_mb} MB / {storageOverview?.detected_total_mb ?? 0} MB detected
-                  </span>
+            <div style={{ display: 'grid', gap: 16 }}>
+              <div className="settings-card">
+                <h3>Storage Limits</h3>
+                <div className="admin-storage-summary">
+                  <div className="admin-storage-summary-row">
+                    <strong>Public share storage</strong>
+                    <span className="muted">
+                      {storageOverview?.public_storage_mb ?? settings.public_storage_mb} MB / {storageOverview?.detected_total_mb ?? 0} MB detected
+                    </span>
+                  </div>
+                  <div className="admin-table-inline">
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      disabled={!canManageOrgSettings}
+                      value={settings.public_storage_mb}
+                      onChange={(event) => onSave({ ...settings, public_storage_mb: Number(event.target.value) || 0 })}
+                    />
+                    <span className="muted">MB allocated to public/shared storage</span>
+                  </div>
+                  <div className="admin-storage-bar">
+                    <div className="admin-storage-bar-fill" style={{ width: `${publicStoragePercent}%` }} />
+                  </div>
+                  <div className="muted">
+                    Available free space: {storageOverview?.detected_available_mb ?? 0} MB
+                  </div>
                 </div>
-                <div className="admin-table-inline">
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    disabled={!canManageOrgSettings}
-                    value={settings.public_storage_mb}
-                    onChange={(event) => onSave({ ...settings, public_storage_mb: Number(event.target.value) || 0 })}
-                  />
-                  <span className="muted">MB allocated to public/shared storage</span>
-                </div>
-                <div className="admin-storage-bar">
-                  <div className="admin-storage-bar-fill" style={{ width: `${publicStoragePercent}%` }} />
-                </div>
-              <div className="muted">
-                Available free space: {storageOverview?.detected_available_mb ?? 0} MB
+                <label className="settings-field">
+                  <span>Voice upload limit (MB)</span>
+                  <input className="input" type="number" disabled={!canManageOrgSettings} value={settings.voice_upload_limit_mb} onChange={(event) => onSave({ ...settings, voice_upload_limit_mb: Number(event.target.value) || 0 })} />
+                </label>
               </div>
+
+              <div className="settings-card">
+                <div className="button-row admin-users-toolbar" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <h3 style={{ marginBottom: 4 }}>Deleted Items</h3>
+                    <div className="muted">Items deleted from apps stay recoverable here for 30 days.</div>
+                  </div>
+                  <button className="button-secondary" type="button" disabled={!canManageOrgSettings} onClick={onRefreshDeletedItems}>
+                    Refresh
+                  </button>
+                </div>
+                {deletedItems.length === 0 ? (
+                  <div className="empty-state">No deleted items are waiting for recovery.</div>
+                ) : (
+                  <div className="admin-users-table-wrap">
+                    <table className="admin-users-table">
+                      <thead>
+                        <tr>
+                          <th>Type</th>
+                          <th>Name</th>
+                          <th>Original Path</th>
+                          <th>Deleted</th>
+                          <th>Purges</th>
+                          <th style={{ width: 120 }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {deletedItems.map((item) => (
+                          <tr key={item.id}>
+                            <td>{item.kind}</td>
+                            <td>{item.label}</td>
+                            <td><span className="muted">{item.original_path}</span></td>
+                            <td>{new Date(item.deleted_at).toLocaleString()}</td>
+                            <td>{new Date(item.purge_at).toLocaleString()}</td>
+                            <td>
+                              <button className="button-secondary" type="button" disabled={!canManageOrgSettings} onClick={() => onRestoreDeletedItem(item.id)}>
+                                Restore
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-              <label className="settings-field">
-                <span>Voice upload limit (MB)</span>
-                <input className="input" type="number" disabled={!canManageOrgSettings} value={settings.voice_upload_limit_mb} onChange={(event) => onSave({ ...settings, voice_upload_limit_mb: Number(event.target.value) || 0 })} />
-              </label>
             </div>
           ) : null}
 
@@ -943,26 +1078,58 @@ export function AdminPage({
 
                   {selectedDbTable ? (
                     <>
+                      <div className="admin-db-controls">
+                        <div className="admin-db-column-filter">
+                          {selectedDbTable.columns.map((column) => (
+                            <label key={column} className="admin-db-column-chip">
+                              <input
+                                type="checkbox"
+                                checked={selectedDbVisibleColumns.includes(column)}
+                                onChange={() => toggleDbColumn(selectedDbTable.key, column)}
+                              />
+                              <span>{column}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
                       <div className="muted">
                         Showing {selectedDbTable.rows.length} row{selectedDbTable.rows.length === 1 ? '' : 's'} from {selectedDbTable.label}
+                        {' · '}
+                        {selectedDbVisibleColumns.length} of {selectedDbTable.columns.length} columns visible
                       </div>
-                      <div className="admin-users-table-wrap">
-                        <table className="admin-users-table">
+                      <div className="admin-users-table-wrap admin-db-table-wrap">
+                        <table className="admin-users-table admin-db-table" style={{ width: selectedDbTableWidth, minWidth: selectedDbTableWidth }}>
                           <thead>
                             <tr>
-                              {selectedDbTable.columns.map((column) => (
-                                <th key={column}>{column}</th>
+                              {selectedDbVisibleColumns.map((column) => (
+                                <th
+                                  key={column}
+                                  style={{ width: selectedDbColumnWidths[column] ?? 220, minWidth: selectedDbColumnWidths[column] ?? 220 }}
+                                >
+                                  <div className="admin-db-header-cell">
+                                    <span>{column}</span>
+                                    <button
+                                      type="button"
+                                      className="admin-db-resize-handle"
+                                      aria-label={`Resize ${column} column`}
+                                      onMouseDown={(event) => startDbColumnResize(selectedDbTable.key, column, event)}
+                                    />
+                                  </div>
+                                </th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
                             {selectedDbTable.rows.map((row, index) => (
                               <tr key={`${selectedDbTable.key}-${index}`}>
-                                {selectedDbTable.columns.map((column) => {
+                                {selectedDbVisibleColumns.map((column) => {
                                   const value = row[column]
                                   return (
-                                    <td key={column}>
-                                      <span className="muted" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                                    <td
+                                      key={column}
+                                      style={{ width: selectedDbColumnWidths[column] ?? 220, minWidth: selectedDbColumnWidths[column] ?? 220 }}
+                                    >
+                                      <span className="muted admin-db-cell-value" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                                         {value == null
                                           ? 'null'
                                           : typeof value === 'object'
@@ -981,6 +1148,57 @@ export function AdminPage({
                   ) : (
                     <div className="empty-state">No tables available.</div>
                   )}
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {activeCategory === 'audit' ? (
+            <div className="settings-card">
+              <div className="button-row admin-users-toolbar" style={{ alignItems: 'center', justifyContent: 'space-between' }}>
+                <div>
+                  <h3 style={{ marginBottom: 4 }}>Audit Log</h3>
+                  <div className="muted">30-day retained server audit trail for destructive and recovery actions.</div>
+                </div>
+                <button className="button-secondary" type="button" disabled={!canManageOrgSettings} onClick={onRefreshAuditEntries}>
+                  Refresh
+                </button>
+              </div>
+              {auditEntries.length === 0 ? (
+                <div className="empty-state">No audit entries yet.</div>
+              ) : (
+                <div className="admin-users-table-wrap">
+                  <table className="admin-users-table">
+                    <thead>
+                      <tr>
+                        <th>When</th>
+                        <th>Actor</th>
+                        <th>Action</th>
+                        <th>Target</th>
+                        <th>Source</th>
+                        <th>Details</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {auditEntries.map((entry) => (
+                        <tr key={entry.id}>
+                          <td>{new Date(entry.occurred_at).toLocaleString()}</td>
+                          <td>{entry.actor_label}</td>
+                          <td>{entry.action}</td>
+                          <td>
+                            <div>{entry.target_label}</div>
+                            <div className="muted">{entry.target_kind} · {entry.target_id}</div>
+                          </td>
+                          <td>{entry.source}</td>
+                          <td>
+                            <span className="muted admin-db-cell-value" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                              {entry.details ? JSON.stringify(entry.details, null, 2) : 'null'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>

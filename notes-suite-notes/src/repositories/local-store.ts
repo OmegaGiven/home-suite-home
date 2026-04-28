@@ -70,18 +70,26 @@ export async function listNotes() {
     created_at: string
     updated_at: string
   }>('SELECT * FROM notes ORDER BY updated_at DESC')
-  return rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    folder: row.folder,
-    markdown: row.markdown,
-    document: JSON.parse(row.document_json),
-    storage_mode: row.storage_mode,
-    visibility: row.visibility,
-    selected_server_identity_id: row.selected_server_identity_id,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  })) satisfies LocalNoteRecord[]
+  const notes: LocalNoteRecord[] = []
+  for (const row of rows) {
+    try {
+      notes.push({
+        id: row.id,
+        title: row.title,
+        folder: row.folder,
+        markdown: row.markdown,
+        document: JSON.parse(row.document_json),
+        storage_mode: row.storage_mode,
+        visibility: row.visibility,
+        selected_server_identity_id: row.selected_server_identity_id,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+      })
+    } catch (error) {
+      console.warn('Skipping unreadable local note row', row.id, error)
+    }
+  }
+  return notes
 }
 
 export async function upsertNote(note: LocalNoteRecord) {
@@ -195,24 +203,42 @@ export async function saveServerAccount(account: ServerAccount) {
     [account.id, JSON.stringify(account)],
   )
   for (const identity of account.identities) {
-    await SecureStore.setItemAsync(`server-token:${identity.id}`, identity.token)
+    try {
+      await SecureStore.setItemAsync(`server-token:${identity.id}`, identity.token)
+    } catch (error) {
+      console.warn('Unable to persist server token in secure store', identity.id, error)
+    }
   }
 }
 
 export async function listServerAccounts() {
   const database = await openDatabase()
   const rows = await database.getAllAsync<{ account_json: string }>('SELECT account_json FROM server_accounts')
-  const accounts = rows.map((row) => JSON.parse(row.account_json) as ServerAccount)
+  const accounts: ServerAccount[] = []
+  for (const row of rows) {
+    try {
+      accounts.push(JSON.parse(row.account_json) as ServerAccount)
+    } catch (error) {
+      console.warn('Skipping unreadable server account row', error)
+    }
+  }
   const hydrated = []
   for (const account of accounts) {
-    hydrated.push({
-      ...account,
-      identities: await Promise.all(
-        account.identities.map(async (identity) => ({
+    const identities = []
+    for (const identity of account.identities) {
+      try {
+        identities.push({
           ...identity,
           token: (await SecureStore.getItemAsync(`server-token:${identity.id}`)) ?? identity.token,
-        })),
-      ),
+        })
+      } catch (error) {
+        console.warn('Unable to read secure-store token for server identity', identity.id, error)
+        identities.push(identity)
+      }
+    }
+    hydrated.push({
+      ...account,
+      identities,
     })
   }
   return hydrated
@@ -229,5 +255,11 @@ export async function saveSetting(key: string, value: unknown) {
 export async function getSetting<T>(key: string) {
   const database = await openDatabase()
   const row = await database.getFirstAsync<{ value_json: string }>('SELECT value_json FROM app_settings WHERE key = ?', [key])
-  return row ? (JSON.parse(row.value_json) as T) : null
+  if (!row) return null
+  try {
+    return JSON.parse(row.value_json) as T
+  } catch (error) {
+    console.warn('Skipping unreadable app setting', key, error)
+    return null
+  }
 }

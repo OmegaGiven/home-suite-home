@@ -1,4 +1,5 @@
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useNotesApp } from '../src/lib/app-context'
 import { screenColors } from '../src/theme/tokens'
 
@@ -16,15 +17,19 @@ type AppearanceScreenProps = {
 }
 
 export default function AppearanceScreen({ onBack }: AppearanceScreenProps) {
+  const insets = useSafeAreaInsets()
   const { appearance, setAppearance } = useNotesApp()
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
-      {onBack ? (
-        <TouchableOpacity style={styles.backButton} onPress={onBack}>
-          <Text style={styles.backButtonText}>Back to note</Text>
-        </TouchableOpacity>
-      ) : null}
+    <View style={styles.screen}>
+      <View style={[styles.header, { paddingTop: insets.top + 8 }]}>
+        {onBack ? (
+          <TouchableOpacity style={styles.backButton} onPress={onBack} hitSlop={12}>
+            <Text style={styles.backButtonText}>Back to note</Text>
+          </TouchableOpacity>
+        ) : <View />}
+      </View>
+      <ScrollView contentContainerStyle={styles.content}>
       <Text style={styles.title}>Appearance</Text>
       <View style={styles.card}>
         <Text style={styles.label}>Mode</Text>
@@ -114,7 +119,8 @@ export default function AppearanceScreen({ onBack }: AppearanceScreenProps) {
           Background image upload is not wired yet, but the custom appearance model now reserves space for it.
         </Text>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   )
 }
 
@@ -123,16 +129,26 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: screenColors.background,
   },
+  header: {
+    paddingHorizontal: 18,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1a2d41',
+  },
   content: {
     gap: 16,
     padding: 18,
+    paddingTop: 16,
+    paddingBottom: 32,
   },
   backButton: {
     alignSelf: 'flex-start',
     borderRadius: 999,
     backgroundColor: '#162536',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    minHeight: 42,
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 11,
   },
   backButtonText: {
     color: screenColors.text,

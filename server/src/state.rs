@@ -16,12 +16,12 @@ use crate::{
     config::Config,
     error::{AppError, AppResult},
     models::{
-        AdminDatabaseOverview, AdminDatabaseTable, AdminSettings, AdminStorageOverview, AdminUserSummary, CalendarConnection, CalendarEvent,
+        AdminAuditEntry, AdminDatabaseOverview, AdminDatabaseTable, AdminDeletedItem, AdminSettings, AdminStorageOverview, AdminUserSummary, CalendarConnection, CalendarEvent,
         CalendarProvider, ChangeCurrentUserPasswordRequest, ChangePasswordRequest,
         ConnectGoogleCalendarRequest, CreateCalendarEventRequest, CreateDiagramRequest,
         CreateIcsCalendarConnectionRequest, CreateLocalCalendarConnectionRequest,
         CreateMessageRequest, CreateNoteRequest, CreateRoomRequest, CreateTaskRequest,
-        CreateUserRequest, Diagram, GoogleCalendarConfigResponse, JobStatus, Message,
+        CreateUserRequest, DeletedResourceKind, Diagram, GoogleCalendarConfigResponse, JobStatus, Message,
         MessageReaction, Note, NoteBlock, NoteBlockKind, NoteConflictRecord, NoteDocument,
         NoteDocumentOperationBatch, NoteOperation, NoteOperationRecord, NoteOperationsPullResponse,
         NoteOperationsPushResponse, NoteSession, NoteSessionCloseRequest, NoteSessionOpenRequest,
@@ -40,6 +40,9 @@ use crate::{
     persistence::PersistenceBackend,
     storage::BlobStorage,
 };
+
+const RECOVERY_RETENTION_DAYS: i64 = 30;
+const AUDIT_RETENTION_DAYS: i64 = 30;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -83,6 +86,21 @@ pub(crate) struct StateData {
     pub note_sessions: HashMap<Uuid, Vec<NoteSession>>,
     #[serde(default)]
     pub note_conflicts: HashMap<Uuid, Vec<NoteConflictRecord>>,
+    #[serde(default)]
+    pub deleted_drive_items: HashMap<String, DeletedDriveItem>,
+    #[serde(default)]
+    pub audit_log: Vec<AdminAuditEntry>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DeletedDriveItem {
+    pub id: String,
+    pub original_path: String,
+    pub backup_path: String,
+    pub label: String,
+    pub is_dir: bool,
+    pub deleted_at: DateTime<Utc>,
+    pub purge_at: DateTime<Utc>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -861,18 +879,21 @@ impl AppState {
         let notes = state
             .notes
             .values()
+            .filter(|note| is_note_active(note))
             .filter(|note| newer_than(note.updated_at, notes_since))
             .cloned()
             .collect::<Vec<_>>();
         let diagrams = state
             .diagrams
             .values()
+            .filter(|diagram| is_diagram_active(diagram))
             .filter(|diagram| newer_than(diagram.updated_at, diagrams_since))
             .cloned()
             .collect::<Vec<_>>();
         let voice_memos = state
             .memos
             .values()
+            .filter(|memo| is_voice_memo_active(memo))
             .filter(|memo| memo.owner_id == user.id && newer_than(memo.updated_at, voice_since))
             .cloned()
             .collect::<Vec<_>>();
@@ -2113,6 +2134,12 @@ impl AppState {
             table_from_records("diagrams", "Diagrams", state.diagrams.values().cloned().collect::<Vec<_>>()),
             table_from_records("voice_memos", "Voice Memos", state.memos.values().cloned().collect::<Vec<_>>()),
             table_from_records(
+                "deleted_drive_items",
+                "Deleted Drive Items",
+                state.deleted_drive_items.values().cloned().collect::<Vec<_>>(),
+            ),
+            table_from_records("audit_log", "Audit Log", state.audit_log.clone()),
+            table_from_records(
                 "transcription_jobs",
                 "Transcription Jobs",
                 state.jobs.values().cloned().collect::<Vec<_>>(),
@@ -2148,6 +2175,173 @@ impl AppState {
             generated_at: Utc::now(),
             tables,
         }
+    }
+
+    pub async fn list_deleted_items(&self) -> Vec<AdminDeletedItem> {
+        let state = self.inner.read().await;
+        let mut items = Vec::new();
+        items.extend(state.notes.values().filter_map(|note| {
+            Some(AdminDeletedItem {
+                id: format!("note:{}", note.id),
+                kind: DeletedResourceKind::Note,
+                label: note.title.clone(),
+                original_path: note_relative_path_for_move(note),
+                deleted_at: note.deleted_at?,
+                purge_at: note.purge_at?,
+            })
+        }));
+        items.extend(state.diagrams.values().filter_map(|diagram| {
+            Some(AdminDeletedItem {
+                id: format!("diagram:{}", diagram.id),
+                kind: DeletedResourceKind::Diagram,
+                label: diagram_display_name(&diagram.title),
+                original_path: diagram_relative_path_for_move(diagram),
+                deleted_at: diagram.deleted_at?,
+                purge_at: diagram.purge_at?,
+            })
+        }));
+        items.extend(state.memos.values().filter_map(|memo| {
+            Some(AdminDeletedItem {
+                id: format!("voice:{}", memo.id),
+                kind: DeletedResourceKind::VoiceMemo,
+                label: memo.title.clone(),
+                original_path: memo.audio_path.clone(),
+                deleted_at: memo.deleted_at?,
+                purge_at: memo.purge_at?,
+            })
+        }));
+        items.extend(state.deleted_drive_items.values().cloned().map(|entry| AdminDeletedItem {
+            id: format!("drive:{}", entry.id),
+            kind: DeletedResourceKind::DrivePath,
+            label: entry.label,
+            original_path: entry.original_path,
+            deleted_at: entry.deleted_at,
+            purge_at: entry.purge_at,
+        }));
+        items.sort_by(|left, right| right.deleted_at.cmp(&left.deleted_at));
+        items
+    }
+
+    pub async fn list_audit_entries(&self) -> Vec<AdminAuditEntry> {
+        self.inner.read().await.audit_log.clone()
+    }
+
+    pub async fn restore_deleted_item(&self, item_id: &str) -> AppResult<()> {
+        let mut state = self.inner.write().await;
+        let uses_postgres = self.persistence.uses_postgres();
+        if let Some(id) = item_id.strip_prefix("note:") {
+            let note_id = Uuid::parse_str(id).map_err(|_| AppError::BadRequest("invalid deleted note id".into()))?;
+            let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
+            if note.deleted_at.is_none() {
+                return Ok(());
+            }
+            let previous_revision = note.revision;
+            note.deleted_at = None;
+            note.purge_at = None;
+            note.updated_at = Utc::now();
+            note.revision += 1;
+            let restored = note.clone();
+            state.sync_tombstones.retain(|entry| {
+                !(entry.entity == SyncEntityKind::Notes && entry.id == restored.id.to_string())
+            });
+            if uses_postgres {
+                self.persistence.update_note(&restored, previous_revision).await?;
+            }
+            self.storage
+                .sync_note_markdown(None, restored.id, &restored.title, &restored.folder, &restored.markdown)
+                .await?;
+            append_audit_entry(
+                &mut state,
+                "api.admin",
+                "restore_note",
+                "note",
+                restored.id.to_string(),
+                restored.title.clone(),
+                serde_json::json!({ "path": note_relative_path_for_move(&restored) }),
+            );
+        } else if let Some(id) = item_id.strip_prefix("diagram:") {
+            let diagram_id = Uuid::parse_str(id)
+                .map_err(|_| AppError::BadRequest("invalid deleted diagram id".into()))?;
+            let diagram = state.diagrams.get_mut(&diagram_id).ok_or(AppError::NotFound)?;
+            if diagram.deleted_at.is_none() {
+                return Ok(());
+            }
+            let previous_revision = diagram.revision;
+            diagram.deleted_at = None;
+            diagram.purge_at = None;
+            diagram.updated_at = Utc::now();
+            diagram.revision += 1;
+            let restored = diagram.clone();
+            state.sync_tombstones.retain(|entry| {
+                !(entry.entity == SyncEntityKind::Diagrams && entry.id == restored.id.to_string())
+            });
+            if uses_postgres {
+                self.persistence.update_diagram(&restored, previous_revision).await?;
+            }
+            self.storage
+                .sync_diagram_xml(None, &restored.title, restored.id, &restored.xml)
+                .await?;
+            append_audit_entry(
+                &mut state,
+                "api.admin",
+                "restore_diagram",
+                "diagram",
+                restored.id.to_string(),
+                diagram_display_name(&restored.title),
+                serde_json::json!({ "path": diagram_relative_path_for_move(&restored) }),
+            );
+        } else if let Some(id) = item_id.strip_prefix("voice:") {
+            let memo_id = Uuid::parse_str(id).map_err(|_| AppError::BadRequest("invalid deleted memo id".into()))?;
+            let memo_key = {
+                let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+                if memo.deleted_at.is_none() {
+                    return Ok(());
+                }
+                let memo_key = memo.id.to_string();
+                memo.deleted_at = None;
+                memo.purge_at = None;
+                memo.updated_at = Utc::now();
+                memo_key
+            };
+            state.sync_tombstones.retain(|entry| {
+                !(entry.entity == SyncEntityKind::VoiceMemos && entry.id == memo_key)
+            });
+            if let Some((audit_id, audit_title, audit_path)) = state
+                .memos
+                .get(&memo_id)
+                .map(|memo| (memo.id.to_string(), memo.title.clone(), memo.audio_path.clone()))
+            {
+                append_audit_entry(
+                    &mut state,
+                    "api.admin",
+                    "restore_voice_memo",
+                    "voice_memo",
+                    audit_id,
+                    audit_title,
+                    serde_json::json!({ "path": audit_path }),
+                );
+            }
+        } else if let Some(id) = item_id.strip_prefix("drive:") {
+            let deleted = state.deleted_drive_items.get(id).cloned().ok_or(AppError::NotFound)?;
+            self.storage
+                .restore_drive_path_from_trash(&deleted.backup_path, &deleted.original_path)
+                .await?;
+            state.deleted_drive_items.remove(id);
+            append_audit_entry(
+                &mut state,
+                "api.admin",
+                "restore_drive_path",
+                "drive_path",
+                id.to_string(),
+                deleted.label,
+                serde_json::json!({ "path": deleted.original_path, "backup_path": deleted.backup_path }),
+            );
+        } else {
+            return Err(AppError::BadRequest("invalid deleted item id".into()));
+        }
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await
     }
 
     pub async fn change_password(&self, payload: ChangePasswordRequest) -> AppResult<UserProfile> {
@@ -2440,13 +2634,17 @@ impl AppState {
                 })
                 .collect::<Vec<_>>();
             state.notes = normalized.iter().cloned().map(|note| (note.id, note)).collect();
-            return normalized;
+            return normalized
+                .into_iter()
+                .filter(|note| is_note_active(note))
+                .collect();
         }
         self.inner
             .read()
             .await
             .notes
             .values()
+            .filter(|note| is_note_active(note))
             .cloned()
             .map(|mut note| {
                 ensure_note_foundation(&mut note);
@@ -2560,6 +2758,9 @@ impl AppState {
     ) -> AppResult<NoteSessionOpenResponse> {
         let mut state = self.inner.write().await;
         let note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
+        if note.deleted_at.is_some() {
+            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
+        }
         let sessions = state.note_sessions.entry(note_id).or_default();
         sessions.retain(|entry| (Utc::now() - entry.last_seen_at) < Duration::seconds(45));
         let client_id = if payload.client_id.trim().is_empty() {
@@ -2635,6 +2836,9 @@ impl AppState {
     ) -> AppResult<NoteOperationsPullResponse> {
         let state = self.inner.read().await;
         let note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
+        if note.deleted_at.is_some() {
+            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
+        }
         let share = Self::resource_share_for_note(&state, &note);
         let operations = state
             .note_operations
@@ -2661,6 +2865,9 @@ impl AppState {
     ) -> AppResult<NoteOperationsPushResponse> {
         let mut state = self.inner.write().await;
         let existing_note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
+        if existing_note.deleted_at.is_some() {
+            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
+        }
         if batch.actor_id.trim().is_empty() {
             batch.actor_id = user.id.to_string();
         }
@@ -2819,6 +3026,8 @@ impl AppState {
             last_editor_id: author_id,
             forked_from_note_id: None,
             conflict_tag: None,
+            deleted_at: None,
+            purge_at: None,
         };
         let mut note = note;
         note.markdown = markdown_from_note_document(&note.document);
@@ -2843,6 +3052,9 @@ impl AppState {
         let user_id = state.user.id;
         let current_used = storage_used_bytes_for_user(&state, &self.storage, user_id);
         let existing_note = state.notes.get(&id).cloned().ok_or(AppError::NotFound)?;
+        if existing_note.deleted_at.is_some() {
+            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
+        }
         if payload.revision != existing_note.revision {
             return Err(AppError::BadRequest("revision mismatch".into()));
         }
@@ -2905,6 +3117,9 @@ impl AppState {
         let mut state = self.inner.write().await;
         let user_id = state.user.id;
         let existing_note = state.notes.get(&id).cloned().ok_or(AppError::NotFound)?;
+        if existing_note.deleted_at.is_some() {
+            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
+        }
         let actor_id = if batch.actor_id.trim().is_empty() {
             user_id.to_string()
         } else {
@@ -2992,19 +3207,34 @@ impl AppState {
 
     pub async fn delete_note(&self, id: Uuid) -> AppResult<()> {
         let mut state = self.inner.write().await;
-        let note = state.notes.remove(&id).ok_or(AppError::NotFound)?;
+        let note = state.notes.get_mut(&id).ok_or(AppError::NotFound)?;
+        if note.deleted_at.is_some() {
+            return Ok(());
+        }
+        let (deleted_at, purge_at) = deletion_window();
+        note.deleted_at = Some(deleted_at);
+        note.purge_at = Some(purge_at);
+        note.updated_at = deleted_at;
+        note.revision += 1;
+        let note_snapshot = note.clone();
         state.sync_tombstones.push(SyncTombstone {
             entity: SyncEntityKind::Notes,
-            id: note.id.to_string(),
-            deleted_at: Utc::now(),
+            id: note_snapshot.id.to_string(),
+            deleted_at,
         });
+        append_audit_entry(
+            &mut state,
+            "api.notes",
+            "delete_note",
+            "note",
+            note_snapshot.id.to_string(),
+            note_snapshot.title.clone(),
+            serde_json::json!({ "path": note_relative_path_for_move(&note_snapshot), "purge_at": purge_at }),
+        );
         let uses_postgres = self.persistence.uses_postgres();
         if uses_postgres {
-            self.persistence.delete_note(note.id).await?;
+            self.persistence.update_note(&note_snapshot, note_snapshot.revision - 1).await?;
         }
-        self.storage
-            .delete_note_markdown(&note.folder, &note.title, note.id)
-            .await?;
         let snapshot = state.clone();
         drop(state);
         if !uses_postgres {
@@ -3021,9 +3251,19 @@ impl AppState {
                 .cloned()
                 .map(|diagram| (diagram.id, diagram))
                 .collect();
-            return diagrams;
+            return diagrams
+                .into_iter()
+                .filter(|diagram| is_diagram_active(diagram))
+                .collect();
         }
-        self.inner.read().await.diagrams.values().cloned().collect()
+        self.inner
+            .read()
+            .await
+            .diagrams
+            .values()
+            .filter(|diagram| is_diagram_active(diagram))
+            .cloned()
+            .collect()
     }
 
     pub async fn create_diagram(&self, payload: CreateDiagramRequest) -> AppResult<Diagram> {
@@ -3053,6 +3293,8 @@ impl AppState {
             updated_at: now,
             author_id,
             last_editor_id: author_id,
+            deleted_at: None,
+            purge_at: None,
         };
         let uses_postgres = self.persistence.uses_postgres();
         if uses_postgres {
@@ -3079,6 +3321,9 @@ impl AppState {
         let user_id = state.user.id;
         let current_used = storage_used_bytes_for_user(&state, &self.storage, user_id);
         let existing_diagram = state.diagrams.get(&id).cloned().ok_or(AppError::NotFound)?;
+        if existing_diagram.deleted_at.is_some() {
+            return Err(AppError::BadRequest("diagram has been deleted and can be restored from admin".into()));
+        }
         if payload.revision != existing_diagram.revision {
             return Err(AppError::BadRequest("revision mismatch".into()));
         }
@@ -3126,6 +3371,7 @@ impl AppState {
             .await
             .memos
             .values()
+            .filter(|memo| is_voice_memo_active(memo))
             .cloned()
             .map(|mut memo| {
                 ensure_voice_memo_foundation(&mut memo);
@@ -3141,6 +3387,7 @@ impl AppState {
             .memos
             .get(&memo_id)
             .cloned()
+            .filter(|memo| memo.deleted_at.is_none())
             .ok_or(AppError::NotFound)
     }
 
@@ -3210,6 +3457,8 @@ impl AppState {
             updated_at: now,
             failure_reason: None,
             owner_id,
+            deleted_at: None,
+            purge_at: None,
         };
         let mut memo = memo;
         ensure_voice_memo_foundation(&mut memo);
@@ -3239,6 +3488,9 @@ impl AppState {
     ) -> AppResult<VoiceMemo> {
         let mut state = self.inner.write().await;
         let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+        if memo.deleted_at.is_some() {
+            return Err(AppError::BadRequest("voice memo has been deleted and can be restored from admin".into()));
+        }
         memo.title = payload.title.trim().to_string();
         if memo.title.is_empty() {
             return Err(AppError::BadRequest("title cannot be empty".into()));
@@ -3263,6 +3515,9 @@ impl AppState {
 
     pub async fn retry_job(&self, memo_id: Uuid) -> AppResult<TranscriptionJob> {
         let mut state = self.inner.write().await;
+        if state.memos.get(&memo_id).and_then(|memo| memo.deleted_at).is_some() {
+            return Err(AppError::BadRequest("voice memo has been deleted and can be restored from admin".into()));
+        }
         let updated_job = state
             .jobs
             .values_mut()
@@ -3289,6 +3544,9 @@ impl AppState {
     pub async fn mark_transcription_running(&self, memo_id: Uuid) -> AppResult<()> {
         let mut state = self.inner.write().await;
         let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+        if memo.deleted_at.is_some() {
+            return Err(AppError::BadRequest("voice memo has been deleted and can be restored from admin".into()));
+        }
         memo.status = JobStatus::Running;
         memo.updated_at = Utc::now();
         if let Some(job) = state.jobs.values_mut().find(|job| job.memo_id == memo_id) {
@@ -3306,6 +3564,9 @@ impl AppState {
     ) -> AppResult<()> {
         let mut state = self.inner.write().await;
         let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+        if memo.deleted_at.is_some() {
+            return Err(AppError::BadRequest("voice memo has been deleted and can be restored from admin".into()));
+        }
         memo.status = JobStatus::Completed;
         memo.updated_at = Utc::now();
         let transcript_text = transcript.unwrap_or_else(|| {
@@ -3331,6 +3592,9 @@ impl AppState {
     pub async fn fail_transcription(&self, memo_id: Uuid, reason: String) -> AppResult<()> {
         let mut state = self.inner.write().await;
         let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+        if memo.deleted_at.is_some() {
+            return Err(AppError::BadRequest("voice memo has been deleted and can be restored from admin".into()));
+        }
         memo.status = JobStatus::Failed;
         memo.updated_at = Utc::now();
         memo.failure_reason = Some(reason.clone());
@@ -3633,15 +3897,30 @@ impl AppState {
     pub async fn list_files(&self) -> AppResult<Vec<crate::models::FileNode>> {
         let drive = self.storage.list_drive_tree().await?;
         let state = self.inner.read().await;
-        let mut notes = state.notes.values().cloned().collect::<Vec<_>>();
+        let mut notes = state
+            .notes
+            .values()
+            .filter(|note| is_note_active(note))
+            .cloned()
+            .collect::<Vec<_>>();
         for note in &mut notes {
             ensure_note_foundation(note);
         }
-        let mut memos = state.memos.values().cloned().collect::<Vec<_>>();
+        let mut memos = state
+            .memos
+            .values()
+            .filter(|memo| is_voice_memo_active(memo))
+            .cloned()
+            .collect::<Vec<_>>();
         for memo in &mut memos {
             ensure_voice_memo_foundation(memo);
         }
-        let diagrams = state.diagrams.values().cloned().collect::<Vec<_>>();
+        let diagrams = state
+            .diagrams
+            .values()
+            .filter(|diagram| is_diagram_active(diagram))
+            .cloned()
+            .collect::<Vec<_>>();
         Ok(vec![
             build_notes_projection(&notes),
             build_diagrams_projection(&diagrams),
@@ -3691,7 +3970,7 @@ impl AppState {
 
     pub async fn delete_managed_path(&self, path: String) -> AppResult<()> {
         if path == "drive" || path.starts_with("drive/") {
-            return self.storage.delete_drive_path(&path).await;
+            return self.delete_drive_path(&path).await;
         }
         if path == "notes" || path.starts_with("notes/") {
             return self.delete_note_path(&path).await;
@@ -3919,21 +4198,7 @@ impl AppState {
 
         if source_path.ends_with(".md") {
             let note_id = extract_note_id(source_path)?;
-            let mut state = self.inner.write().await;
-            let note = state.notes.remove(&note_id).ok_or(AppError::NotFound)?;
-            let uses_postgres = self.persistence.uses_postgres();
-            if uses_postgres {
-                self.persistence.delete_note(note.id).await?;
-            }
-            self.storage
-                .delete_note_markdown(&note.folder, &note.title, note.id)
-                .await?;
-            let snapshot = state.clone();
-            drop(state);
-            if !uses_postgres {
-                self.persist_snapshot(snapshot).await?;
-            }
-            return Ok(());
+            return self.delete_note(note_id).await;
         }
 
         let source_folder = notes_folder_from_source(source_path)?;
@@ -3953,13 +4218,26 @@ impl AppState {
 
         let uses_postgres = self.persistence.uses_postgres();
         for note_id in matching_ids {
-            let note = state.notes.remove(&note_id).ok_or(AppError::NotFound)?;
-            if uses_postgres {
-                self.persistence.delete_note(note.id).await?;
+            let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
+            if note.deleted_at.is_some() {
+                continue;
             }
-            self.storage
-                .delete_note_markdown(&note.folder, &note.title, note.id)
-                .await?;
+            let (deleted_at, purge_at) = deletion_window();
+            note.deleted_at = Some(deleted_at);
+            note.purge_at = Some(purge_at);
+            note.updated_at = deleted_at;
+            note.revision += 1;
+            let note_snapshot = note.clone();
+            state.sync_tombstones.push(SyncTombstone {
+                entity: SyncEntityKind::Notes,
+                id: note_snapshot.id.to_string(),
+                deleted_at,
+            });
+            if uses_postgres {
+                self.persistence
+                    .update_note(&note_snapshot, note_snapshot.revision - 1)
+                    .await?;
+            }
         }
 
         let snapshot = state.clone();
@@ -4247,15 +4525,37 @@ impl AppState {
             let mut state = self.inner.write().await;
             let diagram = state
                 .diagrams
-                .remove(&diagram_id)
+                .get_mut(&diagram_id)
                 .ok_or(AppError::NotFound)?;
+            if diagram.deleted_at.is_some() {
+                return Ok(());
+            }
+            let (deleted_at, purge_at) = deletion_window();
+            diagram.deleted_at = Some(deleted_at);
+            diagram.purge_at = Some(purge_at);
+            diagram.updated_at = deleted_at;
+            diagram.revision += 1;
+            let diagram_snapshot = diagram.clone();
+            state.sync_tombstones.push(SyncTombstone {
+                entity: SyncEntityKind::Diagrams,
+                id: diagram_snapshot.id.to_string(),
+                deleted_at,
+            });
+            append_audit_entry(
+                &mut state,
+                "api.files",
+                "delete_diagram",
+                "diagram",
+                diagram_snapshot.id.to_string(),
+                diagram_display_name(&diagram_snapshot.title),
+                serde_json::json!({ "path": source_path, "purge_at": purge_at }),
+            );
             let uses_postgres = self.persistence.uses_postgres();
             if uses_postgres {
-                self.persistence.delete_diagram(diagram.id).await?;
+                self.persistence
+                    .update_diagram(&diagram_snapshot, diagram_snapshot.revision - 1)
+                    .await?;
             }
-            self.storage
-                .delete_diagram_xml(&diagram.title, diagram.id)
-                .await?;
             let snapshot = state.clone();
             drop(state);
             if !uses_postgres {
@@ -4283,14 +4583,36 @@ impl AppState {
         for diagram_id in matching_ids {
             let diagram = state
                 .diagrams
-                .remove(&diagram_id)
+                .get_mut(&diagram_id)
                 .ok_or(AppError::NotFound)?;
-            if uses_postgres {
-                self.persistence.delete_diagram(diagram.id).await?;
+            if diagram.deleted_at.is_some() {
+                continue;
             }
-            self.storage
-                .delete_diagram_xml(&diagram.title, diagram.id)
-                .await?;
+            let (deleted_at, purge_at) = deletion_window();
+            diagram.deleted_at = Some(deleted_at);
+            diagram.purge_at = Some(purge_at);
+            diagram.updated_at = deleted_at;
+            diagram.revision += 1;
+            let diagram_snapshot = diagram.clone();
+            state.sync_tombstones.push(SyncTombstone {
+                entity: SyncEntityKind::Diagrams,
+                id: diagram_snapshot.id.to_string(),
+                deleted_at,
+            });
+            append_audit_entry(
+                &mut state,
+                "api.files",
+                "delete_diagram",
+                "diagram",
+                diagram_snapshot.id.to_string(),
+                diagram_display_name(&diagram_snapshot.title),
+                serde_json::json!({ "path": diagram_relative_path_for_move(&diagram_snapshot), "purge_at": purge_at }),
+            );
+            if uses_postgres {
+                self.persistence
+                    .update_diagram(&diagram_snapshot, diagram_snapshot.revision - 1)
+                    .await?;
+            }
         }
 
         let snapshot = state.clone();
@@ -4510,22 +4832,83 @@ impl AppState {
             return Err(AppError::NotFound);
         }
 
-        self.storage.delete_voice_path(source_path).await?;
         for memo_id in matching_ids {
-            state.memos.remove(&memo_id);
-            if let Some(job_id) = state
-                .jobs
-                .values()
-                .find(|job| job.memo_id == memo_id)
-                .map(|job| job.id)
-            {
-                state.jobs.remove(&job_id);
-            }
+            let (memo_key, deleted_at, purge_at, audit_title, audit_path) = {
+                let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+                if memo.deleted_at.is_some() {
+                    continue;
+                }
+                let (deleted_at, purge_at) = deletion_window();
+                let memo_key = memo.id.to_string();
+                let audit_title = memo.title.clone();
+                let audit_path = memo.audio_path.clone();
+                memo.deleted_at = Some(deleted_at);
+                memo.purge_at = Some(purge_at);
+                memo.updated_at = deleted_at;
+                (memo_key, deleted_at, purge_at, audit_title, audit_path)
+            };
+            state.sync_tombstones.push(SyncTombstone {
+                entity: SyncEntityKind::VoiceMemos,
+                id: memo_key.clone(),
+                deleted_at,
+            });
+            append_audit_entry(
+                &mut state,
+                "api.files",
+                "delete_voice_memo",
+                "voice_memo",
+                memo_key,
+                audit_title,
+                serde_json::json!({ "path": audit_path, "purge_at": purge_at }),
+            );
         }
         let snapshot = state.clone();
         drop(state);
         self.persist_snapshot(snapshot).await?;
         Ok(())
+    }
+
+    async fn delete_drive_path(&self, source_path: &str) -> AppResult<()> {
+        if source_path == "drive" {
+            return Err(AppError::BadRequest("cannot delete drive root".into()));
+        }
+        let mut state = self.inner.write().await;
+        let deleted_id = Uuid::new_v4().to_string();
+        let (backup_path, is_dir) = self
+            .storage
+            .move_drive_path_to_trash(source_path, &deleted_id)
+            .await?;
+        let (deleted_at, purge_at) = deletion_window();
+        let label = source_path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .next_back()
+            .unwrap_or("drive item")
+            .to_string();
+        state.deleted_drive_items.insert(
+            deleted_id.clone(),
+            DeletedDriveItem {
+                id: deleted_id.clone(),
+                original_path: source_path.to_string(),
+                backup_path: backup_path.clone(),
+                label: label.clone(),
+                is_dir,
+                deleted_at,
+                purge_at,
+            },
+        );
+        append_audit_entry(
+            &mut state,
+            "api.files",
+            "delete_drive_path",
+            "drive_path",
+            deleted_id,
+            label,
+            serde_json::json!({ "path": source_path, "backup_path": backup_path, "purge_at": purge_at, "is_dir": is_dir }),
+        );
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await
     }
 }
 
@@ -5416,6 +5799,8 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         updated_at: Utc::now(),
         author_id: user.id,
         last_editor_id: user.id,
+        deleted_at: None,
+        purge_at: None,
     };
 
     let starter_diagram = Diagram {
@@ -5427,6 +5812,8 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         updated_at: Utc::now(),
         author_id: user.id,
         last_editor_id: user.id,
+        deleted_at: None,
+        purge_at: None,
     };
 
     let welcome_message = Message {
@@ -5518,6 +5905,8 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         note_operations: HashMap::new(),
         note_sessions: HashMap::new(),
         note_conflicts: HashMap::new(),
+        deleted_drive_items: HashMap::new(),
+        audit_log: Vec::new(),
     })
 }
 
@@ -5580,6 +5969,51 @@ fn newer_than(value: DateTime<Utc>, cursor: Option<DateTime<Utc>>) -> bool {
         Some(cursor) => value > cursor,
         None => true,
     }
+}
+
+fn deletion_window() -> (DateTime<Utc>, DateTime<Utc>) {
+    let deleted_at = Utc::now();
+    let purge_at = deleted_at + Duration::days(RECOVERY_RETENTION_DAYS);
+    (deleted_at, purge_at)
+}
+
+fn append_audit_entry(
+    state: &mut StateData,
+    source: &str,
+    action: &str,
+    target_kind: &str,
+    target_id: String,
+    target_label: String,
+    details: serde_json::Value,
+) {
+    let occurred_at = Utc::now();
+    let cutoff = occurred_at - Duration::days(AUDIT_RETENTION_DAYS);
+    state.audit_log.retain(|entry| entry.occurred_at >= cutoff);
+    state.audit_log.push(AdminAuditEntry {
+        id: format!("audit-{}", Uuid::new_v4()),
+        occurred_at,
+        actor_id: state.user.id.to_string(),
+        actor_label: state.user.display_name.clone(),
+        source: source.to_string(),
+        action: action.to_string(),
+        target_kind: target_kind.to_string(),
+        target_id,
+        target_label,
+        details,
+    });
+    state.audit_log.sort_by(|left, right| right.occurred_at.cmp(&left.occurred_at));
+}
+
+fn is_note_active(note: &Note) -> bool {
+    note.deleted_at.is_none()
+}
+
+fn is_diagram_active(diagram: &Diagram) -> bool {
+    diagram.deleted_at.is_none()
+}
+
+fn is_voice_memo_active(memo: &VoiceMemo) -> bool {
+    memo.deleted_at.is_none()
 }
 
 fn max_optional_datetime<I>(iter: I) -> Option<DateTime<Utc>>
