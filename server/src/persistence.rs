@@ -408,7 +408,7 @@ impl PersistenceBackend {
                         author_id: parse_uuid(row.get::<_, String>(13).as_str())?,
                         last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
                         forked_from_note_id: optional_uuid_from_string(row.get(15))?,
-                        conflict_tag: string_column_to_option(row.get(16)),
+                        conflict_tag: string_column_to_option(row.get::<_, Option<String>>(16)),
                     };
                     notes.insert(note.id, note);
                 }
@@ -1274,8 +1274,8 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             username: user_row.get(1),
             email: user_row.get(2),
             display_name: user_row.get(3),
-            avatar_path: string_column_to_option(user_row.get(4)),
-            avatar_content_type: string_column_to_option(user_row.get(5)),
+            avatar_path: string_column_to_option(Some(user_row.get(4))),
+            avatar_content_type: string_column_to_option(Some(user_row.get(5))),
             role: user_row.get(6),
             roles: parse_user_roles(
                 user_row.get::<_, String>(7).as_str(),
@@ -1306,8 +1306,8 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         username: user_row.get(1),
         email: user_row.get(2),
         display_name: user_row.get(3),
-        avatar_path: string_column_to_option(user_row.get(4)),
-        avatar_content_type: string_column_to_option(user_row.get(5)),
+        avatar_path: string_column_to_option(Some(user_row.get(4))),
+        avatar_content_type: string_column_to_option(Some(user_row.get(5))),
         role: user_row.get(6),
         roles: parse_user_roles(
             user_row.get::<_, String>(7).as_str(),
@@ -1347,7 +1347,7 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             author_id: parse_uuid(row.get::<_, String>(13).as_str())?,
             last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
             forked_from_note_id: optional_uuid_from_string(row.get(15))?,
-            conflict_tag: string_column_to_option(row.get(16)),
+            conflict_tag: string_column_to_option(row.get::<_, Option<String>>(16)),
         };
         notes.insert(note.id, note);
     }
@@ -1401,7 +1401,7 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             transcript: row.get(7),
             transcript_segments: segments,
             transcript_tags: serde_json::from_str::<Vec<String>>(row.get::<_, String>(9).as_str()).unwrap_or_default(),
-            topic_summary: string_column_to_option(row.get(10)),
+            topic_summary: string_column_to_option(row.get::<_, Option<String>>(10)),
             source_channels: serde_json::from_str::<Vec<String>>(row.get::<_, String>(11).as_str()).unwrap_or_default(),
             status: parse_job_status(row.get::<_, String>(12).as_str())?,
             model: row.get(13),
@@ -1751,13 +1751,15 @@ fn parse_user_roles(value: &str, fallback_role: &str) -> Vec<String> {
     }
 }
 
-fn string_column_to_option(value: String) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+fn string_column_to_option(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
 }
 
 fn optional_uuid_from_string(value: Option<String>) -> AppResult<Option<Uuid>> {
