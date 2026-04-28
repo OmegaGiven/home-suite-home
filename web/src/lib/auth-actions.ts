@@ -170,20 +170,38 @@ export function createAuthActions(context: CreateAuthActionsContext) {
   }
 
   async function loginWithPassword(identifier: string, password: string) {
-    const sessionData = await api.login(identifier, password)
-    await hydrateWorkspace(sessionData)
+    try {
+      context.setStatus('Signing in…')
+      const sessionData = await api.login(identifier, password)
+      await hydrateWorkspace(sessionData)
+    } catch (error) {
+      context.setStatus(error instanceof Error ? error.message : 'Sign in failed')
+      throw error
+    }
   }
 
   async function changePasswordFirstUse(payload: ChangePasswordRequest) {
-    const sessionData = await api.changePassword(payload)
-    await hydrateWorkspace(sessionData)
-    context.showActionNotice('Password changed')
+    try {
+      context.setStatus('Changing password…')
+      const sessionData = await api.changePassword(payload)
+      await hydrateWorkspace(sessionData)
+      context.showActionNotice('Password changed')
+    } catch (error) {
+      context.setStatus(error instanceof Error ? error.message : 'Password change failed')
+      throw error
+    }
   }
 
   async function setupAdminAccount(payload: SetupAdminRequest) {
-    const sessionData = await api.setupAdmin(payload)
-    context.setSetupStatus((current) => (current ? { ...current, admin_exists: true, user_count: 1 } : current))
-    await hydrateWorkspace(sessionData)
+    try {
+      context.setStatus('Creating admin account…')
+      const sessionData = await api.setupAdmin(payload)
+      context.setSetupStatus((current) => (current ? { ...current, admin_exists: true, user_count: 1 } : current))
+      await hydrateWorkspace(sessionData)
+    } catch (error) {
+      context.setStatus(error instanceof Error ? error.message : 'Admin setup failed')
+      throw error
+    }
   }
 
   async function uploadCurrentUserAvatar(file: File) {
