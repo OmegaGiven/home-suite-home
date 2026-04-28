@@ -8,6 +8,7 @@ import type {
 
 const DB_NAME = 'sweet-offline'
 const DB_VERSION = 2
+const IDB_TIMEOUT_MS = 1500
 const WORKSPACE_STORE = 'workspace'
 const OPERATIONS_STORE = 'operations'
 const VOICE_UPLOADS_STORE = 'voice_uploads'
@@ -18,13 +19,19 @@ function withIndexedDb<T>(task: () => Promise<T>, fallback: () => T | Promise<T>
   if (typeof indexedDB === 'undefined') {
     return Promise.resolve(fallback())
   }
-  return task().catch(() => fallback())
+  return Promise.race([
+    task(),
+    new Promise<T>((_, reject) => {
+      window.setTimeout(() => reject(new Error('IndexedDB timed out.')), IDB_TIMEOUT_MS)
+    }),
+  ]).catch(() => fallback())
 }
 
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION)
     request.onerror = () => reject(request.error ?? new Error('Could not open offline database.'))
+    request.onblocked = () => reject(new Error('Offline database is blocked by another open tab.'))
     request.onupgradeneeded = () => {
       const database = request.result
       if (!database.objectStoreNames.contains(WORKSPACE_STORE)) {
@@ -42,8 +49,17 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!database.objectStoreNames.contains(SYNC_CONFLICTS_STORE)) {
         database.createObjectStore(SYNC_CONFLICTS_STORE, { keyPath: 'id' })
       }
+      database.onversionchange = () => {
+        database.close()
+      }
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      const database = request.result
+      database.onversionchange = () => {
+        database.close()
+      }
+      resolve(database)
+    }
   })
 }
 
