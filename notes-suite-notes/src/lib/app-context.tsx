@@ -53,6 +53,7 @@ type Appearance = {
   backgroundStyle: 'color' | 'gradient' | 'image'
   backgroundValue: string
   gradientCorners: [string, string, string, string]
+  enableAnimations: boolean
 }
 
 type ServerDraft = {
@@ -72,6 +73,7 @@ type NotesAppContextValue = {
   createNoteWithPreferences: (options?: { syncToServer?: boolean }) => Promise<void>
   updateNoteTitle: (value: string) => Promise<void>
   updateSelectedNoteVisibility: (value: 'private' | 'org' | 'users') => Promise<void>
+  replaceSelectedDocument: (document: LocalNoteRecord['document']) => Promise<void>
   updateMarkdown: (value: string) => Promise<void>
   updateBlockText: (blockId: string, text: string) => Promise<void>
   sendCursor: (cursor: { offset: number | null; blockId?: string | null }) => void
@@ -101,6 +103,7 @@ const DEFAULT_APPEARANCE: Appearance = {
   backgroundStyle: 'gradient',
   backgroundValue: '#09131f',
   gradientCorners: ['#07111c', '#0d1d31', '#0b1622', '#14273b'],
+  enableAnimations: false,
 }
 
 const DEFAULT_SERVER_DRAFT: ServerDraft = {
@@ -521,6 +524,45 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     }
   }
 
+  async function replaceSelectedDocument(document: LocalNoteRecord['document']) {
+    if (!selectedNote) return
+    const batch: NoteDocumentOperationBatch = {
+      actor_id: selectedNote.selected_server_identity_id ?? 'local-user',
+      client_id: createId('client'),
+      operation_id: createId('op'),
+      base_clock: selectedNote.document.clock,
+      operations: [{ type: 'replace_document', blocks: document.blocks }],
+    }
+    const markdown = markdownFromDocument(document)
+    await persistNote(
+      {
+        ...selectedNote,
+        document,
+        markdown,
+        updated_at: new Date().toISOString(),
+      },
+      batch,
+    )
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const binding = await getBinding(selectedNote.id)
+      if (binding?.remote_note_id) {
+        const event: RealtimeEvent = {
+          type: 'note_operations',
+          note_id: binding.remote_note_id,
+          title: selectedNote.title,
+          folder: selectedNote.folder,
+          markdown,
+          revision: 0,
+          client_id: clientIdRef.current,
+          user: 'You',
+          batch,
+          document,
+        }
+        wsRef.current.send(JSON.stringify(event))
+      }
+    }
+  }
+
   async function updateBlockText(blockId: string, text: string) {
     if (!selectedNote) return
     const batch: NoteDocumentOperationBatch = {
@@ -696,6 +738,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         createNoteWithPreferences,
         updateNoteTitle,
         updateSelectedNoteVisibility,
+        replaceSelectedDocument,
         updateMarkdown,
         updateBlockText,
         sendCursor,

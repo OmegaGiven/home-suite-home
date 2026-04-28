@@ -435,6 +435,10 @@ export function NotesPage({
     }
   }
 
+  void splitActiveBlock
+  void mergeWithPreviousBlock
+  void applyToolbarAction
+
   useLayoutEffect(() => {
     if (noteEditorMode !== 'rich' || !noteEditorRef.current || remoteCursors.length === 0) {
       setRemoteCursorDecorations([])
@@ -817,103 +821,20 @@ export function NotesPage({
                 </div>
               </div>
               <div className="notes-editor-card">
-                {noteEditorMode === 'rich' ? <NotesFormatToolbar onRunAction={applyToolbarAction} /> : null}
+                {noteEditorMode === 'rich' ? <NotesFormatToolbar onRunAction={onRunToolbarAction} /> : null}
                 {noteEditorMode === 'rich' ? (
                   <>
                     <div
                       ref={noteEditorRef}
-                      className="notes-block-editor"
-                      data-note-editor-model="blocks"
+                      className="markdown-editor"
+                      data-placeholder="Select or create a note"
+                      contentEditable
+                      suppressContentEditableWarning
+                      onClick={handleNoteEditorClick}
+                      onInput={handleNoteEditorInput}
+                      onKeyDown={handleNoteEditorKeyDown}
                       onContextMenu={openNoteContextMenu}
-                    >
-                      {visibleBlocks.map((block) => {
-                        const headingLevel =
-                          block.kind === 'heading'
-                            ? Math.min(3, Math.max(1, Number.parseInt(block.attrs.level ?? '1', 10) || 1))
-                            : null
-                        return (
-                          <div
-                            key={block.id}
-                            className={`notes-block-row kind-${block.kind}${activeBlockId === block.id ? ' active' : ''}`}
-                          >
-                            <div className="notes-block-gutter">
-                              <button
-                                type="button"
-                                className="notes-block-add"
-                                onClick={() => appendBlockAfter(block)}
-                                title="Add block below"
-                                aria-label="Add block below"
-                              >
-                                +
-                              </button>
-                            </div>
-                            <textarea
-                              ref={(node) => {
-                                blockInputRefs.current[block.id] = node
-                              }}
-                              className={`textarea notes-block-input note-raw-editor${block.kind === 'code' || block.kind === 'table' ? ' mono' : ''}${headingLevel ? ` heading-${headingLevel}` : ''}`}
-                              value={block.text}
-                              rows={Math.max(1, block.text.split('\n').length)}
-                              placeholder={
-                                block.kind === 'heading'
-                                  ? `Heading ${headingLevel ?? 1}`
-                                  : block.kind === 'quote'
-                                    ? 'Quote'
-                                    : block.kind === 'bullet_list'
-                                      ? 'List item'
-                                      : block.kind === 'code'
-                                        ? 'Code block'
-                                        : block.kind === 'table'
-                                          ? 'Table markdown'
-                                          : 'Write here'
-                              }
-                              onFocus={() => setActiveBlockId(block.id)}
-                              onClick={() => setActiveBlockId(block.id)}
-                              onChange={(event) => {
-                                setActiveBlockId(block.id)
-                                commitRichDocument(
-                                  visibleBlocks.map((entry) =>
-                                    entry.id === block.id ? { ...entry, text: event.target.value } : entry,
-                                  ),
-                                  { focusBlockId: block.id },
-                                )
-                              }}
-                              onKeyDown={(event) => {
-                                setActiveBlockId(block.id)
-                                if (event.key === 'Enter' && !event.shiftKey) {
-                                  event.preventDefault()
-                                  splitActiveBlock(event.currentTarget)
-                                  return
-                                }
-                                if (event.key === 'Backspace' && block.text.length === 0) {
-                                  event.preventDefault()
-                                  mergeWithPreviousBlock(event.currentTarget)
-                                  return
-                                }
-                                if (event.key === 'Tab') {
-                                  event.preventDefault()
-                                  const target = event.currentTarget
-                                  const start = target.selectionStart
-                                  const end = target.selectionEnd
-                                  const nextValue = `${target.value.slice(0, start)}\t${target.value.slice(end)}`
-                                  commitRichDocument(
-                                    visibleBlocks.map((entry) =>
-                                      entry.id === block.id ? { ...entry, text: nextValue } : entry,
-                                    ),
-                                    { focusBlockId: block.id },
-                                  )
-                                  window.requestAnimationFrame(() => {
-                                    const next = blockInputRefs.current[block.id]
-                                    if (!next) return
-                                    next.selectionStart = next.selectionEnd = start + 1
-                                  })
-                                }
-                              }}
-                            />
-                          </div>
-                        )
-                      })}
-                    </div>
+                    />
                     <div className="notes-remote-cursor-layer" aria-hidden="true">
                       {remoteCursorDecorations.map((cursor) => (
                         <div
@@ -1061,9 +982,9 @@ export function NotesPage({
                   </>
                 ) : (
                   <textarea
-                    className="textarea note-raw-editor"
+                    className="textarea note-markdown-editor"
                     value={noteDraft}
-                    placeholder="Edit raw markdown"
+                    placeholder="Edit markdown"
                     onChange={(event) => onRawDraftChange(event.target.value)}
                     onKeyDown={onRawDraftKeyDown}
                   />

@@ -2979,7 +2979,7 @@ function App() {
         const editorHasLocalFocus =
           document.activeElement === noteEditorRef.current ||
           (document.activeElement instanceof HTMLTextAreaElement &&
-            document.activeElement.classList.contains('note-raw-editor'))
+            document.activeElement.classList.contains('note-markdown-editor'))
         const selectedDirty =
           payload.note_id === selectedNoteIdRef.current &&
           currentSelected?.id === payload.note_id &&
@@ -3080,7 +3080,7 @@ function App() {
         const editorHasLocalFocus =
           document.activeElement === noteEditorRef.current ||
           (document.activeElement instanceof HTMLTextAreaElement &&
-            document.activeElement.classList.contains('note-raw-editor'))
+            document.activeElement.classList.contains('note-markdown-editor'))
         const selectedDirty = isSelectedNote && currentNoteIsDirty()
         const currentSelected = selectedNoteRef.current
         const incomingDocument =
@@ -3283,7 +3283,7 @@ function App() {
         const editorHasLocalFocus =
           document.activeElement === noteEditorRef.current ||
           (document.activeElement instanceof HTMLTextAreaElement &&
-            document.activeElement.classList.contains('note-raw-editor'))
+            document.activeElement.classList.contains('note-markdown-editor'))
         const merged =
           selectedDirty
             ? mergeConcurrentMarkdown(
