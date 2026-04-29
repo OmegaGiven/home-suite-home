@@ -9,9 +9,11 @@ type Props = {
   selectedDiagramId: string | null
   activeFolderPath: string | null
   hideRoot?: boolean
+  markedPaths: string[]
   draggingPath: string | null
   dropTargetPath: string | null
-  onSelectDiagram: (id: string) => void
+  onSelectPath: (path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) => void
+  onOpenPath?: (path: string) => void
   onDragStart: (event: DragEvent<HTMLElement>, path: string) => void
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -25,9 +27,11 @@ export function DiagramLibraryTreeNode({
   selectedDiagramId,
   activeFolderPath,
   hideRoot = false,
+  markedPaths,
   draggingPath,
   dropTargetPath,
-  onSelectDiagram,
+  onSelectPath,
+  onOpenPath,
   onDragStart,
   onDragEnd,
   onDropTargetChange,
@@ -58,13 +62,11 @@ export function DiagramLibraryTreeNode({
     selectedPath: selectedDiagramId ? `diagram:${selectedDiagramId}` : '',
     activePath: selectedDiagramId ? `diagram:${selectedDiagramId}` : null,
     highlightedPaths,
-    markedPaths: [],
+    markedPaths,
     draggingPath,
     dropTargetPath,
-    onSelect: (path: string) => {
-      if (!path.startsWith('diagram:')) return
-      onSelectDiagram(path.slice('diagram:'.length))
-    },
+    onSelect: onSelectPath,
+    onOpen: onOpenPath,
     onDragStart,
     onDragEnd,
     onDropTargetChange,

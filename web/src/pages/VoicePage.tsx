@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { LibraryActionBar } from '../components/LibraryActionBar'
 import { MicrophoneIcon, NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { ConfirmModal } from '../components/ConfirmModal'
@@ -20,9 +20,11 @@ type Props = {
   selectedVoiceMemoSizeBytes: number | null
   currentVoiceFolderPath: string
   recording: boolean
+  markedPaths: string[]
   draggingPath: string | null
   dropTargetPath: string | null
   onSelectVoicePath: (path: string) => void
+  onSetMarkedPaths: (paths: string[] | ((current: string[]) => string[])) => void
   onCreateFolder: (name: string, parentPath: string) => void
   onRenameFolder: (name: string, path: string) => void
   onDragStart: (event: React.DragEvent<HTMLElement>, path: string) => void
@@ -50,9 +52,11 @@ export function VoicePage({
   selectedVoiceMemoSizeBytes,
   currentVoiceFolderPath,
   recording,
+  markedPaths,
   draggingPath,
   dropTargetPath,
   onSelectVoicePath,
+  onSetMarkedPaths,
   onCreateFolder,
   onRenameFolder,
   onDragStart,
@@ -83,6 +87,7 @@ export function VoicePage({
   })
   const [newFolderName, setNewFolderName] = useState('')
   const [renameFolderName, setRenameFolderName] = useState(currentVoiceFolderPath.split('/').pop() ?? '')
+  const treeContainerRef = useRef<HTMLDivElement | null>(null)
   const [selectedMemoDurationSeconds, setSelectedMemoDurationSeconds] = useState<number | null>(null)
   const [memoTitleDraft, setMemoTitleDraft] = useState('')
   const memoLabelByPath = useMemo(
@@ -111,6 +116,39 @@ export function VoicePage({
     () => sortFileTree(visibleVoiceNodes, sortState, (node) => memoLabelByPath.get(node.path) ?? node.name),
     [visibleVoiceNodes, sortState, memoLabelByPath],
   )
+
+  function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
+    if (options?.shiftKey && selectedVoicePath && treeContainerRef.current) {
+      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
+        .map((element) => element.dataset.fileTreePath)
+        .filter((value): value is string => Boolean(value))
+      const anchorIndex = orderedPaths.indexOf(selectedVoicePath)
+      const targetIndex = orderedPaths.indexOf(path)
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
+        const range = orderedPaths.slice(start, end + 1).filter((entry) => entry.startsWith('voice/'))
+        onSetMarkedPaths(Array.from(new Set(range)))
+        onSelectVoicePath(path)
+        return
+      }
+    }
+
+    if (options?.metaKey || options?.ctrlKey) {
+      onSetMarkedPaths((current) =>
+        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
+      )
+      onSelectVoicePath(path)
+      return
+    }
+
+    onSetMarkedPaths(path.startsWith('voice/') ? [path] : [])
+    onSelectVoicePath(path)
+  }
+
+  function handleTreeOpen(path: string) {
+    if (!path.startsWith('voice/')) return
+    onSelectVoicePath(path)
+  }
 
   useEffect(() => {
     setSelectedMemoDurationSeconds(null)
@@ -226,7 +264,7 @@ export function VoicePage({
                 onClick: onOpenRecorder,
               }]}
             />
-            <div className="folder-tree file-tree notes-folder-tree voice-folder-tree">
+            <div ref={treeContainerRef} className="folder-tree file-tree notes-folder-tree voice-folder-tree">
               <FileTreeHeader
                 rowMetaVisibility={rowMetaVisibility}
                 sortState={sortState}
@@ -239,10 +277,11 @@ export function VoicePage({
                   selectedPath={selectedVoicePath ?? ''}
                   activePath={selectedVoicePath ?? null}
                   highlightedPaths={highlightedPaths}
-                  markedPaths={[]}
+                  markedPaths={markedPaths}
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
-                  onSelect={onSelectVoicePath}
+                  onSelect={handleTreeSelection}
+                  onOpen={handleTreeOpen}
                   onDragStart={onDragStart}
                   onDragEnd={onDragEnd}
                   onDropTargetChange={onDropTargetChange}

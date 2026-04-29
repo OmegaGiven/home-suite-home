@@ -44,6 +44,7 @@ type Props = {
   noteTree: NoteFolderNode[]
   notes: Note[]
   selectedNoteId: string | null
+  markedPaths: string[]
   draggingPath: string | null
   dropTargetPath: string | null
   isCompactViewport: boolean
@@ -68,6 +69,7 @@ type Props = {
   onSetActiveNoteSplitter: (active: boolean) => void
   onToggleNoteDrawer: () => void
   onSelectNote: (note: Note) => void
+  onSetMarkedPaths: (paths: string[] | ((current: string[]) => string[])) => void
   onDragStart: MouseEventHandler<HTMLElement> | ((event: React.DragEvent<HTMLElement>, path: string) => void)
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -114,6 +116,7 @@ export function NotesPage({
   noteTree,
   notes,
   selectedNoteId,
+  markedPaths,
   draggingPath,
   dropTargetPath,
   isCompactViewport,
@@ -138,6 +141,7 @@ export function NotesPage({
   onSetActiveNoteSplitter,
   onToggleNoteDrawer,
   onSelectNote,
+  onSetMarkedPaths,
   onDragStart,
   onDragEnd,
   onDropTargetChange,
@@ -205,6 +209,7 @@ export function NotesPage({
   const [undoStack, setUndoStack] = useState<NoteDocument[]>([])
   const [redoStack, setRedoStack] = useState<NoteDocument[]>([])
   const blockInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+  const treeContainerRef = useRef<HTMLDivElement | null>(null)
   void isCompactViewport
   void handleNoteEditorClick
   void handleNoteEditorInput
@@ -237,6 +242,48 @@ export function NotesPage({
         })),
     [noteDraft],
   )
+
+  function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
+    if (options?.shiftKey && selectedNoteId && treeContainerRef.current) {
+      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
+        .map((element) => element.dataset.fileTreePath)
+        .filter((value): value is string => Boolean(value))
+      const anchorPath = `note:${selectedNoteId}`
+      const anchorIndex = orderedPaths.indexOf(anchorPath)
+      const targetIndex = orderedPaths.indexOf(path)
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
+        const range = orderedPaths.slice(start, end + 1).filter((entry) => entry.startsWith('note:'))
+        onSetMarkedPaths(Array.from(new Set(range)))
+        const noteId = path.startsWith('note:') ? path.slice('note:'.length) : null
+        const note = noteId ? notes.find((entry) => entry.id === noteId) : null
+        if (note) onSelectNote(note)
+        return
+      }
+    }
+
+    if (options?.metaKey || options?.ctrlKey) {
+      onSetMarkedPaths((current) =>
+        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
+      )
+      const noteId = path.startsWith('note:') ? path.slice('note:'.length) : null
+      const note = noteId ? notes.find((entry) => entry.id === noteId) : null
+      if (note) onSelectNote(note)
+      return
+    }
+
+    onSetMarkedPaths(path.startsWith('note:') ? [path] : [])
+    const noteId = path.startsWith('note:') ? path.slice('note:'.length) : null
+    const note = noteId ? notes.find((entry) => entry.id === noteId) : null
+    if (note) onSelectNote(note)
+  }
+
+  function handleTreeOpen(path: string) {
+    if (!path.startsWith('note:')) return
+    const noteId = path.slice('note:'.length)
+    const note = notes.find((entry) => entry.id === noteId)
+    if (note) onSelectNote(note)
+  }
 
   function normalizeDocumentBlocks(blocks: NoteBlock[]) {
     return blocks.map((block, index) => ({
@@ -597,7 +644,7 @@ export function NotesPage({
               ]}
               pageActions={[{ key: 'note', label: 'New note', icon: <NewNoteIcon />, onClick: onCreateNote }]}
             />
-            <div className="folder-tree file-tree notes-folder-tree">
+            <div ref={treeContainerRef} className="folder-tree file-tree notes-folder-tree">
               <FileTreeHeader
                 rowMetaVisibility={rowMetaVisibility}
                 sortState={sortState}
@@ -608,10 +655,12 @@ export function NotesPage({
                   node={filteredNoteRootNode}
                   activeFolderPath={selectedNoteFolderPath}
                   selectedNoteId={selectedNoteId}
+                  markedPaths={markedPaths}
                   hideRoot
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
-                  onSelectNote={onSelectNote}
+                  onSelectPath={handleTreeSelection}
+                  onOpenPath={handleTreeOpen}
                   onDragStart={onDragStart as (event: React.DragEvent<HTMLElement>, path: string) => void}
                   onDragEnd={onDragEnd}
                   onDropTargetChange={onDropTargetChange}

@@ -46,6 +46,8 @@ import {
   activateRelativeFile as activateRelativeFileAction,
   beginFileColumnResize as beginFileColumnResizeAction,
   beginFileDrag as beginFileDragAction,
+  beginTreeDrag,
+  draggedPathsFromEvent,
   cycleRoutePath,
   displayNameForManagedFileNode,
   handleDirectoryDrop as handleDirectoryDropAction,
@@ -200,6 +202,55 @@ function noteManagedFilePath(note: Note) {
   return `${managedPathForNoteFolder(note.folder || 'Inbox')}/${slugForNoteTitle(note.title)}-${note.id}.md`
 }
 
+function isConflictForkNote(note: Note) {
+  return Boolean(note.conflict_tag || note.forked_from_note_id)
+}
+
+function filterVisibleNotes(notes: Note[]) {
+  return notes.filter((note) => !isConflictForkNote(note))
+}
+
+function deleteNoteFamily(notes: Note[], rootNoteId: string) {
+  const pending = new Set([rootNoteId])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const note of notes) {
+      if (note.forked_from_note_id && pending.has(note.forked_from_note_id) && !pending.has(note.id)) {
+        pending.add(note.id)
+        changed = true
+      }
+    }
+  }
+  return notes.filter((note) => !pending.has(note.id))
+}
+
+function filterHiddenConflictNoteNodes(nodes: FileNode[], hiddenNoteIds: Set<string>): FileNode[] {
+  return nodes
+    .flatMap((node) => {
+      if (node.kind === 'file' && node.path.startsWith('notes/')) {
+        const noteId = noteIdFromPath(node.path)
+        if (noteId && hiddenNoteIds.has(noteId)) {
+          return []
+        }
+      }
+      const nextChildren = filterHiddenConflictNoteNodes(node.children, hiddenNoteIds)
+      if (node.kind === 'directory' && node.path.startsWith('notes') && nextChildren.length === 0) {
+        const isRootNotesDir = node.path === 'notes'
+        if (!isRootNotesDir) {
+          return []
+        }
+      }
+      return [{ ...node, children: nextChildren }]
+    })
+}
+
+function buildVisibleFilesTree(tree: FileNode[], notes: Note[]) {
+  const hiddenNoteIds = new Set(notes.filter((note) => isConflictForkNote(note)).map((note) => note.id))
+  if (hiddenNoteIds.size === 0) return tree
+  return filterHiddenConflictNoteNodes(tree, hiddenNoteIds)
+}
+
 function diagramManagedFilePath(diagram: Diagram) {
   const normalizedTitle = normalizeDiagramTitlePath(diagram.title)
   const parts = normalizedTitle.split('/').filter(Boolean)
@@ -266,6 +317,9 @@ function App() {
   const [draggingVoiceTreePath, setDraggingVoiceTreePath] = useState<string | null>(null)
   const [voiceTreeDropTargetPath, setVoiceTreeDropTargetPath] = useState<string | null>(null)
   const [markedFilePaths, setMarkedFilePaths] = useState<string[]>([])
+  const [markedNotePaths, setMarkedNotePaths] = useState<string[]>([])
+  const [markedDiagramPaths, setMarkedDiagramPaths] = useState<string[]>([])
+  const [markedVoicePaths, setMarkedVoicePaths] = useState<string[]>([])
   const [fileHelpOpen, setFileHelpOpen] = useState(false)
   const [pendingFileKey, setPendingFileKey] = useState<string | null>(null)
   const [pendingAppKey, setPendingAppKey] = useState<string | null>(null)
@@ -434,6 +488,7 @@ function App() {
     setSelectedNoteDocument(nextDocument)
     setNoteDraft(nextMarkdown)
     if (note && note.id === selectedNoteIdRef.current) {
+      const existingNote = notesRef.current.find((entry) => entry.id === note.id) ?? null
       const nextNote = {
         ...note,
         markdown: nextMarkdown,
@@ -441,7 +496,18 @@ function App() {
       }
       selectedNoteRef.current = nextNote
       notesRef.current = notesRef.current.map((entry) => (entry.id === nextNote.id ? nextNote : entry))
-      setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
+      const shouldRefreshNoteCollection =
+        !existingNote ||
+        existingNote.title !== nextNote.title ||
+        existingNote.folder !== nextNote.folder ||
+        existingNote.revision !== nextNote.revision ||
+        existingNote.updated_at !== nextNote.updated_at ||
+        existingNote.visibility !== nextNote.visibility ||
+        existingNote.conflict_tag !== nextNote.conflict_tag ||
+        existingNote.forked_from_note_id !== nextNote.forked_from_note_id
+      if (shouldRefreshNoteCollection) {
+        setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
+      }
     }
   }
 
@@ -751,6 +817,11 @@ function App() {
     noteContextCellRef,
     noteClipboardText,
     applySelectedNoteMarkdown,
+    deferSelectedNoteMarkdown: (markdown: string) => {
+      startTransition(() => {
+        applySelectedNoteMarkdown(markdown)
+      })
+    },
     setStatus,
     setNoteClipboardText,
     setNoteContextMenu,
@@ -2070,7 +2141,7 @@ function App() {
       if (path.endsWith('.md')) {
         const noteId = noteIdFromPath(path)
         if (!noteId) throw new Error('Note not found.')
-        const nextNotes = notesRef.current.filter((entry) => entry.id !== noteId)
+        const nextNotes = deleteNoteFamily(notesRef.current, noteId)
         setNotes(nextNotes)
         rememberPersistedNotes(nextNotes)
         setSelectedNoteId((current) => (current && nextNotes.some((note) => note.id === current) ? current : null))
@@ -3564,10 +3635,11 @@ function App() {
         const nextConflicts = await refreshQueuedSyncConflicts()
         const snapshot = await refreshWorkspace(pushResponse?.envelope.cursors ?? syncCursors, true)
         if (cancelled) return
+        const visibleNotes = filterVisibleNotes(snapshot.notes)
         setSyncCursors(snapshot.cursors)
-        rememberPersistedNotes(snapshot.notes)
-        setNotes(snapshot.notes)
-        setFilesTree(snapshot.file_tree)
+        rememberPersistedNotes(visibleNotes)
+        setNotes(visibleNotes)
+        setFilesTree(buildVisibleFilesTree(snapshot.file_tree, snapshot.notes))
         setDiagrams(snapshot.diagrams)
         setMemos(snapshot.voice_memos)
         setRooms(snapshot.rooms)
@@ -3576,7 +3648,7 @@ function App() {
         if (selectedRoomId) {
           setMessages(snapshot.messages.filter((message) => message.room_id === selectedRoomId))
         }
-        setSelectedNoteId((current) => current && snapshot.notes.some((note) => note.id === current) ? current : (snapshot.notes[0]?.id ?? null))
+        setSelectedNoteId((current) => current && visibleNotes.some((note) => note.id === current) ? current : (visibleNotes[0]?.id ?? null))
         setSelectedDiagramId((current) =>
           current && snapshot.diagrams.some((diagram) => diagram.id === current) ? current : (snapshot.diagrams[0]?.id ?? null),
         )
@@ -3933,8 +4005,8 @@ function App() {
     })
 
     const nextNotes = getConnectivityState()
-      ? await api.listNotes()
-      : notesRef.current.filter((entry) => entry.id !== note.id)
+      ? filterVisibleNotes(await api.listNotes())
+      : deleteNoteFamily(notesRef.current, note.id)
     rememberPersistedNotes(nextNotes)
     setNotes(nextNotes)
     setCustomFolders((current) =>
@@ -3965,17 +4037,18 @@ function App() {
       return
     }
     const nextTree = await api.listFilesTree()
-    setFilesTree(nextTree)
+    setFilesTree(buildVisibleFilesTree(nextTree, notesRef.current))
   }
 
   async function syncNotesAndFilesView() {
     if (!getConnectivityState()) {
       return
     }
-    const [nextNotes, nextTree] = await Promise.all([api.listNotes(), api.listFilesTree()])
+    const [rawNotes, nextTree] = await Promise.all([api.listNotes(), api.listFilesTree()])
+    const nextNotes = filterVisibleNotes(rawNotes)
     rememberPersistedNotes(nextNotes)
     setNotes(nextNotes)
-    setFilesTree(nextTree)
+    setFilesTree(buildVisibleFilesTree(nextTree, rawNotes))
     setCustomFolders(
       Array.from(new Set(nextNotes.map((note) => normalizeFolderPath(note.folder || 'Inbox')))).sort((left, right) =>
         left.localeCompare(right),
@@ -3999,7 +4072,7 @@ function App() {
   }
 
   function beginFileDrag(event: React.DragEvent<HTMLElement>, path: string) {
-    beginFileDragAction(event, path, setDraggingFilePath)
+    beginFileDragAction(event, path, setDraggingFilePath, markedFilePaths)
   }
 
   async function handleDirectoryDrop(event: React.DragEvent<HTMLElement>, destinationDir: string) {
@@ -4015,44 +4088,60 @@ function App() {
 
   function beginNoteTreeDrag(event: React.DragEvent<HTMLElement>, path: string) {
     if (!path.startsWith('note:') && path === 'Inbox') return
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', path)
-    setDraggingNoteTreePath(path)
+    beginTreeDrag(event, path, setDraggingNoteTreePath, markedNotePaths)
   }
 
   async function handleNoteTreeDrop(event: React.DragEvent<HTMLElement>, destinationDir: string) {
     event.preventDefault()
-    const sourcePath = event.dataTransfer.getData('text/plain') || draggingNoteTreePath
+    const sourcePaths = draggedPathsFromEvent(event, draggingNoteTreePath)
     setNoteTreeDropTargetPath(null)
     setDraggingNoteTreePath(null)
-    if (!sourcePath) return
+    if (sourcePaths.length === 0) return
 
-    if (sourcePath.startsWith('note:')) {
-      const noteId = sourcePath.slice('note:'.length)
-      const note = notesRef.current.find((entry) => entry.id === noteId)
-      if (!note) return
+    if (sourcePaths.every((path) => path.startsWith('note:'))) {
       const nextFolder = normalizeFolderPath(destinationDir || 'Inbox')
-      const currentFolder = normalizeFolderPath(note.folder || 'Inbox')
-      if (nextFolder === currentFolder) return
-      const markdown = noteId === selectedNoteIdRef.current ? currentNoteMarkdown() : note.markdown
-      const title = noteId === selectedNoteIdRef.current ? (selectedNoteRef.current?.title ?? note.title) : note.title
-      const updated = await updateNoteLocalFirst({ ...note, title }, { folder: nextFolder, markdown })
-      setNotes((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)))
-      persistedNoteStateRef.current[updated.id] = {
-        title: updated.title,
-        folder: updated.folder,
-        markdown: updated.markdown,
+      const sourceNoteIds = Array.from(new Set(sourcePaths.map((path) => path.slice('note:'.length))))
+      const updatedNotes = await Promise.all(
+        sourceNoteIds.map(async (noteId) => {
+          const note = notesRef.current.find((entry) => entry.id === noteId)
+          if (!note) return null
+          const currentFolder = normalizeFolderPath(note.folder || 'Inbox')
+          if (nextFolder === currentFolder) return null
+          const markdown = noteId === selectedNoteIdRef.current ? currentNoteMarkdown() : note.markdown
+          const title = noteId === selectedNoteIdRef.current ? (selectedNoteRef.current?.title ?? note.title) : note.title
+          return updateNoteLocalFirst({ ...note, title }, { folder: nextFolder, markdown })
+        }),
+      )
+      const movedNotes = updatedNotes.filter((note): note is Note => Boolean(note))
+      if (movedNotes.length === 0) return
+      const updatedById = new Map(movedNotes.map((note) => [note.id, note]))
+      setNotes((current) => current.map((entry) => updatedById.get(entry.id) ?? entry))
+      for (const updated of movedNotes) {
+        persistedNoteStateRef.current[updated.id] = {
+          title: updated.title,
+          folder: updated.folder,
+          markdown: updated.markdown,
+        }
+        locallyDirtyNoteIdsRef.current.delete(updated.id)
+        if (updated.id === selectedNoteIdRef.current) {
+          setSelectedFolderPath(nextFolder)
+          applySelectedNoteDocument(updated.document, { note: updated, markdown: updated.markdown })
+        }
       }
-      locallyDirtyNoteIdsRef.current.delete(updated.id)
-      if (updated.id === selectedNoteIdRef.current) {
-        setSelectedFolderPath(nextFolder)
-        applySelectedNoteDocument(updated.document, { note: updated, markdown: updated.markdown })
-      }
-      setCustomFolders((current) => mergeFolderPaths(current, [currentFolder, updated.folder || 'Inbox']))
+      setCustomFolders((current) =>
+        mergeFolderPaths(
+          current,
+          movedNotes.flatMap((note) => [notesRef.current.find((entry) => entry.id === note.id)?.folder || 'Inbox', note.folder || 'Inbox']),
+        ),
+      )
       await refreshFilesTree()
-      showActionNotice(`Moved note: ${updated.title}`)
+      showActionNotice(
+        movedNotes.length === 1 ? `Moved note: ${movedNotes[0].title}` : `Moved ${movedNotes.length} notes`,
+      )
       return
     }
+
+    const sourcePath = sourcePaths[0]
 
     const sourceFolder = normalizeFolderPath(sourcePath)
     const targetFolder = normalizeFolderPath(destinationDir || 'Inbox')
@@ -4127,37 +4216,48 @@ function App() {
 
   function beginDiagramTreeDrag(event: React.DragEvent<HTMLElement>, path: string) {
     if (!path.startsWith('diagram:') && path === 'Diagrams') return
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', path)
-    setDraggingDiagramTreePath(path)
+    beginTreeDrag(event, path, setDraggingDiagramTreePath, markedDiagramPaths)
   }
 
   async function handleDiagramTreeDrop(event: React.DragEvent<HTMLElement>, destinationDir: string) {
     event.preventDefault()
-    const sourcePath = event.dataTransfer.getData('text/plain') || draggingDiagramTreePath
+    const sourcePaths = draggedPathsFromEvent(event, draggingDiagramTreePath)
     setDiagramTreeDropTargetPath(null)
     setDraggingDiagramTreePath(null)
-    if (!sourcePath) return
+    if (sourcePaths.length === 0) return
 
-    if (sourcePath.startsWith('diagram:')) {
-      const diagramId = sourcePath.slice('diagram:'.length)
-      const diagram = diagrams.find((entry) => entry.id === diagramId)
-      if (!diagram) return
-      const currentFolder = normalizeDiagramFolderPath(diagram.title)
-      const nextFolder = normalizeDiagramFolderPath(`${destinationDir}/${diagramDisplayName(diagram.title)}`)
-      if (nextFolder === currentFolder) return
-      const updated = await updateDiagramLocalFirst(
-        { ...diagram, title: `${destinationDir}/${diagramDisplayName(diagram.title)}` },
-        diagram.xml,
+    if (sourcePaths.every((path) => path.startsWith('diagram:'))) {
+      const diagramIds = Array.from(new Set(sourcePaths.map((path) => path.slice('diagram:'.length))))
+      const updatedDiagrams = await Promise.all(
+        diagramIds.map(async (diagramId) => {
+          const diagram = diagrams.find((entry) => entry.id === diagramId)
+          if (!diagram) return null
+          const currentFolder = normalizeDiagramFolderPath(diagram.title)
+          const nextFolder = normalizeDiagramFolderPath(`${destinationDir}/${diagramDisplayName(diagram.title)}`)
+          if (nextFolder === currentFolder) return null
+          return updateDiagramLocalFirst(
+            { ...diagram, title: `${destinationDir}/${diagramDisplayName(diagram.title)}` },
+            diagram.xml,
+          )
+        }),
       )
-      setDiagrams((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)))
+      const movedDiagrams = updatedDiagrams.filter((diagram): diagram is Diagram => Boolean(diagram))
+      if (movedDiagrams.length === 0) return
+      const updatedById = new Map(movedDiagrams.map((diagram) => [diagram.id, diagram]))
+      setDiagrams((current) => current.map((entry) => updatedById.get(entry.id) ?? entry))
       setCustomDiagramFolders((current) =>
-        Array.from(new Set([...current, currentFolder, nextFolder])).sort((left, right) => left.localeCompare(right)),
+        Array.from(new Set([...current, ...movedDiagrams.map((diagram) => normalizeDiagramFolderPath(diagram.title))])).sort((left, right) => left.localeCompare(right)),
       )
       await refreshFilesTree()
-      showActionNotice(`Moved diagram: ${diagramDisplayName(updated.title)}`)
+      showActionNotice(
+        movedDiagrams.length === 1
+          ? `Moved diagram: ${diagramDisplayName(movedDiagrams[0].title)}`
+          : `Moved ${movedDiagrams.length} diagrams`,
+      )
       return
     }
+
+    const sourcePath = sourcePaths[0]
 
     const sourceFolder = sourcePath
     const targetFolder = destinationDir
@@ -4212,18 +4312,18 @@ function App() {
 
   function beginVoiceTreeDrag(event: React.DragEvent<HTMLElement>, path: string) {
     if (path === 'voice') return
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', path)
-    setDraggingVoiceTreePath(path)
+    beginTreeDrag(event, path, setDraggingVoiceTreePath, markedVoicePaths)
   }
 
   async function handleVoiceTreeDrop(event: React.DragEvent<HTMLElement>, destinationDir: string) {
     event.preventDefault()
-    const sourcePath = event.dataTransfer.getData('text/plain') || draggingVoiceTreePath
+    const sourcePaths = draggedPathsFromEvent(event, draggingVoiceTreePath)
     setVoiceTreeDropTargetPath(null)
     setDraggingVoiceTreePath(null)
-    if (!sourcePath) return
-    await moveDriveItem(sourcePath, destinationDir)
+    for (const sourcePath of sourcePaths) {
+      if (!sourcePath) continue
+      await moveDriveItem(sourcePath, destinationDir)
+    }
   }
 
   function activateRelativeFile(offset: number) {
@@ -4929,6 +5029,7 @@ function App() {
     noteTree,
     notes,
     selectedNoteId,
+    markedPaths: markedNotePaths,
     draggingPath: draggingNoteTreePath,
     dropTargetPath: noteTreeDropTargetPath,
     isCompactViewport,
@@ -4980,7 +5081,7 @@ function App() {
         const renamed = await renameManagedPathLocalFirst(managedPathForNoteFolder(path), trimmed)
         const nextPath = renamed.path.replace(/^notes\//, '')
         if (getConnectivityState()) {
-          const nextNotes = await api.listNotes()
+          const nextNotes = filterVisibleNotes(await api.listNotes())
           rememberPersistedNotes(nextNotes)
           setNotes(nextNotes)
           setCustomFolders((current) => rebaseFolderEntries(current, path, nextPath))
@@ -4997,6 +5098,7 @@ function App() {
     onSelectNote: (note: Note) => {
       void openNoteInNotes(note)
     },
+    onSetMarkedPaths: setMarkedNotePaths,
     onDragStart: beginNoteTreeDrag,
     onDragEnd: () => {
       setDraggingNoteTreePath(null)
@@ -5152,6 +5254,7 @@ function App() {
     diagrams,
     selectedDiagramId,
     selectedDiagramPath,
+    markedPaths: markedDiagramPaths,
     draggingPath: draggingDiagramTreePath,
     dropTargetPath: diagramTreeDropTargetPath,
     selectedDiagram,
@@ -5220,6 +5323,7 @@ function App() {
         setSelectedDiagramId(diagramId)
       }
     },
+    onSetMarkedPaths: setMarkedDiagramPaths,
     onDragStart: beginDiagramTreeDrag,
     onDragEnd: () => {
       setDraggingDiagramTreePath(null)
@@ -5254,9 +5358,11 @@ function App() {
     selectedVoiceMemoSizeBytes: selectedVoiceMemoNode?.size_bytes ?? null,
     currentVoiceFolderPath,
     recording,
+    markedPaths: markedVoicePaths,
     draggingPath: draggingVoiceTreePath,
     dropTargetPath: voiceTreeDropTargetPath,
     onSelectVoicePath: selectVoicePath,
+    onSetMarkedPaths: setMarkedVoicePaths,
     onCreateFolder: (name: string, parentPath: string) => {
       const trimmed = name.trim()
       if (!trimmed) return

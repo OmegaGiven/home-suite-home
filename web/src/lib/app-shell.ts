@@ -3,8 +3,11 @@ import { displayNameForFileNode as displayManagedFileNode } from './file-display
 import type { RoutePath, ShortcutSettings } from './app-config'
 import type { FileColumnKey } from './file-browser'
 import { renderFileColumnCell as renderManagedFileColumnCell } from './file-browser'
+import { normalizeManagedDeletePaths } from './file-browser'
 import type { Diagram, FileNode, Note, VoiceMemo } from './types'
 import { normalizeShortcutBinding } from './shortcuts'
+
+const MULTI_DRAG_MIME = 'application/x-home-suite-home-paths'
 
 export function cycleRoutePath(
   orderedPaths: RoutePath[],
@@ -60,11 +63,43 @@ export function beginFileDrag(
   event: DragEvent<HTMLElement>,
   path: string,
   setDraggingFilePath: Dispatch<SetStateAction<string | null>>,
+  selectedPaths?: string[],
 ) {
-  if (!(path.startsWith('drive/') || path.startsWith('notes/') || path.startsWith('diagrams/'))) return
+  if (!(path.startsWith('drive/') || path.startsWith('notes/') || path.startsWith('diagrams/') || path.startsWith('voice/'))) return
+  beginTreeDrag(event, path, setDraggingFilePath, selectedPaths)
+}
+
+export function beginTreeDrag(
+  event: DragEvent<HTMLElement>,
+  path: string,
+  setDraggingFilePath: Dispatch<SetStateAction<string | null>>,
+  selectedPaths?: string[],
+) {
+  const dragPaths = Array.from(
+    new Set(
+      (selectedPaths && selectedPaths.includes(path) ? selectedPaths : [path]).filter((entry) => Boolean(entry)),
+    ),
+  )
   event.dataTransfer.effectAllowed = 'move'
   event.dataTransfer.setData('text/plain', path)
+  event.dataTransfer.setData(MULTI_DRAG_MIME, JSON.stringify({ paths: dragPaths }))
   setDraggingFilePath(path)
+}
+
+export function draggedPathsFromEvent(event: DragEvent<HTMLElement>, fallbackPath: string | null) {
+  const raw = event.dataTransfer.getData(MULTI_DRAG_MIME)
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { paths?: string[] }
+      if (Array.isArray(parsed.paths)) {
+        return parsed.paths.filter((path): path is string => typeof path === 'string' && path.length > 0)
+      }
+    } catch {
+      // Fall through to the legacy single-path payload.
+    }
+  }
+  const singlePath = event.dataTransfer.getData('text/plain') || fallbackPath
+  return singlePath ? [singlePath] : []
 }
 
 export async function handleDirectoryDrop(
@@ -76,11 +111,13 @@ export async function handleDirectoryDrop(
   moveDriveItem: (sourcePath: string, destinationDir: string) => Promise<void>,
 ) {
   event.preventDefault()
-  const sourcePath = event.dataTransfer.getData('text/plain') || draggingFilePath
+  const sourcePaths = normalizeManagedDeletePaths(draggedPathsFromEvent(event, draggingFilePath))
   setDropTargetPath(null)
   setDraggingFilePath(null)
-  if (!sourcePath || sourcePath === destinationDir) return
-  await moveDriveItem(sourcePath, destinationDir)
+  for (const sourcePath of sourcePaths) {
+    if (!sourcePath || sourcePath === destinationDir) continue
+    await moveDriveItem(sourcePath, destinationDir)
+  }
 }
 
 export function activateRelativeFile(

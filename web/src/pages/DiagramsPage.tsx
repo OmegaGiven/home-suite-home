@@ -1,4 +1,4 @@
-import { useMemo, useState, type KeyboardEventHandler, type RefObject } from 'react'
+import { useMemo, useRef, useState, type KeyboardEventHandler, type RefObject } from 'react'
 import { DrawioDiagramEditor, type DrawioDiagramEditorHandle } from '../components/DrawioDiagramEditor'
 import { FolderPromptModal } from '../components/FolderPromptModal'
 import { DiagramLibraryTreeNode } from '../components/DiagramLibraryTreeNode'
@@ -22,6 +22,7 @@ type Props = {
   diagrams: Diagram[]
   selectedDiagramId: string | null
   selectedDiagramPath?: string | null
+  markedPaths: string[]
   draggingPath: string | null
   dropTargetPath: string | null
   selectedDiagram: Diagram | null
@@ -37,6 +38,7 @@ type Props = {
   onOpenStandaloneDrawio: () => void
   onSelectDiagram: (diagramId: string) => void
   onSelectDiagramPath?: (path: string) => void
+  onSetMarkedPaths: (paths: string[] | ((current: string[]) => string[])) => void
   onDragStart: (event: React.DragEvent<HTMLElement>, path: string) => void
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -63,6 +65,7 @@ export function DiagramsPage({
   diagrams,
   selectedDiagramId,
   selectedDiagramPath,
+  markedPaths,
   draggingPath,
   dropTargetPath,
   selectedDiagram,
@@ -78,6 +81,7 @@ export function DiagramsPage({
   onOpenStandaloneDrawio,
   onSelectDiagram,
   onSelectDiagramPath,
+  onSetMarkedPaths,
   onDragStart,
   onDragEnd,
   onDropTargetChange,
@@ -109,6 +113,7 @@ export function DiagramsPage({
     [selectedDiagram],
   )
   const [renameFolderName, setRenameFolderName] = useState('') 
+  const treeContainerRef = useRef<HTMLDivElement | null>(null)
   const diagramRootNode = useMemo(() => {
     const existingRoot = diagramTree.find((node) => node.path === 'Diagrams')
     if (existingRoot) return existingRoot
@@ -149,6 +154,52 @@ export function DiagramsPage({
         : [],
     [selectedDiagramPath],
   )
+
+  function applySelection(targetPath: string) {
+    if (onSelectDiagramPath) {
+      onSelectDiagramPath(targetPath)
+      return
+    }
+    if (targetPath.startsWith('diagram:')) {
+      onSelectDiagram(targetPath.slice('diagram:'.length))
+    }
+  }
+
+  function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
+    if (options?.shiftKey && selectedDiagramPath && treeContainerRef.current) {
+      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
+        .map((element) => element.dataset.fileTreePath)
+        .filter((value): value is string => Boolean(value))
+      const anchorIndex = orderedPaths.indexOf(selectedDiagramPath)
+      const targetIndex = orderedPaths.indexOf(path)
+      if (anchorIndex >= 0 && targetIndex >= 0) {
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
+        const range = orderedPaths.slice(start, end + 1).filter((entry) => entry.startsWith('diagram:') || entry.startsWith('diagrams/'))
+        onSetMarkedPaths(Array.from(new Set(range)))
+        applySelection(path)
+        return
+      }
+    }
+
+    if (options?.metaKey || options?.ctrlKey) {
+      onSetMarkedPaths((current) =>
+        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
+      )
+      applySelection(path)
+      return
+    }
+
+    onSetMarkedPaths(
+      path.startsWith('diagram:') || path.startsWith('diagrams/')
+        ? [path]
+        : [],
+    )
+    applySelection(path)
+  }
+
+  function handleTreeOpen(path: string) {
+    applySelection(path)
+  }
 
   return (
     <>
@@ -245,7 +296,7 @@ export function DiagramsPage({
               ]}
               pageActions={[{ key: 'diagram', label: 'New diagram', icon: <NewDiagramIcon />, onClick: onCreateDiagram }]}
             />
-            <div className="folder-tree file-tree notes-folder-tree">
+            <div ref={treeContainerRef} className="folder-tree file-tree notes-folder-tree">
               <FileTreeHeader
                 rowMetaVisibility={rowMetaVisibility}
                 sortState={sortState}
@@ -258,10 +309,11 @@ export function DiagramsPage({
                   selectedPath={selectedDiagramPath ?? ''}
                   activePath={selectedDiagramPath ?? null}
                   highlightedPaths={highlightedPaths}
-                  markedPaths={[]}
+                  markedPaths={markedPaths}
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
-                  onSelect={onSelectDiagramPath}
+                  onSelect={handleTreeSelection}
+                  onOpen={handleTreeOpen}
                   onDragStart={onDragStart}
                   onDragEnd={onDragEnd}
                   onDropTargetChange={onDropTargetChange}
@@ -284,10 +336,12 @@ export function DiagramsPage({
                   node={filteredDiagramRootNode}
                   selectedDiagramId={selectedDiagramId}
                   activeFolderPath={currentLibraryFolderPath}
+                  markedPaths={markedPaths}
                   hideRoot
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
-                  onSelectDiagram={onSelectDiagram}
+                  onSelectPath={handleTreeSelection}
+                  onOpenPath={handleTreeOpen}
                   onDragStart={onDragStart}
                   onDragEnd={onDragEnd}
                   onDropTargetChange={onDropTargetChange}

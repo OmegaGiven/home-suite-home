@@ -1,6 +1,7 @@
 import * as AuthSession from 'expo-auth-session'
 import * as WebBrowser from 'expo-web-browser'
 import type {
+  NoteShareState,
   NoteDocumentOperationBatch,
   NoteOperationsPullResponse,
   NoteOperationsPushResponse,
@@ -37,6 +38,14 @@ export type RemoteNoteSnapshot = {
   revision: number
   updated_at: string
   visibility?: 'private' | 'org' | 'users'
+}
+
+export type RemoteServerUser = {
+  id: string
+  username: string
+  email: string
+  display_name: string
+  avatar_path?: string | null
 }
 
 async function requestJson<T>(url: string, init?: RequestInit, token?: string): Promise<T> {
@@ -228,6 +237,33 @@ export async function pushNoteOperations(
     {
       method: 'POST',
       body: JSON.stringify({ batch }),
+    },
+    token,
+  )
+}
+
+export async function listServerUsers(baseUrl: string, token: string) {
+  return requestJson<RemoteServerUser[]>(`${baseUrl}/api/v1/admin/users`, undefined, token)
+}
+
+export async function getResourceShare(baseUrl: string, token: string, resourceKey: string) {
+  return requestJson<NoteShareState>(
+    `${baseUrl}/api/v1/shares?resource_key=${encodeURIComponent(resourceKey)}`,
+    undefined,
+    token,
+  )
+}
+
+export async function updateResourceShare(
+  baseUrl: string,
+  token: string,
+  payload: { resource_key: string; visibility: 'private' | 'org' | 'users'; user_ids: string[] },
+) {
+  return requestJson<NoteShareState>(
+    `${baseUrl}/api/v1/shares`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
     },
     token,
   )

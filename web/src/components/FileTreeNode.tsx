@@ -26,6 +26,7 @@ type Props = {
   draggingPath: string | null
   dropTargetPath: string | null
   onSelect: (path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) => void
+  onOpen?: (path: string) => void
   onDragStart: (event: DragEvent<HTMLElement>, path: string) => void
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -98,6 +99,7 @@ export function FileTreeNode({
   draggingPath,
   dropTargetPath,
   onSelect,
+  onOpen,
   onDragStart,
   onDragEnd,
   onDropTargetChange,
@@ -113,7 +115,7 @@ export function FileTreeNode({
   const displayName = getDisplayName(node)
   const isDraggable = canDragNode
     ? canDragNode(node)
-    : node.path.startsWith('drive/') || node.path.startsWith('notes/') || node.path.startsWith('diagrams/')
+    : node.path.startsWith('drive/') || node.path.startsWith('notes/') || node.path.startsWith('diagrams/') || node.path.startsWith('voice/')
   const hasChildren = node.kind === 'directory' && node.children.length > 0
   const [collapsed, setCollapsed] = useState(false)
   const rowMeta = getRowMeta?.(node)
@@ -151,6 +153,7 @@ export function FileTreeNode({
             ctrlKey: event.ctrlKey,
           })
         }
+        onDoubleClick={() => onOpen?.(node.path)}
       >
         <span className="tree-row-markers" aria-hidden="true">
           {isCurrent ? <span className="tree-active-arrow">&gt;</span> : null}
@@ -193,6 +196,7 @@ export function FileTreeNode({
               draggingPath={draggingPath}
               dropTargetPath={dropTargetPath}
               onSelect={onSelect}
+              onOpen={onOpen}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
               onDropTargetChange={onDropTargetChange}

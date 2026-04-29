@@ -202,6 +202,12 @@ export function FilesPage({
     selectFileTreeNode(path)
   }
 
+  function handleTreeOpen(path: string) {
+    const node = path === '' ? null : filesTree.length > 0 ? findNodeByPath(filesTree, path) : null
+    if (!node || node.kind === 'directory') return
+    void onOpenFileNode(node)
+  }
+
   return (
     <>
       <FilesModals
@@ -303,6 +309,7 @@ export function FilesPage({
                 draggingPath={draggingFilePath}
                 dropTargetPath={dropTargetPath}
                 onSelect={handleTreeSelection}
+                onOpen={handleTreeOpen}
                 onDragStart={beginFileDrag}
                 onDragEnd={onFileDragEnd}
                 onDropTargetChange={onDropTargetChange}
@@ -354,4 +361,15 @@ export function FilesPage({
       />
     </>
   )
+}
+
+function findNodeByPath(nodes: FileNode[], path: string): FileNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node
+    if (node.kind === 'directory') {
+      const nested = findNodeByPath(node.children, path)
+      if (nested) return nested
+    }
+  }
+  return null
 }

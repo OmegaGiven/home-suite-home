@@ -1,6 +1,6 @@
 import type { DragEvent } from 'react'
 import { FileTreeNode, FileTreeNodes, type FileTreeRowMeta, type FileTreeRowMetaVisibility } from './FileTreeNode'
-import type { FileNode, Note } from '../lib/types'
+import type { FileNode } from '../lib/types'
 import type { FileTreeSortState, NoteFolderNode } from '../lib/ui-helpers'
 import { aggregateFileNodeSize, ancestorDirectoryPaths, formatFileSize, formatFileTimestamp, sortFileTree } from '../lib/ui-helpers'
 
@@ -9,9 +9,11 @@ type Props = {
   activeFolderPath: string | null
   selectedNoteId: string | null
   hideRoot?: boolean
+  markedPaths: string[]
   draggingPath: string | null
   dropTargetPath: string | null
-  onSelectNote: (note: Note) => void
+  onSelectPath: (path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) => void
+  onOpenPath?: (path: string) => void
   onDragStart: (event: DragEvent<HTMLElement>, path: string) => void
   onDragEnd: () => void
   onDropTargetChange: (path: string | null) => void
@@ -25,9 +27,11 @@ export function NoteLibraryTreeNode({
   activeFolderPath,
   selectedNoteId,
   hideRoot = false,
+  markedPaths,
   draggingPath,
   dropTargetPath,
-  onSelectNote,
+  onSelectPath,
+  onOpenPath,
   onDragStart,
   onDragEnd,
   onDropTargetChange,
@@ -58,14 +62,11 @@ export function NoteLibraryTreeNode({
     selectedPath: selectedNoteId ? `note:${selectedNoteId}` : '',
     activePath: selectedNoteId ? `note:${selectedNoteId}` : null,
     highlightedPaths,
-    markedPaths: [],
+    markedPaths,
     draggingPath,
     dropTargetPath,
-    onSelect: (path: string) => {
-      if (!path.startsWith('note:')) return
-      const note = findNoteInFolderNode(node, path.slice('note:'.length))
-      if (note) onSelectNote(note)
-    },
+    onSelect: onSelectPath,
+    onOpen: onOpenPath,
     onDragStart,
     onDragEnd,
     onDropTargetChange,
@@ -129,14 +130,4 @@ function buildRowMeta(node: FileNode): FileTreeRowMeta {
     modified: formatFileTimestamp(node.updated_at),
     created: formatFileTimestamp(node.created_at),
   }
-}
-
-function findNoteInFolderNode(node: NoteFolderNode, noteId: string): Note | null {
-  const direct = node.notes.find((note) => note.id === noteId)
-  if (direct) return direct
-  for (const child of node.children) {
-    const nested = findNoteInFolderNode(child, noteId)
-    if (nested) return nested
-  }
-  return null
 }

@@ -67,6 +67,10 @@ type CreateNoteActionsContext = {
 }
 
 export function createNoteActions(context: CreateNoteActionsContext) {
+  function filterVisibleNotes(notes: Note[]) {
+    return notes.filter((note) => !note.conflict_tag && !note.forked_from_note_id)
+  }
+
   function currentNoteMarkdown() {
     if (context.currentNoteDocumentRef.current) {
       return markdownFromNoteDocument(context.currentNoteDocumentRef.current)
@@ -332,7 +336,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
           error.message.toLowerCase().includes('revision mismatch') &&
           (options?.retryCount ?? 0) < 1
         ) {
-          const latestNotes = await api.listNotes()
+          const latestNotes = filterVisibleNotes(await api.listNotes())
           const latest = latestNotes.find((note) => note.id === targetNote.id) ?? null
           rememberPersistedNotes(latestNotes)
           context.setNotes(latestNotes)

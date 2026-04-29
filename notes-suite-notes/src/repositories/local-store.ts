@@ -158,6 +158,7 @@ export async function findBindingByRemoteNoteId(remoteNoteId: string) {
 
 export async function queueOperation(record: PendingNoteOperationRecord) {
   const database = await openDatabase()
+  await database.runAsync('DELETE FROM queued_operations WHERE note_id = ?', [record.note_id])
   await database.runAsync(
     `INSERT OR REPLACE INTO queued_operations
       (id, note_id, server_account_id, server_identity_id, created_at, batch_json)
@@ -191,6 +192,27 @@ export async function listQueuedOperations() {
     created_at: row.created_at,
     batch: JSON.parse(row.batch_json),
   })) satisfies PendingNoteOperationRecord[]
+}
+
+export async function compactQueuedOperations() {
+  const database = await openDatabase()
+  const rows = await database.getAllAsync<{
+    id: string
+    note_id: string
+    created_at: string
+  }>('SELECT id, note_id, created_at FROM queued_operations ORDER BY note_id ASC, created_at DESC')
+  const keep = new Set<string>()
+  const remove: string[] = []
+  for (const row of rows) {
+    if (keep.has(row.note_id)) {
+      remove.push(row.id)
+      continue
+    }
+    keep.add(row.note_id)
+  }
+  for (const id of remove) {
+    await database.runAsync('DELETE FROM queued_operations WHERE id = ?', [id])
+  }
 }
 
 export async function removeQueuedOperation(id: string) {

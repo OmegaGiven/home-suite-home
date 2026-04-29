@@ -1258,6 +1258,10 @@
   align-items: stretch;
 }
 
+.notes-manager > * {
+  min-height: 0;
+}
+
 .notes-manager.resizing {
   user-select: none;
   cursor: col-resize;
@@ -1273,12 +1277,15 @@
   gap: var(--space-sm);
   min-width: 0;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .notes-folder-tree {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
-  max-height: 100%;
+  max-height: none;
 }
 
 .notes-editor-shell {
@@ -2285,6 +2292,7 @@
   height: 100%;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .file-sidebar > .file-sidebar-action-dropzone {

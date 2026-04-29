@@ -4,6 +4,7 @@ import type {
   LocalNoteRecord,
   NoteBinding,
   NoteDocumentOperationBatch,
+  NoteShareState,
   PresenceSession,
   RealtimeEvent,
   RemoteCursor,
@@ -23,6 +24,7 @@ import {
   getBinding,
   getSetting,
   initializeLocalStore,
+  compactQueuedOperations,
   listConflicts,
   listNotes,
   listQueuedOperations,
@@ -40,6 +42,8 @@ import {
   closeNoteSession,
   createRemoteNote,
   createServerAccount,
+  getResourceShare,
+  listServerUsers,
   loginWithOidc,
   loginWithPassword,
   listRemoteNotes,
@@ -47,6 +51,8 @@ import {
   openNoteSession,
   pullNoteOperations,
   pushNoteOperations,
+  type RemoteServerUser,
+  updateResourceShare,
   updateRemoteNote,
 } from '../sync/api'
 
@@ -77,6 +83,13 @@ type NotesAppContextValue = {
   createNoteWithPreferences: (options?: { syncToServer?: boolean }) => Promise<void>
   updateNoteTitle: (value: string) => Promise<void>
   updateSelectedNoteVisibility: (value: 'private' | 'org' | 'users') => Promise<void>
+  saveSelectedNoteVisibilitySettings: (input: {
+    serverIdentityId: string | null
+    visibility: 'private' | 'org' | 'users'
+    userIds: string[]
+  }) => Promise<void>
+  loadSelectedNoteShare: (serverIdentityId?: string | null) => Promise<NoteShareState | null>
+  listUsersForServerIdentity: (serverIdentityId: string) => Promise<RemoteServerUser[]>
   replaceSelectedDocument: (document: LocalNoteRecord['document']) => Promise<void>
   updateMarkdown: (value: string) => Promise<void>
   updateBlockText: (blockId: string, text: string) => Promise<void>
@@ -89,7 +102,7 @@ type NotesAppContextValue = {
   appearance: Appearance
   setAppearance: Dispatch<SetStateAction<Appearance>>
   serverAccounts: ServerAccount[]
-  linkSelectedNoteToServer: () => Promise<void>
+  linkSelectedNoteToServer: (preferredIdentityId?: string | null) => Promise<void>
   serverDraft: ServerDraft
   setServerDraft: Dispatch<SetStateAction<ServerDraft>>
   savePasswordServer: () => Promise<void>
@@ -526,6 +539,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     void (async () => {
       try {
         await initializeLocalStore()
+        await compactQueuedOperations()
         const [storedNotesResult, storedAccountsResult, storedAppearanceResult, storedConflictsResult] = await Promise.allSettled([
           listNotes(),
           listServerAccounts(),
@@ -622,7 +636,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         heartbeatRef.current = null
       }
     }
-  }, [selectedNote?.id, serverAccounts])
+  }, [selectedNote?.id, selectedNote?.selected_server_identity_id, serverAccounts])
 
   function upsertPresenceSession(nextSession: PresenceSession) {
     setPresenceSessions((current) => {
@@ -650,6 +664,80 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       if (identity) return identity
     }
     return null
+  }
+
+  function resolveIdentityById(identityId: string | null | undefined) {
+    if (!identityId) return null
+    for (const account of serverAccounts) {
+      const identity = account.identities.find((entry) => entry.id === identityId)
+      if (identity) return { account, identity }
+    }
+    return null
+  }
+
+  function defaultServerIdentity() {
+    for (const account of serverAccounts) {
+      const identity = account.identities[0]
+      if (identity) return { account, identity }
+    }
+    return null
+  }
+
+  async function ensureNoteLinkedToIdentity(note: LocalNoteRecord, serverIdentityId: string) {
+    const resolved = resolveIdentityById(serverIdentityId)
+    if (!resolved) {
+      throw new Error('Selected server identity is unavailable.')
+    }
+    const { account, identity } = resolved
+    const existingBinding = await getBinding(note.id)
+    if (existingBinding?.server_identity_id === identity.id && existingBinding.remote_note_id) {
+      const nextNote: LocalNoteRecord = {
+        ...note,
+        storage_mode: 'synced',
+        selected_server_identity_id: identity.id,
+      }
+      await upsertNote(nextNote)
+      setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
+      return {
+        note: nextNote,
+        binding: existingBinding,
+        account,
+        identity,
+      }
+    }
+
+    const remote = await createRemoteNote(account.base_url, identity.token, {
+      title: note.title,
+      folder: note.folder,
+      markdown: note.markdown,
+      document: note.document,
+      visibility: note.visibility,
+    })
+    const nextBinding: NoteBinding = {
+      local_note_id: note.id,
+      server_account_id: account.id,
+      server_identity_id: identity.id,
+      remote_note_id: remote.id,
+      remote_revision: remote.revision,
+      last_pulled_at: remote.updated_at,
+      last_pushed_at: remote.updated_at,
+    }
+    await saveBinding(nextBinding)
+    await removeQueuedOperationsForNote(note.id)
+    const nextNote: LocalNoteRecord = {
+      ...note,
+      storage_mode: 'synced',
+      selected_server_identity_id: identity.id,
+      updated_at: remote.updated_at,
+    }
+    await upsertNote(nextNote)
+    setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
+    return {
+      note: nextNote,
+      binding: nextBinding,
+      account,
+      identity,
+    }
   }
 
   async function recreateRemoteBinding(
@@ -926,7 +1014,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     setNotes((current) => [note, ...current])
     setSelectedNoteId(note.id)
     if (options?.syncToServer) {
-      await linkNoteRecordToFirstServer(note)
+      await linkNoteRecordToPreferredServer(note)
       await hydrateAndConnectNote(note.id)
     }
   }
@@ -961,6 +1049,81 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       })
     } catch {
       // Keep local share state as the working copy until connectivity returns.
+    }
+  }
+
+  async function loadSelectedNoteShare(serverIdentityId?: string | null) {
+    const note = currentSelectedNote()
+    if (!note) return null
+    const targetIdentityId = serverIdentityId ?? note.selected_server_identity_id ?? null
+    const binding = await getBinding(note.id)
+    if (!binding?.remote_note_id) return null
+    const resolved = resolveIdentityById(targetIdentityId)
+    if (!resolved || binding.server_identity_id !== resolved.identity.id) return null
+    try {
+      return await getResourceShare(
+        resolved.account.base_url,
+        resolved.identity.token,
+        `note:${binding.remote_note_id}`,
+      )
+    } catch {
+      return null
+    }
+  }
+
+  async function listUsersForServerIdentity(serverIdentityId: string) {
+    const resolved = resolveIdentityById(serverIdentityId)
+    if (!resolved) return []
+    try {
+      const users = await listServerUsers(resolved.account.base_url, resolved.identity.token)
+      return users.filter((user) => user.id !== resolved.identity.user.id)
+    } catch {
+      return []
+    }
+  }
+
+  async function saveSelectedNoteVisibilitySettings(input: {
+    serverIdentityId: string | null
+    visibility: 'private' | 'org' | 'users'
+    userIds: string[]
+  }) {
+    const note = currentSelectedNote()
+    if (!note) return
+    const resolvedTarget = input.serverIdentityId ? resolveIdentityById(input.serverIdentityId) : null
+    const effectiveServerIdentityId =
+      resolvedTarget?.identity.id ?? (note.storage_mode === 'synced' ? note.selected_server_identity_id ?? null : null)
+    const nextLocal: LocalNoteRecord = {
+      ...note,
+      visibility: input.visibility,
+      selected_server_identity_id: effectiveServerIdentityId,
+      storage_mode: resolvedTarget || note.storage_mode === 'synced' ? 'synced' : note.storage_mode,
+      updated_at: new Date().toISOString(),
+    }
+    await upsertNote(nextLocal)
+    setNotes((current) => current.map((entry) => (entry.id === nextLocal.id ? nextLocal : entry)))
+
+    if (!resolvedTarget) {
+      return
+    }
+
+    const linked = await ensureNoteLinkedToIdentity(nextLocal, resolvedTarget.identity.id)
+    try {
+      const share = await updateResourceShare(linked.account.base_url, linked.identity.token, {
+        resource_key: `note:${linked.binding.remote_note_id}`,
+        visibility: input.visibility,
+        user_ids: input.visibility === 'users' ? input.userIds : [],
+      })
+      const savedNote: LocalNoteRecord = {
+        ...linked.note,
+        visibility: share.visibility,
+        selected_server_identity_id: linked.identity.id,
+        storage_mode: 'synced',
+        updated_at: new Date().toISOString(),
+      }
+      await upsertNote(savedNote)
+      setNotes((current) => current.map((entry) => (entry.id === savedNote.id ? savedNote : entry)))
+    } catch {
+      // Leave local visibility choice in place until the next sync/save succeeds.
     }
   }
 
@@ -1303,44 +1466,21 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     setServerAccounts((current) => current.filter((entry) => entry.id !== accountId))
   }
 
-  async function linkNoteRecordToFirstServer(note: LocalNoteRecord) {
-    const account = serverAccounts[0]
-    const identity = account?.identities[0]
-    if (!account || !identity) return
-    const remote = await createRemoteNote(account.base_url, identity.token, {
-      title: note.title,
-      folder: note.folder,
-      markdown: note.markdown,
-      document: note.document,
-      visibility: note.visibility,
-    })
-    const nextBinding: NoteBinding = {
-      local_note_id: note.id,
-      server_account_id: account.id,
-      server_identity_id: identity.id,
-      remote_note_id: remote.id,
-      remote_revision: remote.revision,
-      last_pulled_at: remote.updated_at,
-      last_pushed_at: remote.updated_at,
-    }
-    await saveBinding(nextBinding)
-    const nextNote: LocalNoteRecord = {
-      ...note,
-      storage_mode: 'synced',
-      selected_server_identity_id: identity.id,
-      updated_at: remote.updated_at,
-    }
-    await upsertNote(nextNote)
-    setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
+  async function linkNoteRecordToPreferredServer(note: LocalNoteRecord, preferredIdentityId?: string | null) {
+    const resolved =
+      resolveIdentityById(preferredIdentityId ?? note.selected_server_identity_id ?? null) ?? defaultServerIdentity()
+    if (!resolved) return
+    await ensureNoteLinkedToIdentity(note, resolved.identity.id)
   }
 
-  async function linkSelectedNoteToServer() {
+  async function linkSelectedNoteToServer(preferredIdentityId?: string | null) {
     if (!selectedNote) return
-    await linkNoteRecordToFirstServer(selectedNote)
+    await linkNoteRecordToPreferredServer(selectedNote, preferredIdentityId)
     await hydrateAndConnectNote(selectedNote.id)
   }
 
   async function flushQueuedOperations() {
+    await compactQueuedOperations()
     const queued = await listQueuedOperations()
     if (queued.length === 0) return
     for (const operation of queued) {
@@ -1418,6 +1558,9 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         createNoteWithPreferences,
         updateNoteTitle,
         updateSelectedNoteVisibility,
+        saveSelectedNoteVisibilitySettings,
+        loadSelectedNoteShare,
+        listUsersForServerIdentity,
         replaceSelectedDocument,
         updateMarkdown,
         updateBlockText,

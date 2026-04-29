@@ -50,6 +50,36 @@ type CreateAuthActionsContext = {
   showActionNotice: (message: string) => void
 }
 
+function isConflictForkNote(note: Note) {
+  return Boolean(note.conflict_tag || note.forked_from_note_id)
+}
+
+function filterVisibleNotes(notes: Note[]) {
+  return notes.filter((note) => !isConflictForkNote(note))
+}
+
+function noteIdFromManagedPath(path: string) {
+  const match = path.match(/-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.md$/i)
+  return match?.[1] ?? null
+}
+
+function filterHiddenConflictNoteNodes(nodes: FileNode[], notes: Note[]): FileNode[] {
+  const hiddenNoteIds = new Set(notes.filter((note) => isConflictForkNote(note)).map((note) => note.id))
+  if (hiddenNoteIds.size === 0) return nodes
+  return nodes
+    .flatMap((node) => {
+      if (node.kind === 'file' && node.path.startsWith('notes/')) {
+        const noteId = noteIdFromManagedPath(node.path)
+        if (noteId && hiddenNoteIds.has(noteId)) return []
+      }
+      const children = filterHiddenConflictNoteNodes(node.children, notes)
+      if (node.kind === 'directory' && node.path.startsWith('notes') && children.length === 0 && node.path !== 'notes') {
+        return []
+      }
+      return [{ ...node, children }]
+    })
+}
+
 export function createAuthActions(context: CreateAuthActionsContext) {
   async function hydrateWorkspace(sessionData: SessionResponse) {
     await sessionStore.set(sessionData)
@@ -68,14 +98,15 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     context.setAdminStorageOverview(nextAdminStorageOverview)
     context.setAdminDatabaseOverview(null)
     context.setSyncCursors(workspace.cursors)
-    context.rememberPersistedNotes(workspace.notes)
-    context.setNotes(workspace.notes)
-    context.setFilesTree(workspace.file_tree)
+    const visibleNotes = filterVisibleNotes(workspace.notes)
+    context.rememberPersistedNotes(visibleNotes)
+    context.setNotes(visibleNotes)
+    context.setFilesTree(filterHiddenConflictNoteNodes(workspace.file_tree, workspace.notes))
     context.setSelectedFilePath('')
-    context.setSelectedNoteId(workspace.notes[0]?.id ?? null)
-    context.setSelectedFolderPath(context.normalizeFolderPath(workspace.notes[0]?.folder ?? 'Inbox'))
+    context.setSelectedNoteId(visibleNotes[0]?.id ?? null)
+    context.setSelectedFolderPath(context.normalizeFolderPath(visibleNotes[0]?.folder ?? 'Inbox'))
     context.setCustomFolders((current) =>
-      context.mergeFolderPaths(current, workspace.notes.map((note) => note.folder || 'Inbox')),
+      context.mergeFolderPaths(current, visibleNotes.map((note) => note.folder || 'Inbox')),
     )
     context.setDiagrams(workspace.diagrams)
     context.setSelectedDiagramId(workspace.diagrams[0]?.id ?? null)
@@ -141,13 +172,14 @@ export function createAuthActions(context: CreateAuthActionsContext) {
       if (cachedSession && cachedWorkspace) {
         context.setSession(cachedSession)
         context.setSyncCursors(cachedWorkspace.cursors)
-        context.rememberPersistedNotes(cachedWorkspace.notes)
-        context.setNotes(cachedWorkspace.notes)
-        context.setFilesTree(cachedWorkspace.file_tree)
-        context.setSelectedNoteId(cachedWorkspace.notes[0]?.id ?? null)
-        context.setSelectedFolderPath(context.normalizeFolderPath(cachedWorkspace.notes[0]?.folder ?? 'Inbox'))
+        const visibleNotes = filterVisibleNotes(cachedWorkspace.notes)
+        context.rememberPersistedNotes(visibleNotes)
+        context.setNotes(visibleNotes)
+        context.setFilesTree(filterHiddenConflictNoteNodes(cachedWorkspace.file_tree, cachedWorkspace.notes))
+        context.setSelectedNoteId(visibleNotes[0]?.id ?? null)
+        context.setSelectedFolderPath(context.normalizeFolderPath(visibleNotes[0]?.folder ?? 'Inbox'))
         context.setCustomFolders((current) =>
-          context.mergeFolderPaths(current, cachedWorkspace.notes.map((note) => note.folder || 'Inbox')),
+          context.mergeFolderPaths(current, visibleNotes.map((note) => note.folder || 'Inbox')),
         )
         context.setDiagrams(cachedWorkspace.diagrams)
         context.setSelectedDiagramId(cachedWorkspace.diagrams[0]?.id ?? null)
