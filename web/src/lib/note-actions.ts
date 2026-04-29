@@ -192,6 +192,9 @@ export function createNoteActions(context: CreateNoteActionsContext) {
       document.blocks[0]?.last_modified_by || note.last_editor_id,
       context.clientIdRef.current,
     )
+    if (!batch) {
+      return
+    }
     const event: RealtimeEvent = {
       type: 'note_operations',
       note_id: note.id,

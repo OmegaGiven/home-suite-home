@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   FlatList,
   KeyboardAvoidingView,
@@ -18,6 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useNotesApp } from '../lib/app-context'
 import { screenColors } from '../theme/tokens'
 import { HamburgerIcon, LinkIcon, SaveStateIcon, TocIcon, VisibilityIcon } from './notes-icons'
+import { NotesRichEditor, type RichEditorCommand } from './notes-rich-editor'
 
 type NotesShellProps = {
   onOpenServers: () => void
@@ -70,19 +71,46 @@ function headingItems(markdown: string) {
     }))
 }
 
-function plainTextFromMarkdown(markdown: string) {
-  return markdown
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/^>\s?/gm, '')
-    .replace(/^[-*]\s\[(?: |x)\]\s?/gim, '')
-    .replace(/^[-*]\s+/gm, '')
-    .replace(/^\d+\.\s+/gm, '')
-    .replace(/```[\s\S]*?```/g, (match) => match.replace(/```/g, ''))
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
-    .replace(/\*\*([^*]+)\*\*/g, '$1')
-    .replace(/\*([^*]+)\*/g, '$1')
-    .replace(/~~([^~]+)~~/g, '$1')
-    .replace(/<u>(.*?)<\/u>/g, '$1')
+function mergeConcurrentMarkdown(baseMarkdown: string, localMarkdown: string, remoteMarkdown: string) {
+  if (localMarkdown === remoteMarkdown) {
+    return localMarkdown
+  }
+  if (localMarkdown === baseMarkdown) {
+    return remoteMarkdown
+  }
+  if (remoteMarkdown === baseMarkdown) {
+    return localMarkdown
+  }
+
+  const baseLines = baseMarkdown.split('\n')
+  const localLines = localMarkdown.split('\n')
+  const remoteLines = remoteMarkdown.split('\n')
+  const maxLength = Math.max(baseLines.length, localLines.length, remoteLines.length)
+  const merged: string[] = []
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const baseLine = baseLines[index]
+    const localLine = localLines[index]
+    const remoteLine = remoteLines[index]
+
+    if (localLine === remoteLine) {
+      if (localLine !== undefined) merged.push(localLine)
+      continue
+    }
+    if (localLine === baseLine) {
+      if (remoteLine !== undefined) merged.push(remoteLine)
+      continue
+    }
+    if (remoteLine === baseLine) {
+      if (localLine !== undefined) merged.push(localLine)
+      continue
+    }
+
+    if (remoteLine !== undefined) merged.push(remoteLine)
+    if (localLine !== undefined) merged.push(localLine)
+  }
+
+  return merged.join('\n')
 }
 
 function normalizeSelection(selection: TextSelection | null, text: string) {
@@ -171,14 +199,93 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   const [selection, setSelection] = useState<TextSelection | null>(null)
   const [markdownUndoStack, setMarkdownUndoStack] = useState<string[]>([])
   const [markdownRedoStack, setMarkdownRedoStack] = useState<string[]>([])
+  const [editorDraft, setEditorDraft] = useState('')
+  const [titleDraft, setTitleDraft] = useState('')
+  const [richEditorCommand, setRichEditorCommand] = useState<RichEditorCommand | null>(null)
   const insets = useSafeAreaInsets()
+  const draftSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const latestDraftRef = useRef('')
+  const latestServerMarkdownRef = useRef('')
+  const previousServerMarkdownRef = useRef('')
+  const pendingDraftRef = useRef(false)
+  const lastSubmittedDraftRef = useRef<string | null>(null)
 
-  const toc = useMemo(() => headingItems(selectedNote?.markdown ?? ''), [selectedNote?.markdown])
+  const toc = useMemo(() => headingItems(editorDraft), [editorDraft])
   const filteredNotes = useMemo(() => {
     const query = openSearch.trim().toLowerCase()
     if (!query) return notes
     return notes.filter((note) => `${note.title} ${note.folder}`.toLowerCase().includes(query))
   }, [notes, openSearch])
+
+  useEffect(() => {
+    latestDraftRef.current = editorDraft
+  }, [editorDraft])
+
+  useEffect(() => {
+    const nextMarkdown = selectedNote?.markdown ?? ''
+    previousServerMarkdownRef.current = latestServerMarkdownRef.current
+    latestServerMarkdownRef.current = nextMarkdown
+  }, [selectedNote?.markdown, selectedNote?.id])
+
+  useEffect(() => {
+    return () => {
+      if (draftSyncTimeoutRef.current) {
+        clearTimeout(draftSyncTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const nextMarkdown = selectedNote?.markdown ?? ''
+    if (draftSyncTimeoutRef.current) {
+      clearTimeout(draftSyncTimeoutRef.current)
+      draftSyncTimeoutRef.current = null
+    }
+    pendingDraftRef.current = false
+    lastSubmittedDraftRef.current = nextMarkdown
+    setEditorDraft(nextMarkdown)
+    setTitleDraft(selectedNote?.title ?? '')
+    setSelection(null)
+    setMarkdownUndoStack([])
+    setMarkdownRedoStack([])
+  }, [selectedNote?.id])
+
+  useEffect(() => {
+    if (!selectedNote) return
+    if (showTitleEditor) return
+    setTitleDraft(selectedNote.title)
+  }, [selectedNote?.title, showTitleEditor])
+
+  useEffect(() => {
+    if (!selectedNote) return
+    const remoteMarkdown = selectedNote.markdown
+    const localDraft = latestDraftRef.current
+    const matchesSubmitted = remoteMarkdown === lastSubmittedDraftRef.current
+    const previousRemote = previousServerMarkdownRef.current
+    if (!pendingDraftRef.current) {
+      setEditorDraft(remoteMarkdown)
+      pendingDraftRef.current = false
+      return
+    }
+    if (remoteMarkdown === localDraft) {
+      setEditorDraft(remoteMarkdown)
+      pendingDraftRef.current = false
+      lastSubmittedDraftRef.current = remoteMarkdown
+      return
+    }
+    if (matchesSubmitted) {
+      // Ignore acknowledgements for an older submitted draft while the user
+      // already has newer local text in flight.
+      if (localDraft !== remoteMarkdown) {
+        return
+      }
+      setEditorDraft(remoteMarkdown)
+      pendingDraftRef.current = false
+      return
+    }
+    const mergedDraft = mergeConcurrentMarkdown(previousRemote, localDraft, remoteMarkdown)
+    setEditorDraft(mergedDraft)
+  }, [selectedNote?.markdown, selectedNote?.updated_at])
 
   if (!ready || !selectedNote) {
     return (
@@ -189,32 +296,81 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   }
 
   const note = selectedNote
-  const isMarkdownMode = editorMode === 'markdown'
-  const editorText = isMarkdownMode ? note.markdown : plainTextFromMarkdown(note.markdown)
+  const isMarkdownMode = editorMode === 'rich'
   const activeOpenNote = filteredNotes.find((entry) => entry.id === selectedOpenNoteId) ?? null
   const saveIconColor = saveStatus === 'saved' ? screenColors.success : saveStatus === 'saving' ? screenColors.accent : screenColors.warning
   const animationType = appearance.enableAnimations ? 'fade' : 'none'
   const sheetAnimationType = appearance.enableAnimations ? 'slide' : 'none'
 
-  async function commitEditorText(nextText: string, nextSelection?: TextSelection) {
-    setMarkdownUndoStack((current) => [...current, note.markdown])
-    setMarkdownRedoStack([])
-    await updateMarkdown(nextText)
+  function queueDraftSync(nextText: string, immediate = false) {
+    latestDraftRef.current = nextText
+    pendingDraftRef.current = true
+    if (draftSyncTimeoutRef.current) {
+      clearTimeout(draftSyncTimeoutRef.current)
+    }
+    const run = () => {
+      draftSyncTimeoutRef.current = null
+      const draft = latestDraftRef.current
+      if (draft === latestServerMarkdownRef.current) {
+        pendingDraftRef.current = false
+        lastSubmittedDraftRef.current = draft
+        return
+      }
+      lastSubmittedDraftRef.current = draft
+      void updateMarkdown(draft).finally(() => {
+        if (latestDraftRef.current !== draft) {
+          queueDraftSync(latestDraftRef.current, true)
+          return
+        }
+        pendingDraftRef.current = false
+      })
+    }
+    if (immediate) {
+      run()
+      return
+    }
+    draftSyncTimeoutRef.current = setTimeout(run, 250)
+  }
+
+  function commitEditorText(nextText: string, nextSelection?: TextSelection) {
+    const currentDraft = latestDraftRef.current
+    if (nextText !== currentDraft) {
+      setMarkdownUndoStack((current) => [...current, currentDraft])
+      setMarkdownRedoStack([])
+    }
+    setEditorDraft(nextText)
+    queueDraftSync(nextText)
     if (nextSelection) {
       setSelection(nextSelection)
     }
   }
 
+  async function flushEditorDraft() {
+    queueDraftSync(latestDraftRef.current, true)
+  }
+
   function handleSelectionChange(event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) {
     const nextSelection = event.nativeEvent.selection
     setSelection({ start: nextSelection.start, end: nextSelection.end })
+    if (!isMarkdownMode) {
+      sendCursor({ offset: null, blockId: null })
+      return
+    }
     sendCursor({ offset: nextSelection.end })
   }
 
+  function handleRichEditorChange(nextMarkdown: string) {
+    commitEditorText(nextMarkdown)
+  }
+
+  function handleRichCursorChange(offset: number | null) {
+    sendCursor({ offset })
+  }
+
   async function runMarkdownTransform(transform: (text: string, nextSelection: TextSelection) => { text: string; selection?: TextSelection }) {
-    const currentSelection = normalizeSelection(selection, editorText)
-    const result = transform(editorText, currentSelection)
-    await commitEditorText(result.text, result.selection)
+    const currentSelection = normalizeSelection(selection, editorDraft)
+    const result = transform(editorDraft, currentSelection)
+    commitEditorText(result.text, result.selection)
   }
 
   async function applyHeaderLevel(level: '1' | '2' | '3') {
@@ -222,11 +378,16 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
       setShowHeaderPicker(false)
       return
     }
-    await runMarkdownTransform((text, currentSelection) => prefixCurrentLine(text, currentSelection, `${'#'.repeat(Number(level))} `))
+    setRichEditorCommand({ id: `heading-${Date.now()}`, type: 'heading', level })
     setShowHeaderPicker(false)
   }
 
   async function applyListStyle(style: 'bullet' | 'dash' | 'checkbox') {
+    if (isMarkdownMode) {
+      setRichEditorCommand({ id: `list-${Date.now()}`, type: 'list', style })
+      setShowListPicker(false)
+      return
+    }
     const prefix = style === 'bullet' ? '* ' : style === 'dash' ? '- ' : '- [ ] '
     await runMarkdownTransform((text, currentSelection) => prefixCurrentLine(text, currentSelection, prefix))
     setShowListPicker(false)
@@ -241,52 +402,74 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
         setShowListPicker(true)
         return
       case 'undo': {
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `undo-${Date.now()}`, type: 'undo' })
+          return
+        }
         const previous = markdownUndoStack[markdownUndoStack.length - 1]
         if (!previous) return
         setMarkdownUndoStack((current) => current.slice(0, -1))
-        setMarkdownRedoStack((current) => [...current, note.markdown])
-        await updateMarkdown(previous)
+        setMarkdownRedoStack((current) => [...current, editorDraft])
+        commitEditorText(previous)
         return
       }
       case 'redo': {
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `redo-${Date.now()}`, type: 'redo' })
+          return
+        }
         const next = markdownRedoStack[markdownRedoStack.length - 1]
         if (!next) return
         setMarkdownRedoStack((current) => current.slice(0, -1))
-        setMarkdownUndoStack((current) => [...current, note.markdown])
-        await updateMarkdown(next)
+        setMarkdownUndoStack((current) => [...current, editorDraft])
+        commitEditorText(next)
         return
       }
       case 'bold':
-        if (!isMarkdownMode) return
-        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '**'))
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `bold-${Date.now()}`, type: 'bold' })
+          return
+        }
         return
       case 'italic':
-        if (!isMarkdownMode) return
-        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '*'))
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `italic-${Date.now()}`, type: 'italic' })
+          return
+        }
         return
       case 'underline':
-        if (!isMarkdownMode) return
-        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '<u>', '</u>'))
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `underline-${Date.now()}`, type: 'underline' })
+          return
+        }
         return
       case 'strike':
-        if (!isMarkdownMode) return
-        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '~~'))
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `strike-${Date.now()}`, type: 'strike' })
+          return
+        }
         return
       case 'quote':
-        await runMarkdownTransform((text, currentSelection) => prefixCurrentLine(text, currentSelection, '> '))
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `quote-${Date.now()}`, type: 'quote' })
+          return
+        }
         return
       case 'link':
         if (!isMarkdownMode) return
         setShowLinkEditor(true)
         return
       case 'table':
-        await runMarkdownTransform((text, currentSelection) =>
-          surroundCurrentLine(text, currentSelection, '| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |', ''),
-        )
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `table-${Date.now()}`, type: 'table' })
+          return
+        }
         return
       case 'code':
-        if (!isMarkdownMode) return
-        await runMarkdownTransform((text, currentSelection) => surroundCurrentLine(text, currentSelection, '```', '```'))
+        if (isMarkdownMode) {
+          setRichEditorCommand({ id: `code-${Date.now()}`, type: 'code' })
+          return
+        }
         return
     }
   }
@@ -311,9 +494,15 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
               <TouchableOpacity
                 key={mode}
                 style={[styles.modeToggleButton, editorMode === mode ? styles.modeToggleButtonActive : null]}
-                onPress={() => setEditorMode(mode)}
+                onPress={() => {
+                  if (mode === 'rich') {
+                    sendCursor({ offset: null, blockId: null })
+                    void flushEditorDraft()
+                  }
+                  setEditorMode(mode)
+                }}
               >
-                <Text style={styles.modeToggleText}>{mode === 'markdown' ? 'MD' : 'TXT'}</Text>
+                <Text style={styles.modeToggleText}>{mode === 'rich' ? 'MD' : 'TXT'}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -336,8 +525,9 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
               key={item.key}
               style={[
                 styles.toolbarButton,
-                !isMarkdownMode && !['undo', 'redo', 'quote', 'list'].includes(item.key) ? styles.toolbarButtonDisabled : null,
+                !isMarkdownMode ? styles.toolbarButtonDisabled : null,
               ]}
+              disabled={!isMarkdownMode}
               onPress={() => void applyToolbarAction(item.key)}
             >
               {typeof item.content === 'string' ? (
@@ -381,17 +571,31 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
       ) : null}
 
       <View style={styles.editorStage}>
-        <TextInput
-          multiline
-          autoFocus={isMarkdownMode}
-          style={[styles.editor, isMarkdownMode ? styles.markdownEditor : styles.txtEditor]}
-          value={editorText}
-          onChangeText={(value) => void commitEditorText(value)}
-          onSelectionChange={handleSelectionChange}
-          textAlignVertical="top"
-          placeholder={isMarkdownMode ? 'Edit markdown' : 'Edit plain text'}
-          placeholderTextColor={screenColors.muted}
-        />
+        {isMarkdownMode ? (
+          <NotesRichEditor
+            markdown={editorDraft}
+            onMarkdownChange={handleRichEditorChange}
+            onCursorChange={handleRichCursorChange}
+            command={richEditorCommand}
+            style={styles.richEditorWrap}
+          />
+        ) : (
+          <TextInput
+            multiline
+            autoFocus
+            style={[styles.editor, styles.txtEditor]}
+            value={editorDraft}
+            onChangeText={commitEditorText}
+            onSelectionChange={handleSelectionChange}
+            onBlur={() => {
+              sendCursor({ offset: null, blockId: null })
+              void flushEditorDraft()
+            }}
+            textAlignVertical="top"
+            placeholder="Edit plain text"
+            placeholderTextColor={screenColors.muted}
+          />
+        )}
       </View>
 
       <Modal visible={showHeaderPicker} transparent animationType={animationType} onRequestClose={() => setShowHeaderPicker(false)}>
@@ -413,13 +617,19 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
             <Text style={styles.popoverTitle}>Note title</Text>
             <TextInput
               style={styles.popoverInput}
-              value={note.title}
-              onChangeText={(value) => void updateNoteTitle(value)}
+              value={titleDraft}
+              onChangeText={setTitleDraft}
               placeholder="Untitled note"
               placeholderTextColor={screenColors.muted}
               autoFocus
             />
-            <TouchableOpacity style={styles.popoverPrimary} onPress={() => setShowTitleEditor(false)}>
+            <TouchableOpacity
+              style={styles.popoverPrimary}
+              onPress={() => {
+                void updateNoteTitle(titleDraft.trim() || 'Untitled note')
+                setShowTitleEditor(false)
+              }}
+            >
               <Text style={styles.popoverPrimaryText}>Done</Text>
             </TouchableOpacity>
           </Pressable>
@@ -459,7 +669,12 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
             <TouchableOpacity
               style={styles.popoverPrimary}
               onPress={() => {
-                void runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '[', `](${linkDraft.trim() || 'https://'})`))
+                const url = linkDraft.trim() || 'https://'
+                if (isMarkdownMode) {
+                  setRichEditorCommand({ id: `link-${Date.now()}`, type: 'link', url })
+                } else {
+                  void runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '[', `](${url})`))
+                }
                 setShowLinkEditor(false)
               }}
             >
@@ -849,6 +1064,9 @@ const styles = StyleSheet.create({
   editorStage: {
     flex: 1,
   },
+  richEditorWrap: {
+    flex: 1,
+  },
   editor: {
     flex: 1,
     color: screenColors.text,
@@ -857,11 +1075,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 24,
     textAlignVertical: 'top',
-  },
-  markdownEditor: {
-    fontFamily: Platform.select({ ios: 'Times New Roman', default: 'serif' }),
-    fontSize: 17,
-    lineHeight: 30,
   },
   txtEditor: {
     fontFamily: Platform.select({ ios: 'Menlo', default: 'monospace' }),

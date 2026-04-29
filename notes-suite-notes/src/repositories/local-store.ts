@@ -198,6 +198,11 @@ export async function removeQueuedOperation(id: string) {
   await database.runAsync('DELETE FROM queued_operations WHERE id = ?', [id])
 }
 
+export async function removeQueuedOperationsForNote(noteId: string) {
+  const database = await openDatabase()
+  await database.runAsync('DELETE FROM queued_operations WHERE note_id = ?', [noteId])
+}
+
 export async function saveConflict(conflict: SyncConflictRecord) {
   const database = await openDatabase()
   await database.runAsync(

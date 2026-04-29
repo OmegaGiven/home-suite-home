@@ -29,6 +29,7 @@ import {
   listServerAccounts,
   queueOperation,
   removeQueuedOperation,
+  removeQueuedOperationsForNote,
   saveBinding,
   saveConflict,
   saveServerAccount,
@@ -126,17 +127,6 @@ function splitMarkdownBlocks(markdown: string) {
     .filter((text, index, all) => text.length > 0 || all.length === 1 || index === 0)
 }
 
-function inferBlockKind(text: string): LocalNoteRecord['document']['blocks'][number]['kind'] {
-  if (text.startsWith('```')) return 'code'
-  if (text.startsWith('>')) return 'quote'
-  if (text.startsWith('- [')) return 'checklist'
-  if (text.startsWith('- ') || text.startsWith('* ')) return 'bullet_list'
-  if (/^\d+\.\s/.test(text)) return 'numbered_list'
-  if (text.startsWith('|')) return 'table'
-  if (text.startsWith('#')) return 'heading'
-  return 'paragraph'
-}
-
 function visibleBlocks(document: LocalNoteRecord['document']) {
   return [...document.blocks]
     .filter((block) => !block.deleted)
@@ -146,13 +136,70 @@ function visibleBlocks(document: LocalNoteRecord['document']) {
 type TargetBlockDraft = {
   text: string
   kind: LocalNoteRecord['document']['blocks'][number]['kind']
+  attrs: Record<string, string>
+}
+
+function parseTargetBlock(rawText: string): TargetBlockDraft {
+  const text = rawText.replace(/\u00a0/g, ' ')
+  const headingMatch = text.match(/^(#{1,6})\s+(.*)$/)
+  if (headingMatch) {
+    return {
+      kind: 'heading',
+      text: headingMatch[2],
+      attrs: { level: headingMatch[1] },
+    }
+  }
+  if (/^>\s?/.test(text)) {
+    return {
+      kind: 'quote',
+      text: text.replace(/^>\s?/, ''),
+      attrs: {},
+    }
+  }
+  if (/^- \[ \]\s?/.test(text)) {
+    return {
+      kind: 'checklist',
+      text: text.replace(/^- \[ \]\s?/, ''),
+      attrs: {},
+    }
+  }
+  if (/^[-*]\s+/.test(text)) {
+    return {
+      kind: 'bullet_list',
+      text: text.replace(/^[-*]\s+/, ''),
+      attrs: {},
+    }
+  }
+  if (/^\d+\.\s+/.test(text)) {
+    return {
+      kind: 'numbered_list',
+      text: text.replace(/^\d+\.\s+/, ''),
+      attrs: {},
+    }
+  }
+  if (text.startsWith('```') && text.endsWith('```')) {
+    return {
+      kind: 'code',
+      text: text.replace(/^```[\r\n]?/, '').replace(/[\r\n]?```$/, ''),
+      attrs: {},
+    }
+  }
+  if (/^\|/.test(text)) {
+    return {
+      kind: 'table',
+      text,
+      attrs: {},
+    }
+  }
+  return {
+    kind: 'paragraph',
+    text,
+    attrs: {},
+  }
 }
 
 function buildTargetBlocks(markdown: string): TargetBlockDraft[] {
-  return splitMarkdownBlocks(markdown).map((text) => ({
-    text,
-    kind: inferBlockKind(text),
-  }))
+  return splitMarkdownBlocks(markdown).map((text) => parseTargetBlock(text))
 }
 
 type DiffStep =
@@ -177,8 +224,9 @@ function buildBlockDiffSteps(
       const current = currentBlocks[i - 1]
       const target = targetBlocks[j - 1]
       const sameKind = current.kind === target.kind
-      const exact = sameKind && current.text === target.text
-      const updateCost = sameKind ? 1 : Number.POSITIVE_INFINITY
+      const sameAttrs = JSON.stringify(current.attrs ?? {}) === JSON.stringify(target.attrs ?? {})
+      const exact = sameKind && sameAttrs && current.text === target.text
+      const updateCost = sameKind ? (sameAttrs ? 1 : 2) : Number.POSITIVE_INFINITY
       costs[i][j] = Math.min(
         costs[i - 1][j] + 1,
         costs[i][j - 1] + 1,
@@ -195,8 +243,9 @@ function buildBlockDiffSteps(
       const current = currentBlocks[i - 1]
       const target = targetBlocks[j - 1]
       const sameKind = current.kind === target.kind
-      const exact = sameKind && current.text === target.text
-      const updateCost = sameKind ? 1 : Number.POSITIVE_INFINITY
+      const sameAttrs = JSON.stringify(current.attrs ?? {}) === JSON.stringify(target.attrs ?? {})
+      const exact = sameKind && sameAttrs && current.text === target.text
+      const updateCost = sameKind ? (sameAttrs ? 1 : 2) : Number.POSITIVE_INFINITY
       if (costs[i][j] === costs[i - 1][j - 1] + (exact ? 0 : updateCost)) {
         steps.push({
           type: exact ? 'keep' : 'update',
@@ -246,11 +295,20 @@ function buildGranularOperations(
       const target = targetBlocks[step.targetIndex]
       const current = simulated[simulatedIndex]
       if (!current || current.kind !== target.kind) return null
-      operations.push({
-        type: 'update_block_text',
-        block_id: current.id,
-        text: target.text,
-      })
+      if (JSON.stringify(current.attrs ?? {}) !== JSON.stringify(target.attrs ?? {})) {
+        operations.push({
+          type: 'update_block_attrs',
+          block_id: current.id,
+          attrs: target.attrs,
+        })
+      }
+      if (current.text !== target.text) {
+        operations.push({
+          type: 'update_block_text',
+          block_id: current.id,
+          text: target.text,
+        })
+      }
       simulatedIndex += 1
       continue
     }
@@ -273,7 +331,7 @@ function buildGranularOperations(
         id: insertedId,
         kind: target.kind,
         text: target.text,
-        attrs: {},
+        attrs: target.attrs,
         order: simulatedIndex,
         deleted: false,
         last_modified_by: actorId,
@@ -284,7 +342,7 @@ function buildGranularOperations(
       id: insertedId,
       kind: target.kind,
       text: target.text,
-      attrs: {},
+      attrs: target.attrs,
       order: simulatedIndex,
       deleted: false,
       last_modified_by: actorId,
@@ -302,13 +360,13 @@ function buildMarkdownBatch(
   markdown: string,
   clientId: string,
   actorId: string,
-): NoteDocumentOperationBatch {
+): NoteDocumentOperationBatch | null {
   const baseClock = { ...note.document.clock }
   const currentBlocks = visibleBlocks(note.document)
   const targetBlocks = buildTargetBlocks(markdown)
   const nextDocument = documentFromMarkdown(markdown, actorId)
   const granularOperations = buildGranularOperations(note, currentBlocks, targetBlocks, actorId)
-  if (granularOperations) {
+  if (granularOperations && granularOperations.length > 0) {
     return {
       actor_id: actorId,
       client_id: clientId,
@@ -318,6 +376,10 @@ function buildMarkdownBatch(
       base_document: note.document,
       operations: granularOperations,
     }
+  }
+
+  if (note.markdown === markdown) {
+    return null
   }
 
   return {
@@ -348,6 +410,11 @@ function normalizeAppearance(value: Partial<Appearance> | null | undefined): App
   }
 }
 
+function isMissingRemoteNoteError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('HTTP 404') || /note not found|not found/i.test(message)
+}
+
 function createFallbackNote(existingCount: number) {
   return {
     id: createId('note'),
@@ -360,6 +427,48 @@ function createFallbackNote(existingCount: number) {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   } satisfies LocalNoteRecord
+}
+
+function mergeConcurrentMarkdown(baseMarkdown: string, localMarkdown: string, remoteMarkdown: string) {
+  if (localMarkdown === remoteMarkdown) {
+    return localMarkdown
+  }
+  if (localMarkdown === baseMarkdown) {
+    return remoteMarkdown
+  }
+  if (remoteMarkdown === baseMarkdown) {
+    return localMarkdown
+  }
+
+  const baseLines = baseMarkdown.split('\n')
+  const localLines = localMarkdown.split('\n')
+  const remoteLines = remoteMarkdown.split('\n')
+  const maxLength = Math.max(baseLines.length, localLines.length, remoteLines.length)
+  const merged: string[] = []
+
+  for (let index = 0; index < maxLength; index += 1) {
+    const baseLine = baseLines[index]
+    const localLine = localLines[index]
+    const remoteLine = remoteLines[index]
+
+    if (localLine === remoteLine) {
+      if (localLine !== undefined) merged.push(localLine)
+      continue
+    }
+    if (localLine === baseLine) {
+      if (remoteLine !== undefined) merged.push(remoteLine)
+      continue
+    }
+    if (remoteLine === baseLine) {
+      if (localLine !== undefined) merged.push(localLine)
+      continue
+    }
+
+    if (remoteLine !== undefined) merged.push(remoteLine)
+    if (localLine !== undefined) merged.push(localLine)
+  }
+
+  return merged.join('\n')
 }
 
 export function NotesAppProvider({ children }: PropsWithChildren) {
@@ -381,6 +490,8 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   const sessionIdRef = useRef<string | null>(null)
   const notesRef = useRef<LocalNoteRecord[]>([])
   const selectedNoteRef = useRef<LocalNoteRecord | null>(null)
+  const lastCursorPayloadRef = useRef<{ noteId: string; offset: number | null; blockId: string | null } | null>(null)
+  const lastCursorSentAtRef = useRef(0)
 
   const selectedNote = useMemo(
     () => notes.find((note) => note.id === selectedNoteId) ?? notes[0] ?? null,
@@ -397,6 +508,10 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       }
     }
     return 'local-user'
+  }
+
+  function currentSelectedNote() {
+    return selectedNoteRef.current
   }
 
   useEffect(() => {
@@ -464,9 +579,29 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     if (!ready) return
     const timer = setInterval(() => {
       void flushQueuedOperations()
-    }, 4000)
+    }, 2000)
     return () => clearInterval(timer)
   }, [ready, serverAccounts, notes])
+
+  useEffect(() => {
+    if (!ready) return
+      const timer = setInterval(() => {
+        const now = Date.now()
+        setPresenceSessions((current) =>
+          current.filter((entry) => {
+            const lastSeen = entry.last_seen_at ? new Date(entry.last_seen_at).getTime() : now
+            return now - lastSeen < 30000
+          }),
+        )
+        setRemoteCursors((current) =>
+          current.filter((entry) => {
+            const updatedAt = entry.updated_at ? new Date(entry.updated_at).getTime() : now
+            return now - updatedAt < 12000
+          }),
+        )
+      }, 3000)
+    return () => clearInterval(timer)
+  }, [ready])
 
   useEffect(() => {
     if (!ready || serverAccounts.length === 0) return
@@ -501,8 +636,57 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       const filtered = current.filter(
         (entry) => !(entry.client_id === nextCursor.client_id && entry.note_id === nextCursor.note_id),
       )
+      if (nextCursor.offset === null && !nextCursor.block_id) {
+        return filtered
+      }
       return [...filtered, nextCursor]
     })
+  }
+
+  function activeIdentityForNote(note: LocalNoteRecord) {
+    if (!note.selected_server_identity_id) return null
+    for (const account of serverAccounts) {
+      const identity = account.identities.find((entry) => entry.id === note.selected_server_identity_id)
+      if (identity) return identity
+    }
+    return null
+  }
+
+  async function recreateRemoteBinding(
+    note: LocalNoteRecord,
+    binding: NoteBinding,
+    account: ServerAccount,
+    identity: ServerAccount['identities'][number],
+  ) {
+    const remote = await createRemoteNote(account.base_url, identity.token, {
+      title: note.title,
+      folder: note.folder,
+      markdown: note.markdown,
+      document: note.document,
+      visibility: note.visibility,
+    })
+    const repairedBinding: NoteBinding = {
+      ...binding,
+      remote_note_id: remote.id,
+      remote_revision: remote.revision,
+      last_pulled_at: remote.updated_at,
+      last_pushed_at: remote.updated_at,
+    }
+    await saveBinding(repairedBinding)
+    await removeQueuedOperationsForNote(note.id)
+    const repairedNote: LocalNoteRecord = {
+      ...note,
+      storage_mode: 'synced',
+      selected_server_identity_id: identity.id,
+      updated_at: remote.updated_at,
+    }
+    await upsertNote(repairedNote)
+    setNotes((current) => current.map((entry) => (entry.id === repairedNote.id ? repairedNote : entry)))
+    return {
+      note: repairedNote,
+      binding: repairedBinding,
+      remote,
+    }
   }
 
   async function hydrateAndConnectNote(noteId: string) {
@@ -589,7 +773,17 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         await saveConflict(conflict)
       }
       setConflicts(await listConflicts())
-    } catch {
+    } catch (error) {
+      if (isMissingRemoteNoteError(error)) {
+        const current = notesRef.current.find((entry) => entry.id === noteId)
+        if (current) {
+          try {
+            await recreateRemoteBinding(current, binding, account, identity)
+          } catch {
+            // Fall back to local-only behavior until the next retry.
+          }
+        }
+      }
       // Offline or unreachable server; local note remains authoritative for now.
     }
   }
@@ -733,6 +927,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     setSelectedNoteId(note.id)
     if (options?.syncToServer) {
       await linkNoteRecordToFirstServer(note)
+      await hydrateAndConnectNote(note.id)
     }
   }
 
@@ -741,14 +936,15 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function updateSelectedNoteVisibility(value: 'private' | 'org' | 'users') {
-    if (!selectedNote) return
+    const note = currentSelectedNote()
+    if (!note) return
     const next = {
-      ...selectedNote,
+      ...note,
       visibility: value,
       updated_at: new Date().toISOString(),
     }
     await persistNote(next)
-    const binding = await getBinding(selectedNote.id)
+    const binding = await getBinding(note.id)
     if (!binding?.remote_note_id || !binding.server_identity_id) return
     const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
     const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
@@ -775,6 +971,49 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     if (batch) {
       const binding = await getBinding(next.id)
       if (binding?.server_identity_id) {
+        const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
+        const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
+        if (account && identity && binding.remote_note_id) {
+          try {
+            const response = await pushNoteOperations(account.base_url, identity.token, binding.remote_note_id, batch)
+            if (response.conflicts.length > 0) {
+              for (const conflict of response.conflicts) {
+                await saveConflict(conflict)
+              }
+              setConflicts(await listConflicts())
+            }
+            const authoritativeNote: LocalNoteRecord = {
+              ...next,
+              title: response.note.title,
+              folder: response.note.folder,
+              markdown: response.note.markdown,
+              document: response.note.document,
+              updated_at: response.note.updated_at,
+            }
+            const nextBinding: NoteBinding = {
+              ...binding,
+              remote_revision: response.note.revision,
+              last_pulled_at: response.note.updated_at,
+              last_pushed_at: response.note.updated_at,
+            }
+            await saveBinding(nextBinding)
+            await upsertNote(authoritativeNote)
+            await removeQueuedOperationsForNote(next.id)
+            setNotes((current) => current.map((note) => (note.id === authoritativeNote.id ? authoritativeNote : note)))
+            setSaveStatus('saved')
+            return
+          } catch (error) {
+            if (isMissingRemoteNoteError(error)) {
+              try {
+                await recreateRemoteBinding(next, binding, account, identity)
+                setSaveStatus('saved')
+                return
+              } catch {
+                // Fall through to queued retry below.
+              }
+            }
+          }
+        }
         await queueOperation({
           id: createId('queued-op'),
           note_id: next.id,
@@ -792,14 +1031,15 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function updateNoteTitle(value: string) {
-    if (!selectedNote) return
+    const note = currentSelectedNote()
+    if (!note) return
     const next = {
-      ...selectedNote,
+      ...note,
       title: value,
       updated_at: new Date().toISOString(),
     }
     await persistNote(next)
-    const binding = await getBinding(selectedNote.id)
+    const binding = await getBinding(note.id)
     if (!binding?.remote_note_id || !binding.server_identity_id) return
     const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
     const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
@@ -823,31 +1063,34 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function updateMarkdown(value: string) {
-    if (!selectedNote) return
-    const actorId = actorIdForNote(selectedNote)
+    const note = currentSelectedNote()
+    if (!note) return
+    if (value === note.markdown) return
+    const actorId = actorIdForNote(note)
     const document = documentFromMarkdown(value, actorId)
-    const batch = buildMarkdownBatch(selectedNote, value, clientIdRef.current, actorId)
+    const batch = buildMarkdownBatch(note, value, clientIdRef.current, actorId)
     await persistNote(
       {
-        ...selectedNote,
+        ...note,
         markdown: value,
         document,
         updated_at: new Date().toISOString(),
       },
-      batch,
+      batch ?? undefined,
     )
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const binding = await getBinding(selectedNote.id)
+    if (batch && wsRef.current?.readyState === WebSocket.OPEN) {
+      const binding = await getBinding(note.id)
       if (binding?.remote_note_id) {
+        const identity = activeIdentityForNote(note)
         const event: RealtimeEvent = {
           type: 'note_operations',
           note_id: binding.remote_note_id,
-          title: selectedNote.title,
-          folder: selectedNote.folder,
+          title: note.title,
+          folder: note.folder,
           markdown: value,
           revision: 0,
           client_id: clientIdRef.current,
-          user: 'You',
+          user: identity?.user.display_name ?? 'You',
           batch,
           document,
         }
@@ -857,30 +1100,33 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function replaceSelectedDocument(document: LocalNoteRecord['document']) {
-    if (!selectedNote) return
+    const note = currentSelectedNote()
+    if (!note) return
     const markdown = markdownFromDocument(document)
-    const batch = buildMarkdownBatch(selectedNote, markdown, clientIdRef.current, actorIdForNote(selectedNote))
+    if (markdown === note.markdown) return
+    const batch = buildMarkdownBatch(note, markdown, clientIdRef.current, actorIdForNote(note))
     await persistNote(
       {
-        ...selectedNote,
+        ...note,
         document,
         markdown,
         updated_at: new Date().toISOString(),
       },
-      batch,
+      batch ?? undefined,
     )
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const binding = await getBinding(selectedNote.id)
+    if (batch && wsRef.current?.readyState === WebSocket.OPEN) {
+      const binding = await getBinding(note.id)
       if (binding?.remote_note_id) {
+        const identity = activeIdentityForNote(note)
         const event: RealtimeEvent = {
           type: 'note_operations',
           note_id: binding.remote_note_id,
-          title: selectedNote.title,
-          folder: selectedNote.folder,
+          title: note.title,
+          folder: note.folder,
           markdown,
           revision: 0,
           client_id: clientIdRef.current,
-          user: 'You',
+          user: identity?.user.display_name ?? 'You',
           batch,
           document,
         }
@@ -890,21 +1136,22 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function updateBlockText(blockId: string, text: string) {
-    if (!selectedNote) return
-    const actorId = actorIdForNote(selectedNote)
+    const note = currentSelectedNote()
+    if (!note) return
+    const actorId = actorIdForNote(note)
     const batch: NoteDocumentOperationBatch = {
       actor_id: actorId,
       client_id: clientIdRef.current,
       operation_id: createId('op'),
-      base_clock: selectedNote.document.clock,
-      base_markdown: selectedNote.markdown,
-      base_document: selectedNote.document,
+      base_clock: note.document.clock,
+      base_markdown: note.markdown,
+      base_document: note.document,
       operations: [{ type: 'update_block_text', block_id: blockId, text }],
     }
-    const document = applyOperationsToDocument(selectedNote.document, batch)
+    const document = applyOperationsToDocument(note.document, batch)
     await persistNote(
       {
-        ...selectedNote,
+        ...note,
         document,
         markdown: markdownFromDocument(document),
         updated_at: new Date().toISOString(),
@@ -912,17 +1159,18 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       batch,
     )
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const binding = await getBinding(selectedNote.id)
+      const binding = await getBinding(note.id)
       if (binding?.remote_note_id) {
+        const identity = activeIdentityForNote(note)
         const event: RealtimeEvent = {
           type: 'note_operations',
           note_id: binding.remote_note_id,
-          title: selectedNote.title,
-          folder: selectedNote.folder,
+          title: note.title,
+          folder: note.folder,
           markdown: markdownFromDocument(document),
           revision: 0,
           client_id: clientIdRef.current,
-          user: 'You',
+          user: identity?.user.display_name ?? 'You',
           batch,
           document,
         }
@@ -932,16 +1180,40 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   function sendCursor(cursor: { offset: number | null; blockId?: string | null }) {
-    if (!selectedNote || wsRef.current?.readyState !== WebSocket.OPEN) return
+    const note = currentSelectedNote()
+    if (!note || wsRef.current?.readyState !== WebSocket.OPEN) return
+    const normalized = {
+      noteId: note.id,
+      offset: cursor.offset,
+      blockId: cursor.blockId ?? null,
+    }
+    const previous = lastCursorPayloadRef.current
+    if (
+      previous &&
+      previous.noteId === normalized.noteId &&
+      previous.offset === normalized.offset &&
+      previous.blockId === normalized.blockId
+    ) {
+      return
+    }
+    const now = Date.now()
+    if (now - lastCursorSentAtRef.current < 60) {
+      return
+    }
+    lastCursorPayloadRef.current = normalized
+    lastCursorSentAtRef.current = now
     void (async () => {
-      const binding = await getBinding(selectedNote.id)
+      const binding = await getBinding(note.id)
       if (!binding?.remote_note_id) return
+      const identity = activeIdentityForNote(note)
       const event: RealtimeEvent = {
         type: 'note_cursor',
         note_id: binding.remote_note_id,
-        user: 'You',
+        user: identity?.user.display_name ?? 'You',
         client_id: clientIdRef.current,
         offset: cursor.offset,
+        user_id: identity?.user.id ?? null,
+        avatar_path: identity?.user.avatar_path ?? null,
         session_id: sessionIdRef.current,
         block_id: cursor.blockId ?? null,
         updated_at: new Date().toISOString(),
@@ -1065,6 +1337,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   async function linkSelectedNoteToServer() {
     if (!selectedNote) return
     await linkNoteRecordToFirstServer(selectedNote)
+    await hydrateAndConnectNote(selectedNote.id)
   }
 
   async function flushQueuedOperations() {
@@ -1091,10 +1364,19 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         await removeQueuedOperation(operation.id)
         const note = notesRef.current.find((entry) => entry.id === operation.note_id)
         if (note) {
+          const mergedMarkdown = mergeConcurrentMarkdown(
+            operation.batch.base_markdown ?? note.markdown,
+            note.markdown,
+            response.note.markdown,
+          )
+          const mergedDocument =
+            mergedMarkdown === response.note.markdown
+              ? response.note.document
+              : documentFromMarkdown(mergedMarkdown, actorIdForNote(note))
           const nextNote: LocalNoteRecord = {
             ...note,
-            markdown: response.note.markdown,
-            document: response.note.document,
+            markdown: mergedMarkdown,
+            document: mergedDocument,
             updated_at: response.note.updated_at,
           }
           const nextBinding: NoteBinding = {
@@ -1104,10 +1386,22 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
           }
           await saveBinding(nextBinding)
           await upsertNote(nextNote)
+          await removeQueuedOperationsForNote(operation.note_id)
           setNotes((current) => current.map((entry) => (entry.id === operation.note_id ? nextNote : entry)))
         }
-      } catch {
-        // Keep queued operation for retry.
+      } catch (error) {
+        if (isMissingRemoteNoteError(error)) {
+          const note = notesRef.current.find((entry) => entry.id === operation.note_id)
+          if (note) {
+            try {
+              await recreateRemoteBinding(note, binding, account, identity)
+              await removeQueuedOperation(operation.id)
+              continue
+            } catch {
+              // Keep queued operation for retry.
+            }
+          }
+        }
       }
     }
   }

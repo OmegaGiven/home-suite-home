@@ -491,6 +491,16 @@ function App() {
       actorId,
       clientIdRef.current,
     )
+    if (!batch) {
+      return {
+        note: {
+          ...authoritativeNote,
+          title: localNote.title,
+          folder: localNote.folder,
+        },
+        hadConflict: false,
+      }
+    }
 
     if (!batch.operations.some((operation) => operation.type === 'replace_document')) {
       const document = applyNoteOperationBatch(authoritativeNote.document, batch)
@@ -1190,6 +1200,9 @@ function App() {
   }
 
   async function updateNoteLocalFirst(note: Note, payload: { markdown: string; folder: string }, _options?: { keepalive?: boolean }) {
+    if (payload.markdown === note.markdown && payload.folder === note.folder) {
+      return note
+    }
     const actorId = session?.user.id ?? note.last_editor_id
     const nextDocument = noteDocumentFromMarkdown(note.id, payload.markdown, actorId, note.document)
     const updated: Note = {
@@ -1201,17 +1214,18 @@ function App() {
       updated_at: new Date().toISOString(),
       last_editor_id: session?.user.id ?? note.last_editor_id,
     }
+    const batch = buildReplaceDocumentBatch(
+      note,
+      updated,
+      payload.markdown,
+      actorId,
+      clientIdRef.current,
+    )
+    if (!batch) {
+      return updated
+    }
     if (getConnectivityState()) {
-      const response = await api.pushNoteOperations(
-        note.id,
-        buildReplaceDocumentBatch(
-          note,
-          updated,
-          payload.markdown,
-          actorId,
-          clientIdRef.current,
-        ),
-      )
+      const response = await api.pushNoteOperations(note.id, batch)
       if (!response.applied) {
         throw new Error('note forked due to conflicting block edits')
       }
@@ -1220,7 +1234,7 @@ function App() {
     await queueSyncOperation({
       kind: 'apply_note_operations',
       id: note.id,
-      batch: buildReplaceDocumentBatch(note, updated, updated.markdown, actorId, clientIdRef.current),
+      batch,
     })
     return updated
   }

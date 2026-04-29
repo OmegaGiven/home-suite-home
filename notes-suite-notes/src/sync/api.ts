@@ -49,7 +49,8 @@ async function requestJson<T>(url: string, init?: RequestInit, token?: string): 
     },
   })
   if (!response.ok) {
-    throw new Error(await response.text())
+    const body = await response.text()
+    throw new Error(`HTTP ${response.status}: ${body}`)
   }
   return response.json() as Promise<T>
 }

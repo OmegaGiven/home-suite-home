@@ -1,14 +1,68 @@
 import type { Note, NoteBlock, NoteBlockKind, NoteDocument, NoteDocumentOperationBatch } from './types'
 
-function inferBlockKind(text: string): NoteBlockKind {
-  if (text.startsWith('```')) return 'code'
-  if (text.startsWith('>')) return 'quote'
-  if (text.startsWith('- [')) return 'checklist'
-  if (text.startsWith('- ') || text.startsWith('* ')) return 'bullet_list'
-  if (/^\d+\.\s/.test(text)) return 'numbered_list'
-  if (text.startsWith('|')) return 'table'
-  if (text.startsWith('#')) return 'heading'
-  return 'paragraph'
+type ParsedBlock = {
+  kind: NoteBlockKind
+  text: string
+  attrs: Record<string, string>
+}
+
+function parseMarkdownBlock(rawText: string): ParsedBlock {
+  const text = rawText.replace(/\u00a0/g, ' ')
+  const headingMatch = text.match(/^(#{1,6})\s+(.*)$/)
+  if (headingMatch) {
+    return {
+      kind: 'heading',
+      text: headingMatch[2],
+      attrs: { level: headingMatch[1] },
+    }
+  }
+  if (/^>\s?/.test(text)) {
+    return {
+      kind: 'quote',
+      text: text.replace(/^>\s?/, ''),
+      attrs: {},
+    }
+  }
+  if (/^- \[ \]\s?/.test(text)) {
+    return {
+      kind: 'checklist',
+      text: text.replace(/^- \[ \]\s?/, ''),
+      attrs: {},
+    }
+  }
+  if (/^[-*]\s+/.test(text)) {
+    return {
+      kind: 'bullet_list',
+      text: text.replace(/^[-*]\s+/, ''),
+      attrs: {},
+    }
+  }
+  if (/^\d+\.\s+/.test(text)) {
+    return {
+      kind: 'numbered_list',
+      text: text.replace(/^\d+\.\s+/, ''),
+      attrs: {},
+    }
+  }
+  if (text.startsWith('```') && text.endsWith('```')) {
+    return {
+      kind: 'code',
+      text: text.replace(/^```[\r\n]?/, '').replace(/[\r\n]?```$/, ''),
+      attrs: {},
+    }
+  }
+  if (/^\|/.test(text)) {
+    return {
+      kind: 'table',
+      text,
+      attrs: {},
+    }
+  }
+  return {
+    kind: 'paragraph',
+    text,
+    attrs: {},
+  }
 }
 
 function nextActorCounter(previous: NoteDocument | null | undefined, actorId: string) {
@@ -33,16 +87,19 @@ export function noteDocumentFromMarkdown(
 
   const materializedBlocks: NoteBlock[] =
     blocks.length > 0
-      ? blocks.map((text, index) => ({
+      ? blocks.map((rawText, index) => {
+          const parsed = parseMarkdownBlock(rawText)
+          return {
           id: previous?.blocks[index]?.id ?? `${noteId}:block:${index + 1}`,
-          kind: inferBlockKind(text),
-          text,
-          attrs: previous?.blocks[index]?.attrs ?? {},
+          kind: parsed.kind,
+          text: parsed.text,
+          attrs: Object.keys(parsed.attrs).length > 0 ? parsed.attrs : (previous?.blocks[index]?.attrs ?? {}),
           order: index,
           deleted: false,
           last_modified_by: actorId,
           last_modified_counter: nextCounter,
-        }))
+        }
+      })
       : [
           {
             id: previous?.blocks[0]?.id ?? `${noteId}:block:1`,
@@ -80,7 +137,24 @@ function renumberBlocks(blocks: NoteBlock[]) {
 export function markdownFromNoteDocument(document: NoteDocument) {
   return sortBlocks(document.blocks)
     .filter((block) => !block.deleted)
-    .map((block) => block.text)
+    .map((block) => {
+      switch (block.kind) {
+        case 'heading':
+          return `${block.attrs.level ?? '#'} ${block.text}`.trim()
+        case 'quote':
+          return `> ${block.text}`.trim()
+        case 'bullet_list':
+          return `- ${block.text}`.trim()
+        case 'checklist':
+          return `- [ ] ${block.text}`.trim()
+        case 'numbered_list':
+          return `1. ${block.text}`.trim()
+        case 'code':
+          return `\`\`\`\n${block.text}\n\`\`\``
+        default:
+          return block.text
+      }
+    })
     .join('\n\n')
 }
 
@@ -91,13 +165,11 @@ function visibleBlocks(document: NoteDocument | null | undefined) {
 type TargetBlockDraft = {
   text: string
   kind: NoteBlockKind
+  attrs: Record<string, string>
 }
 
 function buildTargetBlocks(markdown: string): TargetBlockDraft[] {
-  return splitMarkdownBlocks(markdown).map((text) => ({
-    text,
-    kind: inferBlockKind(text),
-  }))
+  return splitMarkdownBlocks(markdown).map((text) => parseMarkdownBlock(text))
 }
 
 type DiffStep =
@@ -118,9 +190,10 @@ function buildBlockDiffSteps(currentBlocks: NoteBlock[], targetBlocks: TargetBlo
     for (let j = 1; j < cols; j += 1) {
       const current = currentBlocks[i - 1]
       const target = targetBlocks[j - 1]
-      const sameKind = current.kind === target.kind && JSON.stringify(current.attrs) === JSON.stringify({})
-      const exact = sameKind && current.text === target.text
-      const updateCost = sameKind ? 1 : Number.POSITIVE_INFINITY
+      const sameKind = current.kind === target.kind
+      const sameAttrs = JSON.stringify(current.attrs ?? {}) === JSON.stringify(target.attrs ?? {})
+      const exact = sameKind && sameAttrs && current.text === target.text
+      const updateCost = sameKind ? (sameAttrs ? 1 : 2) : Number.POSITIVE_INFINITY
       costs[i][j] = Math.min(
         costs[i - 1][j] + 1,
         costs[i][j - 1] + 1,
@@ -136,9 +209,10 @@ function buildBlockDiffSteps(currentBlocks: NoteBlock[], targetBlocks: TargetBlo
     if (i > 0 && j > 0) {
       const current = currentBlocks[i - 1]
       const target = targetBlocks[j - 1]
-      const sameKind = current.kind === target.kind && JSON.stringify(current.attrs) === JSON.stringify({})
-      const exact = sameKind && current.text === target.text
-      const updateCost = sameKind ? 1 : Number.POSITIVE_INFINITY
+      const sameKind = current.kind === target.kind
+      const sameAttrs = JSON.stringify(current.attrs ?? {}) === JSON.stringify(target.attrs ?? {})
+      const exact = sameKind && sameAttrs && current.text === target.text
+      const updateCost = sameKind ? (sameAttrs ? 1 : 2) : Number.POSITIVE_INFINITY
       if (costs[i][j] === costs[i - 1][j - 1] + (exact ? 0 : updateCost)) {
         steps.push({
           type: exact ? 'keep' : 'update',
@@ -189,11 +263,20 @@ function buildGranularOperations(
       const target = targetBlocks[step.targetIndex]
       const current = simulated[simulatedIndex]
       if (!current || current.kind !== target.kind) return null
-      operations.push({
-        type: 'update_block_text',
-        block_id: current.id,
-        text: target.text,
-      })
+      if (JSON.stringify(current.attrs ?? {}) !== JSON.stringify(target.attrs ?? {})) {
+        operations.push({
+          type: 'update_block_attrs',
+          block_id: current.id,
+          attrs: target.attrs,
+        })
+      }
+      if (current.text !== target.text) {
+        operations.push({
+          type: 'update_block_text',
+          block_id: current.id,
+          text: target.text,
+        })
+      }
       simulatedIndex += 1
       continue
     }
@@ -216,7 +299,7 @@ function buildGranularOperations(
         id: insertedId,
         kind: target.kind,
         text: target.text,
-        attrs: {},
+        attrs: target.attrs,
         order: simulatedIndex,
         deleted: false,
         last_modified_by: actorId,
@@ -227,7 +310,7 @@ function buildGranularOperations(
       id: insertedId,
       kind: target.kind,
       text: target.text,
-      attrs: {},
+      attrs: target.attrs,
       order: simulatedIndex,
       deleted: false,
       last_modified_by: actorId,
@@ -365,7 +448,7 @@ export function buildReplaceDocumentBatch(
   markdown: string,
   actorId: string,
   clientId: string,
-): NoteDocumentOperationBatch {
+): NoteDocumentOperationBatch | null {
   const document = noteDocumentFromMarkdown(nextNote.id, markdown, actorId, previousNote.document)
   const currentBlocks = visibleBlocks(previousNote.document)
   const targetBlocks = buildTargetBlocks(markdown)
@@ -393,7 +476,7 @@ export function buildReplaceDocumentBatch(
     actorId,
     nextActorCounter(previousNote.document, actorId),
   )
-  if (granularOperations) {
+  if (granularOperations && granularOperations.length > 0) {
     return {
       actor_id: actorId,
       client_id: clientId,
@@ -403,6 +486,10 @@ export function buildReplaceDocumentBatch(
       base_document: previousNote.document,
       operations: [...operations, ...granularOperations],
     }
+  }
+
+  if (operations.length === 0 && previousNote.markdown === markdown) {
+    return null
   }
 
   return {
