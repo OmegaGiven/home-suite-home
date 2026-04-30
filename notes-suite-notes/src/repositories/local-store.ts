@@ -1,6 +1,12 @@
 import * as SecureStore from 'expo-secure-store'
 import * as SQLite from 'expo-sqlite'
-import type { LocalNoteRecord, NoteBinding, PendingNoteOperationRecord, ServerAccount, SyncConflictRecord } from 'notes-suite-contracts'
+import {
+  type LocalNoteRecord,
+  type NoteBinding,
+  type PendingNoteOperationRecord,
+  type ServerAccount,
+  type SyncConflictRecord,
+} from 'notes-suite-contracts'
 
 const DATABASE_NAME = 'notes-suite-notes.db'
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null
@@ -10,6 +16,38 @@ async function openDatabase() {
     databasePromise = SQLite.openDatabaseAsync(DATABASE_NAME)
   }
   return databasePromise
+}
+
+async function ensureColumn(database: SQLite.SQLiteDatabase, table: string, column: string, definition: string) {
+  try {
+    await database.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (/duplicate column name/i.test(message) || /already exists/i.test(message)) {
+      return
+    }
+    throw error
+  }
+}
+
+function parseQueuedNotePayload(raw: string): PendingNoteOperationRecord['payload'] {
+  const parsed = JSON.parse(raw) as
+    | PendingNoteOperationRecord['payload']
+    | { base_markdown?: string | null }
+
+  if (parsed && typeof parsed === 'object' && 'kind' in parsed && parsed.kind === 'document_update') {
+    return parsed
+  }
+
+  return {
+    kind: 'document_update',
+    editor_format: 'mobile_markdown',
+    content_markdown:
+      parsed && typeof parsed === 'object' && 'base_markdown' in parsed && typeof parsed.base_markdown === 'string'
+        ? parsed.base_markdown
+        : '',
+    content_html: '',
+  }
 }
 
 export async function initializeLocalStore() {
@@ -30,6 +68,13 @@ export async function initializeLocalStore() {
     );
     CREATE TABLE IF NOT EXISTS note_bindings (
       local_note_id TEXT PRIMARY KEY NOT NULL,
+      binding_json TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS note_bindings_v2 (
+      binding_key TEXT PRIMARY KEY NOT NULL,
+      local_note_id TEXT NOT NULL,
+      server_identity_id TEXT,
+      remote_note_id TEXT,
       binding_json TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS queued_operations (
@@ -54,6 +99,21 @@ export async function initializeLocalStore() {
       value_json TEXT NOT NULL
     );
   `)
+  await ensureColumn(database, 'notes', 'editor_format', 'TEXT')
+  await ensureColumn(database, 'notes', 'loro_snapshot_b64', 'TEXT')
+  await ensureColumn(database, 'notes', 'loro_updates_b64_json', 'TEXT')
+  await ensureColumn(database, 'notes', 'loro_version', 'INTEGER')
+  await ensureColumn(database, 'notes', 'loro_needs_migration', 'INTEGER')
+  await database.execAsync(`
+    INSERT OR IGNORE INTO note_bindings_v2 (binding_key, local_note_id, server_identity_id, remote_note_id, binding_json)
+    SELECT
+      local_note_id || '::legacy',
+      local_note_id,
+      NULL,
+      NULL,
+      binding_json
+    FROM note_bindings;
+  `)
 }
 
 export async function listNotes() {
@@ -63,10 +123,15 @@ export async function listNotes() {
     title: string
     folder: string
     markdown: string
-    document_json: string
+    document_json: string | null
     storage_mode: 'local' | 'synced'
     visibility: 'private' | 'org' | 'users'
     selected_server_identity_id: string | null
+    editor_format: string | null
+    loro_snapshot_b64: string | null
+    loro_updates_b64_json: string | null
+    loro_version: number | null
+    loro_needs_migration: number | null
     created_at: string
     updated_at: string
   }>('SELECT * FROM notes ORDER BY updated_at DESC')
@@ -78,10 +143,18 @@ export async function listNotes() {
         title: row.title,
         folder: row.folder,
         markdown: row.markdown,
-        document: JSON.parse(row.document_json),
+        document: row.document_json ? JSON.parse(row.document_json) : undefined,
         storage_mode: row.storage_mode,
         visibility: row.visibility,
         selected_server_identity_id: row.selected_server_identity_id,
+        editor_format: row.editor_format ?? undefined,
+        loro_snapshot_b64: row.loro_snapshot_b64 ?? undefined,
+        loro_updates_b64: row.loro_updates_b64_json ? (JSON.parse(row.loro_updates_b64_json) as string[]) : undefined,
+        loro_version: row.loro_version ?? undefined,
+        loro_needs_migration:
+          row.loro_needs_migration === null || row.loro_needs_migration === undefined
+            ? undefined
+            : Boolean(row.loro_needs_migration),
         created_at: row.created_at,
         updated_at: row.updated_at,
       })
@@ -96,8 +169,12 @@ export async function upsertNote(note: LocalNoteRecord) {
   const database = await openDatabase()
   await database.runAsync(
     `INSERT INTO notes
-      (id, title, folder, markdown, document_json, storage_mode, visibility, selected_server_identity_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (
+        id, title, folder, markdown, document_json, storage_mode, visibility, selected_server_identity_id,
+        editor_format, loro_snapshot_b64, loro_updates_b64_json, loro_version, loro_needs_migration,
+        created_at, updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title=excluded.title,
         folder=excluded.folder,
@@ -106,16 +183,26 @@ export async function upsertNote(note: LocalNoteRecord) {
         storage_mode=excluded.storage_mode,
         visibility=excluded.visibility,
         selected_server_identity_id=excluded.selected_server_identity_id,
+        editor_format=excluded.editor_format,
+        loro_snapshot_b64=excluded.loro_snapshot_b64,
+        loro_updates_b64_json=excluded.loro_updates_b64_json,
+        loro_version=excluded.loro_version,
+        loro_needs_migration=excluded.loro_needs_migration,
         updated_at=excluded.updated_at`,
     [
       note.id,
       note.title,
       note.folder,
       note.markdown,
-      JSON.stringify(note.document),
+      note.document ? JSON.stringify(note.document) : '',
       note.storage_mode,
       note.visibility,
       note.selected_server_identity_id ?? null,
+      note.editor_format ?? null,
+      note.loro_snapshot_b64 ?? null,
+      note.loro_updates_b64 ? JSON.stringify(note.loro_updates_b64) : null,
+      note.loro_version ?? null,
+      note.loro_needs_migration === undefined ? null : Number(note.loro_needs_migration),
       note.created_at,
       note.updated_at,
     ],
@@ -124,25 +211,51 @@ export async function upsertNote(note: LocalNoteRecord) {
 
 export async function saveBinding(binding: NoteBinding) {
   const database = await openDatabase()
+  const bindingKey = `${binding.local_note_id}::${binding.server_identity_id ?? binding.server_account_id}`
   await database.runAsync(
-    `INSERT INTO note_bindings (local_note_id, binding_json) VALUES (?, ?)
-      ON CONFLICT(local_note_id) DO UPDATE SET binding_json=excluded.binding_json`,
-    [binding.local_note_id, JSON.stringify(binding)],
+    `INSERT INTO note_bindings_v2 (binding_key, local_note_id, server_identity_id, remote_note_id, binding_json)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(binding_key) DO UPDATE SET
+        local_note_id=excluded.local_note_id,
+        server_identity_id=excluded.server_identity_id,
+        remote_note_id=excluded.remote_note_id,
+        binding_json=excluded.binding_json`,
+    [
+      bindingKey,
+      binding.local_note_id,
+      binding.server_identity_id ?? null,
+      binding.remote_note_id ?? null,
+      JSON.stringify(binding),
+    ],
   )
 }
 
-export async function getBinding(localNoteId: string) {
+export async function listBindings(localNoteId: string) {
   const database = await openDatabase()
-  const row = await database.getFirstAsync<{ binding_json: string }>(
-    'SELECT binding_json FROM note_bindings WHERE local_note_id = ?',
+  const rows = await database.getAllAsync<{ binding_json: string }>(
+    'SELECT binding_json FROM note_bindings_v2 WHERE local_note_id = ? ORDER BY server_identity_id ASC',
     [localNoteId],
   )
+  return rows.map((row) => JSON.parse(row.binding_json) as NoteBinding)
+}
+
+export async function getBinding(localNoteId: string, serverIdentityId?: string | null) {
+  const database = await openDatabase()
+  const row = serverIdentityId
+    ? await database.getFirstAsync<{ binding_json: string }>(
+        'SELECT binding_json FROM note_bindings_v2 WHERE local_note_id = ? AND server_identity_id = ? LIMIT 1',
+        [localNoteId, serverIdentityId],
+      )
+    : await database.getFirstAsync<{ binding_json: string }>(
+        'SELECT binding_json FROM note_bindings_v2 WHERE local_note_id = ? ORDER BY server_identity_id ASC LIMIT 1',
+        [localNoteId],
+      )
   return row ? (JSON.parse(row.binding_json) as NoteBinding) : null
 }
 
 export async function findBindingByRemoteNoteId(remoteNoteId: string) {
   const database = await openDatabase()
-  const rows = await database.getAllAsync<{ binding_json: string }>('SELECT binding_json FROM note_bindings')
+  const rows = await database.getAllAsync<{ binding_json: string }>('SELECT binding_json FROM note_bindings_v2')
   for (const row of rows) {
     try {
       const binding = JSON.parse(row.binding_json) as NoteBinding
@@ -156,9 +269,20 @@ export async function findBindingByRemoteNoteId(remoteNoteId: string) {
   return null
 }
 
+export async function removeBinding(localNoteId: string, serverIdentityId: string) {
+  const database = await openDatabase()
+  await database.runAsync(
+    'DELETE FROM note_bindings_v2 WHERE local_note_id = ? AND server_identity_id = ?',
+    [localNoteId, serverIdentityId],
+  )
+}
+
 export async function queueOperation(record: PendingNoteOperationRecord) {
   const database = await openDatabase()
-  await database.runAsync('DELETE FROM queued_operations WHERE note_id = ?', [record.note_id])
+  await database.runAsync('DELETE FROM queued_operations WHERE note_id = ? AND server_identity_id = ?', [
+    record.note_id,
+    record.server_identity_id,
+  ])
   await database.runAsync(
     `INSERT OR REPLACE INTO queued_operations
       (id, note_id, server_account_id, server_identity_id, created_at, batch_json)
@@ -169,7 +293,7 @@ export async function queueOperation(record: PendingNoteOperationRecord) {
       record.server_account_id,
       record.server_identity_id,
       record.created_at,
-      JSON.stringify(record.batch),
+      JSON.stringify(record.payload),
     ],
   )
 }
@@ -190,7 +314,7 @@ export async function listQueuedOperations() {
     server_account_id: row.server_account_id,
     server_identity_id: row.server_identity_id,
     created_at: row.created_at,
-    batch: JSON.parse(row.batch_json),
+    payload: parseQueuedNotePayload(row.batch_json),
   })) satisfies PendingNoteOperationRecord[]
 }
 
@@ -199,16 +323,18 @@ export async function compactQueuedOperations() {
   const rows = await database.getAllAsync<{
     id: string
     note_id: string
+    server_identity_id: string
     created_at: string
-  }>('SELECT id, note_id, created_at FROM queued_operations ORDER BY note_id ASC, created_at DESC')
+  }>('SELECT id, note_id, server_identity_id, created_at FROM queued_operations ORDER BY note_id ASC, server_identity_id ASC, created_at DESC')
   const keep = new Set<string>()
   const remove: string[] = []
   for (const row of rows) {
-    if (keep.has(row.note_id)) {
+    const dedupeKey = `${row.note_id}::${row.server_identity_id}`
+    if (keep.has(dedupeKey)) {
       remove.push(row.id)
       continue
     }
-    keep.add(row.note_id)
+    keep.add(dedupeKey)
   }
   for (const id of remove) {
     await database.runAsync('DELETE FROM queued_operations WHERE id = ?', [id])
@@ -220,8 +346,15 @@ export async function removeQueuedOperation(id: string) {
   await database.runAsync('DELETE FROM queued_operations WHERE id = ?', [id])
 }
 
-export async function removeQueuedOperationsForNote(noteId: string) {
+export async function removeQueuedOperationsForNote(noteId: string, serverIdentityId?: string | null) {
   const database = await openDatabase()
+  if (serverIdentityId) {
+    await database.runAsync('DELETE FROM queued_operations WHERE note_id = ? AND server_identity_id = ?', [
+      noteId,
+      serverIdentityId,
+    ])
+    return
+  }
   await database.runAsync('DELETE FROM queued_operations WHERE note_id = ?', [noteId])
 }
 

@@ -3,7 +3,6 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import type {
   LocalNoteRecord,
   NoteBinding,
-  NoteDocumentOperationBatch,
   NoteShareState,
   PresenceSession,
   RealtimeEvent,
@@ -12,11 +11,7 @@ import type {
   SyncConflictRecord,
 } from 'notes-suite-contracts'
 import {
-  applyOperationsToDocument,
-  createEmptyDocument,
   createId,
-  documentFromMarkdown,
-  markdownFromDocument,
 } from 'notes-suite-contracts'
 import {
   deleteServerAccount as deleteStoredServerAccount,
@@ -25,11 +20,13 @@ import {
   getSetting,
   initializeLocalStore,
   compactQueuedOperations,
+  listBindings,
   listConflicts,
   listNotes,
   listQueuedOperations,
   listServerAccounts,
   queueOperation,
+  removeBinding,
   removeQueuedOperation,
   removeQueuedOperationsForNote,
   saveBinding,
@@ -49,12 +46,13 @@ import {
   listRemoteNotes,
   noteSocketUrl,
   openNoteSession,
-  pullNoteOperations,
-  pushNoteOperations,
+  pullNoteDocument,
+  pushNoteDocumentUpdates,
   type RemoteServerUser,
   updateResourceShare,
-  updateRemoteNote,
+  updateRemoteNoteMetadata,
 } from '../sync/api'
+import { createMarkdownBinding, encodeStableTextCursor, replaceMarkdownContent, type LoroMarkdownBinding } from './loro-note'
 
 type Appearance = {
   mode: 'system' | 'custom'
@@ -88,11 +86,11 @@ type NotesAppContextValue = {
     visibility: 'private' | 'org' | 'users'
     userIds: string[]
   }) => Promise<void>
+  listSelectedNoteBindings: () => Promise<NoteBinding[]>
+  setSelectedNoteServerSync: (input: { serverIdentityId: string; enabled: boolean }) => Promise<void>
   loadSelectedNoteShare: (serverIdentityId?: string | null) => Promise<NoteShareState | null>
   listUsersForServerIdentity: (serverIdentityId: string) => Promise<RemoteServerUser[]>
-  replaceSelectedDocument: (document: LocalNoteRecord['document']) => Promise<void>
   updateMarkdown: (value: string) => Promise<void>
-  updateBlockText: (blockId: string, text: string) => Promise<void>
   sendCursor: (cursor: { offset: number | null; blockId?: string | null }) => void
   editorMode: 'rich' | 'markdown'
   setEditorMode: (value: 'rich' | 'markdown') => void
@@ -133,279 +131,6 @@ const DEFAULT_SERVER_DRAFT: ServerDraft = {
   password: '',
 }
 
-function splitMarkdownBlocks(markdown: string) {
-  return markdown
-    .split('\n\n')
-    .map((raw) => raw.trimEnd())
-    .filter((text, index, all) => text.length > 0 || all.length === 1 || index === 0)
-}
-
-function visibleBlocks(document: LocalNoteRecord['document']) {
-  return [...document.blocks]
-    .filter((block) => !block.deleted)
-    .sort((left, right) => left.order - right.order)
-}
-
-type TargetBlockDraft = {
-  text: string
-  kind: LocalNoteRecord['document']['blocks'][number]['kind']
-  attrs: Record<string, string>
-}
-
-function parseTargetBlock(rawText: string): TargetBlockDraft {
-  const text = rawText.replace(/\u00a0/g, ' ')
-  const headingMatch = text.match(/^(#{1,6})\s+(.*)$/)
-  if (headingMatch) {
-    return {
-      kind: 'heading',
-      text: headingMatch[2],
-      attrs: { level: headingMatch[1] },
-    }
-  }
-  if (/^>\s?/.test(text)) {
-    return {
-      kind: 'quote',
-      text: text.replace(/^>\s?/, ''),
-      attrs: {},
-    }
-  }
-  if (/^- \[ \]\s?/.test(text)) {
-    return {
-      kind: 'checklist',
-      text: text.replace(/^- \[ \]\s?/, ''),
-      attrs: {},
-    }
-  }
-  if (/^[-*]\s+/.test(text)) {
-    return {
-      kind: 'bullet_list',
-      text: text.replace(/^[-*]\s+/, ''),
-      attrs: {},
-    }
-  }
-  if (/^\d+\.\s+/.test(text)) {
-    return {
-      kind: 'numbered_list',
-      text: text.replace(/^\d+\.\s+/, ''),
-      attrs: {},
-    }
-  }
-  if (text.startsWith('```') && text.endsWith('```')) {
-    return {
-      kind: 'code',
-      text: text.replace(/^```[\r\n]?/, '').replace(/[\r\n]?```$/, ''),
-      attrs: {},
-    }
-  }
-  if (/^\|/.test(text)) {
-    return {
-      kind: 'table',
-      text,
-      attrs: {},
-    }
-  }
-  return {
-    kind: 'paragraph',
-    text,
-    attrs: {},
-  }
-}
-
-function buildTargetBlocks(markdown: string): TargetBlockDraft[] {
-  return splitMarkdownBlocks(markdown).map((text) => parseTargetBlock(text))
-}
-
-type DiffStep =
-  | { type: 'keep'; currentIndex: number; targetIndex: number }
-  | { type: 'update'; currentIndex: number; targetIndex: number }
-  | { type: 'delete'; currentIndex: number }
-  | { type: 'insert'; targetIndex: number }
-
-function buildBlockDiffSteps(
-  currentBlocks: LocalNoteRecord['document']['blocks'],
-  targetBlocks: TargetBlockDraft[],
-): DiffStep[] | null {
-  const rows = currentBlocks.length + 1
-  const cols = targetBlocks.length + 1
-  const costs = Array.from({ length: rows }, () => Array<number>(cols).fill(0))
-
-  for (let i = 0; i < rows; i += 1) costs[i][0] = i
-  for (let j = 0; j < cols; j += 1) costs[0][j] = j
-
-  for (let i = 1; i < rows; i += 1) {
-    for (let j = 1; j < cols; j += 1) {
-      const current = currentBlocks[i - 1]
-      const target = targetBlocks[j - 1]
-      const sameKind = current.kind === target.kind
-      const sameAttrs = JSON.stringify(current.attrs ?? {}) === JSON.stringify(target.attrs ?? {})
-      const exact = sameKind && sameAttrs && current.text === target.text
-      const updateCost = sameKind ? (sameAttrs ? 1 : 2) : Number.POSITIVE_INFINITY
-      costs[i][j] = Math.min(
-        costs[i - 1][j] + 1,
-        costs[i][j - 1] + 1,
-        costs[i - 1][j - 1] + (exact ? 0 : updateCost),
-      )
-    }
-  }
-
-  const steps: DiffStep[] = []
-  let i = currentBlocks.length
-  let j = targetBlocks.length
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0) {
-      const current = currentBlocks[i - 1]
-      const target = targetBlocks[j - 1]
-      const sameKind = current.kind === target.kind
-      const sameAttrs = JSON.stringify(current.attrs ?? {}) === JSON.stringify(target.attrs ?? {})
-      const exact = sameKind && sameAttrs && current.text === target.text
-      const updateCost = sameKind ? (sameAttrs ? 1 : 2) : Number.POSITIVE_INFINITY
-      if (costs[i][j] === costs[i - 1][j - 1] + (exact ? 0 : updateCost)) {
-        steps.push({
-          type: exact ? 'keep' : 'update',
-          currentIndex: i - 1,
-          targetIndex: j - 1,
-        })
-        i -= 1
-        j -= 1
-        continue
-      }
-    }
-    if (i > 0 && costs[i][j] === costs[i - 1][j] + 1) {
-      steps.push({ type: 'delete', currentIndex: i - 1 })
-      i -= 1
-      continue
-    }
-    if (j > 0 && costs[i][j] === costs[i][j - 1] + 1) {
-      steps.push({ type: 'insert', targetIndex: j - 1 })
-      j -= 1
-      continue
-    }
-    return null
-  }
-
-  return steps.reverse()
-}
-
-function buildGranularOperations(
-  note: LocalNoteRecord,
-  currentBlocks: LocalNoteRecord['document']['blocks'],
-  targetBlocks: TargetBlockDraft[],
-  actorId: string,
-): NoteDocumentOperationBatch['operations'] | null {
-  const steps = buildBlockDiffSteps(currentBlocks, targetBlocks)
-  if (!steps) return null
-  const operations: NoteDocumentOperationBatch['operations'] = []
-  const simulated = currentBlocks.map((block) => ({ ...block }))
-  let simulatedIndex = 0
-  let nextCounter = (note.document.clock[actorId] ?? 0) + 1
-
-  for (const step of steps) {
-    if (step.type === 'keep') {
-      simulatedIndex += 1
-      continue
-    }
-    if (step.type === 'update') {
-      const target = targetBlocks[step.targetIndex]
-      const current = simulated[simulatedIndex]
-      if (!current || current.kind !== target.kind) return null
-      if (JSON.stringify(current.attrs ?? {}) !== JSON.stringify(target.attrs ?? {})) {
-        operations.push({
-          type: 'update_block_attrs',
-          block_id: current.id,
-          attrs: target.attrs,
-        })
-      }
-      if (current.text !== target.text) {
-        operations.push({
-          type: 'update_block_text',
-          block_id: current.id,
-          text: target.text,
-        })
-      }
-      simulatedIndex += 1
-      continue
-    }
-    if (step.type === 'delete') {
-      const current = simulated[simulatedIndex]
-      if (!current) return null
-      operations.push({
-        type: 'delete_block',
-        block_id: current.id,
-      })
-      simulated.splice(simulatedIndex, 1)
-      continue
-    }
-    const target = targetBlocks[step.targetIndex]
-    const insertedId = `${note.id}:block:${Date.now().toString(36)}:${step.targetIndex}`
-    operations.push({
-      type: 'insert_block',
-      after_block_id: simulatedIndex > 0 ? simulated[simulatedIndex - 1]?.id ?? null : null,
-      block: {
-        id: insertedId,
-        kind: target.kind,
-        text: target.text,
-        attrs: target.attrs,
-        order: simulatedIndex,
-        deleted: false,
-        last_modified_by: actorId,
-        last_modified_counter: nextCounter,
-      },
-    })
-    simulated.splice(simulatedIndex, 0, {
-      id: insertedId,
-      kind: target.kind,
-      text: target.text,
-      attrs: target.attrs,
-      order: simulatedIndex,
-      deleted: false,
-      last_modified_by: actorId,
-      last_modified_counter: nextCounter,
-    })
-    simulatedIndex += 1
-    nextCounter += 1
-  }
-
-  return operations
-}
-
-function buildMarkdownBatch(
-  note: LocalNoteRecord,
-  markdown: string,
-  clientId: string,
-  actorId: string,
-): NoteDocumentOperationBatch | null {
-  const baseClock = { ...note.document.clock }
-  const currentBlocks = visibleBlocks(note.document)
-  const targetBlocks = buildTargetBlocks(markdown)
-  const nextDocument = documentFromMarkdown(markdown, actorId)
-  const granularOperations = buildGranularOperations(note, currentBlocks, targetBlocks, actorId)
-  if (granularOperations && granularOperations.length > 0) {
-    return {
-      actor_id: actorId,
-      client_id: clientId,
-      operation_id: createId('op'),
-      base_clock: baseClock,
-      base_markdown: note.markdown,
-      base_document: note.document,
-      operations: granularOperations,
-    }
-  }
-
-  if (note.markdown === markdown) {
-    return null
-  }
-
-  return {
-    actor_id: actorId,
-    client_id: clientId,
-    operation_id: createId('op'),
-    base_clock: baseClock,
-    base_markdown: note.markdown,
-    base_document: note.document,
-    operations: [{ type: 'replace_document', blocks: nextDocument.blocks }],
-  }
-}
-
 function normalizeAppearance(value: Partial<Appearance> | null | undefined): Appearance {
   if (!value) return DEFAULT_APPEARANCE
   return {
@@ -428,13 +153,46 @@ function isMissingRemoteNoteError(error: unknown) {
   return message.includes('HTTP 404') || /note not found|not found/i.test(message)
 }
 
+function mergeRemoteDocumentState(
+  note: LocalNoteRecord,
+  input: {
+    note: {
+      title: string
+      folder: string
+      markdown: string
+      updated_at: string
+      editor_format?: string
+      loro_snapshot_b64?: string
+      loro_updates_b64?: string[]
+      loro_version?: number
+      loro_needs_migration?: boolean
+    }
+    visibility?: LocalNoteRecord['visibility']
+  },
+): LocalNoteRecord {
+  return {
+    ...note,
+    title: input.note.title,
+    folder: input.note.folder,
+    markdown: input.note.markdown,
+    editor_format: input.note.editor_format ?? note.editor_format,
+    loro_snapshot_b64: input.note.loro_snapshot_b64 ?? note.loro_snapshot_b64,
+    loro_updates_b64: input.note.loro_updates_b64 ?? note.loro_updates_b64,
+    loro_version: input.note.loro_version ?? note.loro_version,
+    loro_needs_migration: input.note.loro_needs_migration ?? note.loro_needs_migration,
+    visibility: input.visibility ?? note.visibility,
+    storage_mode: 'synced',
+    selected_server_identity_id: note.selected_server_identity_id ?? null,
+    updated_at: input.note.updated_at,
+  }
+}
+
 function createFallbackNote(existingCount: number) {
   return {
     id: createId('note'),
     title: existingCount > 0 ? `Recovered note ${existingCount + 1}` : 'New note',
     folder: 'Inbox',
     markdown: '',
-    document: createEmptyDocument('local-user'),
     storage_mode: 'local' as const,
     visibility: 'private' as const,
     created_at: new Date().toISOString(),
@@ -484,6 +242,11 @@ function mergeConcurrentMarkdown(baseMarkdown: string, localMarkdown: string, re
   return merged.join('\n')
 }
 
+function presenceSortKey(entry: PresenceSession) {
+  const lastSeen = entry.last_seen_at ? new Date(entry.last_seen_at).getTime() : 0
+  return Number.isFinite(lastSeen) ? lastSeen : 0
+}
+
 export function NotesAppProvider({ children }: PropsWithChildren) {
   const [ready, setReady] = useState(false)
   const [notes, setNotes] = useState<LocalNoteRecord[]>([])
@@ -499,12 +262,21 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'offline'>('saved')
   const wsRef = useRef<WebSocket | null>(null)
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectAttemptRef = useRef(0)
+  const desiredRealtimeNoteIdRef = useRef<string | null>(null)
   const clientIdRef = useRef(createId('client'))
   const sessionIdRef = useRef<string | null>(null)
   const notesRef = useRef<LocalNoteRecord[]>([])
   const selectedNoteRef = useRef<LocalNoteRecord | null>(null)
-  const lastCursorPayloadRef = useRef<{ noteId: string; offset: number | null; blockId: string | null } | null>(null)
+  const lastCursorPayloadRef = useRef<{
+    noteId: string
+    offset: number | null
+    blockId: string | null
+    cursorB64: string | null
+  } | null>(null)
   const lastCursorSentAtRef = useRef(0)
+  const loroCursorBindingsRef = useRef<Record<string, { signature: string; binding: LoroMarkdownBinding }>>({})
 
   const selectedNote = useMemo(
     () => notes.find((note) => note.id === selectedNoteId) ?? notes[0] ?? null,
@@ -525,6 +297,58 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
 
   function currentSelectedNote() {
     return selectedNoteRef.current
+  }
+
+  function normalizedPresenceSessions(
+    sessions: PresenceSession[],
+    options?: {
+      currentUserId?: string | null
+      currentClientId?: string | null
+    },
+  ) {
+    const deduped = new Map<string, PresenceSession>()
+    for (const session of sessions) {
+      if (options?.currentClientId && session.client_id === options.currentClientId) {
+        continue
+      }
+      if (options?.currentUserId && session.user_id === options.currentUserId) {
+        continue
+      }
+      const dedupeKey = session.user_id || session.user_label || session.session_id
+      const existing = deduped.get(dedupeKey)
+      if (!existing || presenceSortKey(session) >= presenceSortKey(existing)) {
+        deduped.set(dedupeKey, session)
+      }
+    }
+    return [...deduped.values()].sort((left, right) => left.user_label.localeCompare(right.user_label))
+  }
+
+  async function listBindingsForNote(noteId: string) {
+    return listBindings(noteId)
+  }
+
+  async function primaryBindingForNote(noteId: string, preferredIdentityId?: string | null) {
+    const bindings = await listBindingsForNote(noteId)
+    if (bindings.length === 0) return null
+    if (preferredIdentityId) {
+      const preferred = bindings.find((binding) => binding.server_identity_id === preferredIdentityId)
+      if (preferred) return preferred
+    }
+    return bindings[0] ?? null
+  }
+
+  function applyBindingState(note: LocalNoteRecord, bindings: NoteBinding[], preferredIdentityId?: string | null) {
+    const selectedServerIdentityId =
+      (preferredIdentityId && bindings.some((binding) => binding.server_identity_id === preferredIdentityId)
+        ? preferredIdentityId
+        : note.selected_server_identity_id && bindings.some((binding) => binding.server_identity_id === note.selected_server_identity_id)
+          ? note.selected_server_identity_id
+          : bindings[0]?.server_identity_id ?? null) ?? null
+    return {
+      ...note,
+      storage_mode: bindings.length > 0 ? ('synced' as const) : ('local' as const),
+      selected_server_identity_id: selectedServerIdentityId,
+    }
   }
 
   useEffect(() => {
@@ -624,8 +448,10 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     if (!selectedNote) return
+    desiredRealtimeNoteIdRef.current = selectedNote.id
     void hydrateAndConnectNote(selectedNote.id)
     return () => {
+      desiredRealtimeNoteIdRef.current = null
       void disconnectPresence(selectedNote.id)
       if (wsRef.current) {
         wsRef.current.close()
@@ -635,13 +461,26 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         clearInterval(heartbeatRef.current)
         heartbeatRef.current = null
       }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current)
+        reconnectTimerRef.current = null
+      }
+      reconnectAttemptRef.current = 0
+      sessionIdRef.current = null
+      setRemoteCursors([])
+      setPresenceSessions([])
     }
   }, [selectedNote?.id, selectedNote?.selected_server_identity_id, serverAccounts])
 
   function upsertPresenceSession(nextSession: PresenceSession) {
     setPresenceSessions((current) => {
+      const note = selectedNoteRef.current
+      const identity = note ? activeIdentityForNote(note) : null
       const filtered = current.filter((entry) => entry.session_id !== nextSession.session_id)
-      return [...filtered, nextSession].sort((left, right) => left.user_label.localeCompare(right.user_label))
+      return normalizedPresenceSessions([...filtered, nextSession], {
+        currentUserId: identity?.user.id ?? null,
+        currentClientId: clientIdRef.current,
+      })
     })
   }
 
@@ -664,6 +503,26 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       if (identity) return identity
     }
     return null
+  }
+
+  function loroCursorSignature(note: LocalNoteRecord) {
+    return [
+      note.loro_version ?? 0,
+      note.loro_snapshot_b64 ?? '',
+      (note.loro_updates_b64 ?? []).join('|'),
+    ].join('::')
+  }
+
+  function getLoroCursorBinding(note: LocalNoteRecord) {
+    const signature = loroCursorSignature(note)
+    const cached = loroCursorBindingsRef.current[note.id]
+    if (!cached || cached.signature !== signature) {
+      const binding = createMarkdownBinding(note.loro_snapshot_b64, note.markdown, note.loro_updates_b64)
+      loroCursorBindingsRef.current[note.id] = { signature, binding }
+    }
+    const binding = loroCursorBindingsRef.current[note.id]!.binding
+    replaceMarkdownContent(binding, note.markdown)
+    return binding
   }
 
   function resolveIdentityById(identityId: string | null | undefined) {
@@ -689,13 +548,9 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       throw new Error('Selected server identity is unavailable.')
     }
     const { account, identity } = resolved
-    const existingBinding = await getBinding(note.id)
+    const existingBinding = await getBinding(note.id, identity.id)
     if (existingBinding?.server_identity_id === identity.id && existingBinding.remote_note_id) {
-      const nextNote: LocalNoteRecord = {
-        ...note,
-        storage_mode: 'synced',
-        selected_server_identity_id: identity.id,
-      }
+      const nextNote = applyBindingState(note, [...(await listBindingsForNote(note.id))], identity.id)
       await upsertNote(nextNote)
       setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
       return {
@@ -710,7 +565,6 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       title: note.title,
       folder: note.folder,
       markdown: note.markdown,
-      document: note.document,
       visibility: note.visibility,
     })
     const nextBinding: NoteBinding = {
@@ -723,13 +577,15 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       last_pushed_at: remote.updated_at,
     }
     await saveBinding(nextBinding)
-    await removeQueuedOperationsForNote(note.id)
-    const nextNote: LocalNoteRecord = {
+    await removeQueuedOperationsForNote(note.id, identity.id)
+    const nextNote = applyBindingState(
+      {
       ...note,
-      storage_mode: 'synced',
-      selected_server_identity_id: identity.id,
       updated_at: remote.updated_at,
-    }
+      },
+      [...(await listBindingsForNote(note.id)), nextBinding],
+      identity.id,
+    )
     await upsertNote(nextNote)
     setNotes((current) => current.map((entry) => (entry.id === nextNote.id ? nextNote : entry)))
     return {
@@ -750,7 +606,6 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       title: note.title,
       folder: note.folder,
       markdown: note.markdown,
-      document: note.document,
       visibility: note.visibility,
     })
     const repairedBinding: NoteBinding = {
@@ -761,13 +616,15 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       last_pushed_at: remote.updated_at,
     }
     await saveBinding(repairedBinding)
-    await removeQueuedOperationsForNote(note.id)
-    const repairedNote: LocalNoteRecord = {
+    await removeQueuedOperationsForNote(note.id, identity.id)
+    const repairedNote = applyBindingState(
+      {
       ...note,
-      storage_mode: 'synced',
-      selected_server_identity_id: identity.id,
       updated_at: remote.updated_at,
-    }
+      },
+      [...(await listBindingsForNote(note.id)).filter((entry) => entry.server_identity_id !== identity.id), repairedBinding],
+      identity.id,
+    )
     await upsertNote(repairedNote)
     setNotes((current) => current.map((entry) => (entry.id === repairedNote.id ? repairedNote : entry)))
     return {
@@ -783,6 +640,19 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     connectRealtime(noteId)
   }
 
+  function scheduleRealtimeReconnect(noteId: string) {
+    if (desiredRealtimeNoteIdRef.current !== noteId) return
+    if (reconnectTimerRef.current) return
+    const attempt = reconnectAttemptRef.current + 1
+    reconnectAttemptRef.current = attempt
+    const delay = Math.min(1000 * 2 ** Math.min(attempt - 1, 4), 15000)
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null
+      if (desiredRealtimeNoteIdRef.current !== noteId) return
+      void hydrateAndConnectNote(noteId)
+    }, delay)
+  }
+
   async function syncRemoteLibraries(targetAccounts: ServerAccount[]) {
     for (const account of targetAccounts) {
       try {
@@ -792,20 +662,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
           const existingBinding = await findBindingByRemoteNoteId(remoteNote.id)
           const localNoteId = existingBinding?.local_note_id ?? remoteNote.id
           const existingLocal = notesRef.current.find((entry) => entry.id === localNoteId)
-          const nextNote: LocalNoteRecord = {
-            id: localNoteId,
-            title: remoteNote.title,
-            folder: remoteNote.folder,
-            markdown: remoteNote.markdown,
-            document: remoteNote.document as LocalNoteRecord['document'],
-            storage_mode: 'synced',
-            visibility: remoteNote.visibility ?? 'private',
-            selected_server_identity_id: identity?.id ?? existingLocal?.selected_server_identity_id ?? null,
-            created_at: existingLocal?.created_at ?? remoteNote.updated_at,
-            updated_at: remoteNote.updated_at,
-          }
-          await upsertNote(nextNote)
-          await saveBinding({
+          const importedBinding: NoteBinding = {
             local_note_id: localNoteId,
             server_account_id: account.id,
             server_identity_id: identity?.id ?? null,
@@ -813,7 +670,29 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
             remote_revision: remoteNote.revision,
             last_pulled_at: remoteNote.updated_at,
             last_pushed_at: existingBinding?.last_pushed_at ?? null,
-          })
+          }
+          const nextNote = applyBindingState({
+            id: localNoteId,
+            title: remoteNote.title,
+            folder: remoteNote.folder,
+            markdown: remoteNote.markdown,
+            document: remoteNote.document as LocalNoteRecord['document'] | undefined,
+            editor_format: remoteNote.editor_format,
+            loro_snapshot_b64: remoteNote.loro_snapshot_b64,
+            loro_updates_b64: remoteNote.loro_updates_b64,
+            loro_version: remoteNote.loro_version,
+            loro_needs_migration: remoteNote.loro_needs_migration,
+            visibility: remoteNote.visibility ?? 'private',
+            storage_mode: existingLocal?.storage_mode ?? 'local',
+            selected_server_identity_id: existingLocal?.selected_server_identity_id ?? identity?.id ?? null,
+            created_at: existingLocal?.created_at ?? remoteNote.updated_at,
+            updated_at: remoteNote.updated_at,
+          }, [
+            ...(await listBindingsForNote(localNoteId)).filter((entry) => entry.server_identity_id !== importedBinding.server_identity_id),
+            importedBinding,
+          ])
+          await upsertNote(nextNote)
+          await saveBinding(importedBinding)
           setNotes((current) => {
             const found = current.some((entry) => entry.id === localNoteId)
             if (found) {
@@ -829,26 +708,19 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function hydrateFromServer(noteId: string) {
-    const binding = await getBinding(noteId)
+    const note = notesRef.current.find((entry) => entry.id === noteId)
+    const binding = await primaryBindingForNote(noteId, note?.selected_server_identity_id)
     if (!binding?.remote_note_id || !binding.server_identity_id) return
     const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
     const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
     if (!account || !identity) return
     try {
-      const response = await pullNoteOperations(account.base_url, identity.token, binding.remote_note_id, binding.remote_revision)
+      const response = await pullNoteDocument(account.base_url, identity.token, binding.remote_note_id)
       const current = notesRef.current.find((entry) => entry.id === noteId)
       if (current) {
-        const nextNote: LocalNoteRecord = {
-          ...current,
-          title: response.note.title,
-          folder: response.note.folder,
-          markdown: response.note.markdown,
-          document: response.note.document,
-          visibility: response.share.visibility,
-          storage_mode: 'synced',
-          selected_server_identity_id: identity.id,
-          updated_at: response.note.updated_at,
-        }
+        const nextNote = applyBindingState({
+          ...mergeRemoteDocumentState(current, { note: response.note, visibility: response.share.visibility }),
+        }, await listBindingsForNote(noteId), identity.id)
         await upsertNote(nextNote)
         setNotes((existing) => existing.map((entry) => (entry.id === noteId ? nextNote : entry)))
       }
@@ -857,10 +729,12 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         remote_revision: response.note.revision,
         last_pulled_at: response.note.updated_at,
       })
-      for (const conflict of response.conflicts) {
-        await saveConflict(conflict)
-      }
-      setConflicts(await listConflicts())
+      setPresenceSessions(
+        normalizedPresenceSessions(response.sessions, {
+          currentUserId: identity.user.id,
+          currentClientId: clientIdRef.current,
+        }),
+      )
     } catch (error) {
       if (isMissingRemoteNoteError(error)) {
         const current = notesRef.current.find((entry) => entry.id === noteId)
@@ -877,7 +751,8 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
   }
 
   async function connectPresence(noteId: string) {
-    const binding = await getBinding(noteId)
+    const note = notesRef.current.find((entry) => entry.id === noteId)
+    const binding = await primaryBindingForNote(noteId, note?.selected_server_identity_id)
     if (!binding) {
       setPresenceSessions([])
       return
@@ -889,7 +764,12 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       const response = await openNoteSession(account.base_url, identity.token, binding.remote_note_id, clientIdRef.current)
       sessionIdRef.current =
         response.sessions.find((entry) => entry.client_id === clientIdRef.current)?.session_id ?? null
-      setPresenceSessions(response.sessions)
+      setPresenceSessions(
+        normalizedPresenceSessions(response.sessions, {
+          currentUserId: identity.user.id,
+          currentClientId: clientIdRef.current,
+        }),
+      )
       setConflicts(response.conflicts)
     } catch {
       setPresenceSessions([])
@@ -898,7 +778,8 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
 
   function connectRealtime(noteId: string) {
     void (async () => {
-      const binding = await getBinding(noteId)
+      const note = notesRef.current.find((entry) => entry.id === noteId)
+      const binding = await primaryBindingForNote(noteId, note?.selected_server_identity_id)
       if (!binding?.remote_note_id || !binding.server_identity_id) return
       const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
       const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
@@ -910,6 +791,11 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       const socket = new WebSocket(noteSocketUrl(account.base_url, binding.remote_note_id))
       wsRef.current = socket
       socket.onopen = () => {
+        reconnectAttemptRef.current = 0
+        if (reconnectTimerRef.current) {
+          clearTimeout(reconnectTimerRef.current)
+          reconnectTimerRef.current = null
+        }
         const presenceEvent: RealtimeEvent = {
           type: 'note_presence',
           note_id: binding.remote_note_id!,
@@ -925,6 +811,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
           if (socket.readyState !== WebSocket.OPEN) return
           socket.send(JSON.stringify({ ...presenceEvent, last_seen_at: new Date().toISOString() } satisfies RealtimeEvent))
         }, 15000)
+        void flushQueuedOperations()
       }
       socket.onmessage = (event) => {
         const payload = JSON.parse(event.data) as RealtimeEvent
@@ -950,28 +837,21 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
             user: payload.user,
             avatar_path: payload.avatar_path ?? null,
             offset: payload.offset,
+            cursor_b64: payload.cursor_b64 ?? null,
             block_id: payload.block_id ?? null,
             updated_at: payload.updated_at ?? new Date().toISOString(),
           })
           return
         }
-        if ((payload.type === 'note_patch' || payload.type === 'note_operations') && payload.note_id === binding.remote_note_id) {
-          if (payload.type === 'note_operations' && payload.client_id === clientIdRef.current) return
-          const latestNote =
-            notesRef.current.find((entry) => entry.id === noteId) ??
-            (selectedNoteRef.current?.id === noteId ? selectedNoteRef.current : null)
-          if (!latestNote) return
-          const nextDocument = payload.document ?? latestNote.document
-          const nextNote: LocalNoteRecord = {
-            ...latestNote,
-            title: payload.title,
-            folder: payload.folder,
-            markdown: payload.markdown,
-            document: nextDocument,
-            updated_at: new Date().toISOString(),
-          }
-          void upsertNote(nextNote)
-          setNotes((existing) => existing.map((entry) => (entry.id === noteId ? nextNote : entry)))
+        if (payload.type === 'note_document_update' && payload.note_id === binding.remote_note_id) {
+          if (payload.client_id === clientIdRef.current) return
+          void hydrateFromServer(noteId)
+          return
+        }
+      }
+      socket.onerror = () => {
+        if (wsRef.current === socket) {
+          setSaveStatus((current) => (current === 'saving' ? current : 'offline'))
         }
       }
       socket.onclose = () => {
@@ -980,12 +860,17 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
           clearInterval(heartbeatRef.current)
           heartbeatRef.current = null
         }
+        sessionIdRef.current = null
+        if (desiredRealtimeNoteIdRef.current === noteId) {
+          scheduleRealtimeReconnect(noteId)
+        }
       }
     })()
   }
 
   async function disconnectPresence(noteId: string) {
-    const binding = await getBinding(noteId)
+    const note = notesRef.current.find((entry) => entry.id === noteId)
+    const binding = await primaryBindingForNote(noteId, note?.selected_server_identity_id)
     if (!binding) return
     const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
     const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
@@ -998,13 +883,12 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     }
   }
 
-  async function createNoteWithPreferences(options?: { syncToServer?: boolean }) {
+  async function createNoteWithPreferences(_options?: { syncToServer?: boolean }) {
     const note: LocalNoteRecord = {
       id: createId('note'),
       title: `Note ${notes.length + 1}`,
       folder: 'Inbox',
       markdown: '',
-      document: createEmptyDocument('local-user'),
       storage_mode: 'local',
       visibility: 'private',
       created_at: new Date().toISOString(),
@@ -1013,10 +897,6 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     await upsertNote(note)
     setNotes((current) => [note, ...current])
     setSelectedNoteId(note.id)
-    if (options?.syncToServer) {
-      await linkNoteRecordToPreferredServer(note)
-      await hydrateAndConnectNote(note.id)
-    }
   }
 
   async function createNote() {
@@ -1032,31 +912,34 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       updated_at: new Date().toISOString(),
     }
     await persistNote(next)
-    const binding = await getBinding(note.id)
-    if (!binding?.remote_note_id || !binding.server_identity_id) return
-    const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
-    const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
-    if (!account || !identity) return
-    try {
-      const remote = await updateRemoteNote(account.base_url, identity.token, binding.remote_note_id, {
-        revision: binding.remote_revision,
-        visibility: value,
-      })
-      await saveBinding({
-        ...binding,
-        remote_revision: remote.revision,
-        last_pushed_at: remote.updated_at,
-      })
-    } catch {
-      // Keep local share state as the working copy until connectivity returns.
-    }
+    const bindings = await listBindingsForNote(note.id)
+    await Promise.all(
+      bindings.map(async (binding) => {
+        if (!binding.remote_note_id || !binding.server_identity_id) return
+        const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
+        const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
+        if (!account || !identity) return
+        try {
+          const remote = await updateRemoteNoteMetadata(account.base_url, identity.token, binding.remote_note_id, {
+            visibility: value,
+          })
+          await saveBinding({
+            ...binding,
+            remote_revision: remote.revision,
+            last_pushed_at: remote.updated_at,
+          })
+        } catch {
+          // Keep local share state as the working copy until connectivity returns.
+        }
+      }),
+    )
   }
 
   async function loadSelectedNoteShare(serverIdentityId?: string | null) {
     const note = currentSelectedNote()
     if (!note) return null
     const targetIdentityId = serverIdentityId ?? note.selected_server_identity_id ?? null
-    const binding = await getBinding(note.id)
+    const binding = await getBinding(note.id, targetIdentityId)
     if (!binding?.remote_note_id) return null
     const resolved = resolveIdentityById(targetIdentityId)
     if (!resolved || binding.server_identity_id !== resolved.identity.id) return null
@@ -1090,19 +973,19 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     const note = currentSelectedNote()
     if (!note) return
     const resolvedTarget = input.serverIdentityId ? resolveIdentityById(input.serverIdentityId) : null
-    const effectiveServerIdentityId =
-      resolvedTarget?.identity.id ?? (note.storage_mode === 'synced' ? note.selected_server_identity_id ?? null : null)
-    const nextLocal: LocalNoteRecord = {
-      ...note,
-      visibility: input.visibility,
-      selected_server_identity_id: effectiveServerIdentityId,
-      storage_mode: resolvedTarget || note.storage_mode === 'synced' ? 'synced' : note.storage_mode,
-      updated_at: new Date().toISOString(),
-    }
+    const nextLocal: LocalNoteRecord = applyBindingState(
+      {
+        ...note,
+        visibility: input.visibility,
+        updated_at: new Date().toISOString(),
+      },
+      await listBindingsForNote(note.id),
+      resolvedTarget?.identity.id ?? note.selected_server_identity_id ?? null,
+    )
     await upsertNote(nextLocal)
     setNotes((current) => current.map((entry) => (entry.id === nextLocal.id ? nextLocal : entry)))
 
-    if (!resolvedTarget) {
+    if (!resolvedTarget || !input.serverIdentityId) {
       return
     }
 
@@ -1114,10 +997,8 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         user_ids: input.visibility === 'users' ? input.userIds : [],
       })
       const savedNote: LocalNoteRecord = {
-        ...linked.note,
+        ...applyBindingState(linked.note, await listBindingsForNote(linked.note.id), linked.identity.id),
         visibility: share.visibility,
-        selected_server_identity_id: linked.identity.id,
-        storage_mode: 'synced',
         updated_at: new Date().toISOString(),
       }
       await upsertNote(savedNote)
@@ -1127,50 +1008,49 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     }
   }
 
-  async function persistNote(next: LocalNoteRecord, batch?: NoteDocumentOperationBatch) {
+  async function persistNote(next: LocalNoteRecord, syncDocument = false) {
     setSaveStatus('saving')
     await upsertNote(next)
     setNotes((current) => current.map((note) => (note.id === next.id ? next : note)))
-    if (batch) {
-      const binding = await getBinding(next.id)
-      if (binding?.server_identity_id) {
+    if (syncDocument) {
+      const bindings = await listBindingsForNote(next.id)
+      if (bindings.length === 0) {
+        setSaveStatus('saved')
+        return
+      }
+      let syncedAny = false
+      let queuedAny = false
+      let authoritativeNote = next
+      for (const binding of bindings) {
+        if (!binding.server_identity_id) continue
         const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
         const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
         if (account && identity && binding.remote_note_id) {
           try {
-            const response = await pushNoteOperations(account.base_url, identity.token, binding.remote_note_id, batch)
-            if (response.conflicts.length > 0) {
-              for (const conflict of response.conflicts) {
-                await saveConflict(conflict)
-              }
-              setConflicts(await listConflicts())
-            }
-            const authoritativeNote: LocalNoteRecord = {
-              ...next,
-              title: response.note.title,
-              folder: response.note.folder,
-              markdown: response.note.markdown,
-              document: response.note.document,
-              updated_at: response.note.updated_at,
-            }
-            const nextBinding: NoteBinding = {
+            const response = await pushNoteDocumentUpdates(account.base_url, identity.token, binding.remote_note_id, {
+              client_id: clientIdRef.current,
+              update_b64: '',
+              editor_format: 'mobile_markdown',
+              content_markdown: next.markdown,
+              content_html: '',
+            })
+            authoritativeNote = mergeRemoteDocumentState(authoritativeNote, { note: response.note })
+            await saveBinding({
               ...binding,
               remote_revision: response.note.revision,
               last_pulled_at: response.note.updated_at,
               last_pushed_at: response.note.updated_at,
-            }
-            await saveBinding(nextBinding)
-            await upsertNote(authoritativeNote)
-            await removeQueuedOperationsForNote(next.id)
-            setNotes((current) => current.map((note) => (note.id === authoritativeNote.id ? authoritativeNote : note)))
-            setSaveStatus('saved')
-            return
+            })
+            await removeQueuedOperationsForNote(next.id, binding.server_identity_id)
+            syncedAny = true
+            continue
           } catch (error) {
             if (isMissingRemoteNoteError(error)) {
               try {
                 await recreateRemoteBinding(next, binding, account, identity)
-                setSaveStatus('saved')
-                return
+                syncedAny = true
+                await removeQueuedOperationsForNote(next.id, binding.server_identity_id)
+                continue
               } catch {
                 // Fall through to queued retry below.
               }
@@ -1183,14 +1063,42 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
           server_account_id: binding.server_account_id,
           server_identity_id: binding.server_identity_id,
           created_at: new Date().toISOString(),
-          batch,
+          payload: {
+            kind: 'document_update',
+            editor_format: next.editor_format ?? 'mobile_markdown',
+            content_markdown: next.markdown,
+            content_html: '',
+          },
         })
-      } else {
-        setSaveStatus('offline')
-        return
+        queuedAny = true
       }
+      if (syncedAny) {
+        await upsertNote(authoritativeNote)
+        setNotes((current) => current.map((note) => (note.id === authoritativeNote.id ? authoritativeNote : note)))
+      }
+      setSaveStatus(queuedAny ? 'offline' : 'saved')
+      return
     }
     setSaveStatus('saved')
+  }
+
+  async function broadcastDocumentReplacement(noteId: string, markdown: string) {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return
+    const note = notesRef.current.find((entry) => entry.id === noteId)
+    const binding = await primaryBindingForNote(noteId, note?.selected_server_identity_id)
+    if (!binding?.remote_note_id) return
+    const event: RealtimeEvent = {
+      type: 'note_document_update',
+      note_id: binding.remote_note_id,
+      client_id: clientIdRef.current,
+      update_b64: '',
+      snapshot_b64: null,
+      version: 0,
+      editor_format: 'mobile_markdown',
+      content_markdown: markdown,
+      content_html: '',
+    }
+    wsRef.current.send(JSON.stringify(event))
   }
 
   async function updateNoteTitle(value: string) {
@@ -1202,160 +1110,61 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
       updated_at: new Date().toISOString(),
     }
     await persistNote(next)
-    const binding = await getBinding(note.id)
-    if (!binding?.remote_note_id || !binding.server_identity_id) return
-    const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
-    const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
-    if (!account || !identity) return
-    try {
-      const remote = await updateRemoteNote(account.base_url, identity.token, binding.remote_note_id, {
-        title: value,
-        revision: binding.remote_revision,
-        document: next.document,
-        markdown: next.markdown,
-        visibility: next.visibility,
-      })
-      await saveBinding({
-        ...binding,
-        remote_revision: remote.revision,
-        last_pushed_at: remote.updated_at,
-      })
-    } catch {
-      // Leave local title change intact; sync engine will not roll it back.
-    }
+    const bindings = await listBindingsForNote(note.id)
+    await Promise.all(
+      bindings.map(async (binding) => {
+        if (!binding.remote_note_id || !binding.server_identity_id) return
+        const account = serverAccounts.find((entry) => entry.id === binding.server_account_id)
+        const identity = account?.identities.find((entry) => entry.id === binding.server_identity_id)
+        if (!account || !identity) return
+        try {
+          const remote = await updateRemoteNoteMetadata(account.base_url, identity.token, binding.remote_note_id, {
+            title: value,
+          })
+          await saveBinding({
+            ...binding,
+            remote_revision: remote.revision,
+            last_pushed_at: remote.updated_at,
+          })
+        } catch {
+          // Leave local title change intact; sync engine will not roll it back.
+        }
+      }),
+    )
   }
 
   async function updateMarkdown(value: string) {
     const note = currentSelectedNote()
     if (!note) return
     if (value === note.markdown) return
-    const actorId = actorIdForNote(note)
-    const document = documentFromMarkdown(value, actorId)
-    const batch = buildMarkdownBatch(note, value, clientIdRef.current, actorId)
-    await persistNote(
-      {
-        ...note,
-        markdown: value,
-        document,
-        updated_at: new Date().toISOString(),
-      },
-      batch ?? undefined,
-    )
-    if (batch && wsRef.current?.readyState === WebSocket.OPEN) {
-      const binding = await getBinding(note.id)
-      if (binding?.remote_note_id) {
-        const identity = activeIdentityForNote(note)
-        const event: RealtimeEvent = {
-          type: 'note_operations',
-          note_id: binding.remote_note_id,
-          title: note.title,
-          folder: note.folder,
-          markdown: value,
-          revision: 0,
-          client_id: clientIdRef.current,
-          user: identity?.user.display_name ?? 'You',
-          batch,
-          document,
-        }
-        wsRef.current.send(JSON.stringify(event))
-      }
-    }
-  }
-
-  async function replaceSelectedDocument(document: LocalNoteRecord['document']) {
-    const note = currentSelectedNote()
-    if (!note) return
-    const markdown = markdownFromDocument(document)
-    if (markdown === note.markdown) return
-    const batch = buildMarkdownBatch(note, markdown, clientIdRef.current, actorIdForNote(note))
-    await persistNote(
-      {
-        ...note,
-        document,
-        markdown,
-        updated_at: new Date().toISOString(),
-      },
-      batch ?? undefined,
-    )
-    if (batch && wsRef.current?.readyState === WebSocket.OPEN) {
-      const binding = await getBinding(note.id)
-      if (binding?.remote_note_id) {
-        const identity = activeIdentityForNote(note)
-        const event: RealtimeEvent = {
-          type: 'note_operations',
-          note_id: binding.remote_note_id,
-          title: note.title,
-          folder: note.folder,
-          markdown,
-          revision: 0,
-          client_id: clientIdRef.current,
-          user: identity?.user.display_name ?? 'You',
-          batch,
-          document,
-        }
-        wsRef.current.send(JSON.stringify(event))
-      }
-    }
-  }
-
-  async function updateBlockText(blockId: string, text: string) {
-    const note = currentSelectedNote()
-    if (!note) return
-    const actorId = actorIdForNote(note)
-    const batch: NoteDocumentOperationBatch = {
-      actor_id: actorId,
-      client_id: clientIdRef.current,
-      operation_id: createId('op'),
-      base_clock: note.document.clock,
-      base_markdown: note.markdown,
-      base_document: note.document,
-      operations: [{ type: 'update_block_text', block_id: blockId, text }],
-    }
-    const document = applyOperationsToDocument(note.document, batch)
-    await persistNote(
-      {
-        ...note,
-        document,
-        markdown: markdownFromDocument(document),
-        updated_at: new Date().toISOString(),
-      },
-      batch,
-    )
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const binding = await getBinding(note.id)
-      if (binding?.remote_note_id) {
-        const identity = activeIdentityForNote(note)
-        const event: RealtimeEvent = {
-          type: 'note_operations',
-          note_id: binding.remote_note_id,
-          title: note.title,
-          folder: note.folder,
-          markdown: markdownFromDocument(document),
-          revision: 0,
-          client_id: clientIdRef.current,
-          user: identity?.user.display_name ?? 'You',
-          batch,
-          document,
-        }
-        wsRef.current.send(JSON.stringify(event))
-      }
-    }
+    await persistNote({
+      ...note,
+      markdown: value,
+      updated_at: new Date().toISOString(),
+    }, true)
+    await broadcastDocumentReplacement(note.id, value)
   }
 
   function sendCursor(cursor: { offset: number | null; blockId?: string | null }) {
     const note = currentSelectedNote()
     if (!note || wsRef.current?.readyState !== WebSocket.OPEN) return
+    const cursorB64 =
+      cursor.offset === null || cursor.offset === undefined
+        ? null
+        : encodeStableTextCursor(getLoroCursorBinding(note), cursor.offset)
     const normalized = {
       noteId: note.id,
       offset: cursor.offset,
       blockId: cursor.blockId ?? null,
+      cursorB64,
     }
     const previous = lastCursorPayloadRef.current
     if (
       previous &&
       previous.noteId === normalized.noteId &&
       previous.offset === normalized.offset &&
-      previous.blockId === normalized.blockId
+      previous.blockId === normalized.blockId &&
+      previous.cursorB64 === normalized.cursorB64
     ) {
       return
     }
@@ -1366,7 +1175,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     lastCursorPayloadRef.current = normalized
     lastCursorSentAtRef.current = now
     void (async () => {
-      const binding = await getBinding(note.id)
+      const binding = await primaryBindingForNote(note.id, note.selected_server_identity_id)
       if (!binding?.remote_note_id) return
       const identity = activeIdentityForNote(note)
       const event: RealtimeEvent = {
@@ -1375,6 +1184,7 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         user: identity?.user.display_name ?? 'You',
         client_id: clientIdRef.current,
         offset: cursor.offset,
+        cursor_b64: cursorB64,
         user_id: identity?.user.id ?? null,
         avatar_path: identity?.user.avatar_path ?? null,
         session_id: sessionIdRef.current,
@@ -1479,46 +1289,56 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
     await hydrateAndConnectNote(selectedNote.id)
   }
 
+  async function listSelectedNoteBindings() {
+    const note = currentSelectedNote()
+    if (!note) return []
+    return listBindingsForNote(note.id)
+  }
+
+  async function setSelectedNoteServerSync(input: { serverIdentityId: string; enabled: boolean }) {
+    const note = currentSelectedNote()
+    if (!note) return
+    if (input.enabled) {
+      await linkSelectedNoteToServer(input.serverIdentityId)
+      return
+    }
+    await removeBinding(note.id, input.serverIdentityId)
+    await removeQueuedOperationsForNote(note.id, input.serverIdentityId)
+    const remainingBindings = await listBindingsForNote(note.id)
+    const nextNote = applyBindingState(
+      {
+        ...note,
+        updated_at: new Date().toISOString(),
+      },
+      remainingBindings,
+      note.selected_server_identity_id === input.serverIdentityId ? remainingBindings[0]?.server_identity_id ?? null : note.selected_server_identity_id ?? null,
+    )
+    await upsertNote(nextNote)
+    setNotes((current) => current.map((entry) => (entry.id === note.id ? nextNote : entry)))
+  }
+
   async function flushQueuedOperations() {
     await compactQueuedOperations()
     const queued = await listQueuedOperations()
     if (queued.length === 0) return
+    let flushedAny = false
     for (const operation of queued) {
       const account = serverAccounts.find((entry) => entry.id === operation.server_account_id)
       const identity = account?.identities.find((entry) => entry.id === operation.server_identity_id)
-      const binding = await getBinding(operation.note_id)
+      const binding = await getBinding(operation.note_id, operation.server_identity_id)
       if (!account || !identity || !binding?.remote_note_id) continue
       try {
-        const response = await pushNoteOperations(
-          account.base_url,
-          identity.token,
-          binding.remote_note_id,
-          operation.batch,
-        )
-        if (response.conflicts.length > 0) {
-          for (const conflict of response.conflicts) {
-            await saveConflict(conflict)
-          }
-          setConflicts(await listConflicts())
-        }
-        await removeQueuedOperation(operation.id)
         const note = notesRef.current.find((entry) => entry.id === operation.note_id)
         if (note) {
-          const mergedMarkdown = mergeConcurrentMarkdown(
-            operation.batch.base_markdown ?? note.markdown,
-            note.markdown,
-            response.note.markdown,
-          )
-          const mergedDocument =
-            mergedMarkdown === response.note.markdown
-              ? response.note.document
-              : documentFromMarkdown(mergedMarkdown, actorIdForNote(note))
-          const nextNote: LocalNoteRecord = {
-            ...note,
-            markdown: mergedMarkdown,
-            document: mergedDocument,
-            updated_at: response.note.updated_at,
-          }
+          const response = await pushNoteDocumentUpdates(account.base_url, identity.token, binding.remote_note_id, {
+            client_id: clientIdRef.current,
+            update_b64: '',
+            editor_format: operation.payload.editor_format,
+            content_markdown: operation.payload.content_markdown,
+            content_html: operation.payload.content_html ?? '',
+          })
+          await removeQueuedOperation(operation.id)
+          const nextNote = mergeRemoteDocumentState(note, { note: response.note })
           const nextBinding: NoteBinding = {
             ...binding,
             remote_revision: response.note.revision,
@@ -1526,8 +1346,9 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
           }
           await saveBinding(nextBinding)
           await upsertNote(nextNote)
-          await removeQueuedOperationsForNote(operation.note_id)
+          await removeQueuedOperationsForNote(operation.note_id, operation.server_identity_id)
           setNotes((current) => current.map((entry) => (entry.id === operation.note_id ? nextNote : entry)))
+          flushedAny = true
         }
       } catch (error) {
         if (isMissingRemoteNoteError(error)) {
@@ -1536,12 +1357,19 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
             try {
               await recreateRemoteBinding(note, binding, account, identity)
               await removeQueuedOperation(operation.id)
+              flushedAny = true
               continue
             } catch {
               // Keep queued operation for retry.
             }
           }
         }
+      }
+    }
+    if (flushedAny) {
+      const remaining = await listQueuedOperations()
+      if (remaining.length === 0) {
+        setSaveStatus('saved')
       }
     }
   }
@@ -1559,11 +1387,11 @@ export function NotesAppProvider({ children }: PropsWithChildren) {
         updateNoteTitle,
         updateSelectedNoteVisibility,
         saveSelectedNoteVisibilitySettings,
+        listSelectedNoteBindings,
+        setSelectedNoteServerSync,
         loadSelectedNoteShare,
         listUsersForServerIdentity,
-        replaceSelectedDocument,
         updateMarkdown,
-        updateBlockText,
         sendCursor,
         editorMode,
         setEditorMode,

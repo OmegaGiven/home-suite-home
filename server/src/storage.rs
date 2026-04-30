@@ -83,36 +83,6 @@ impl BlobStorage {
         (0, 0)
     }
 
-    pub async fn sync_note_markdown(
-        &self,
-        previous: Option<(&str, &str)>,
-        note_id: Uuid,
-        title: &str,
-        folder: &str,
-        markdown: &str,
-    ) -> AppResult<String> {
-        let next_relative = note_relative_path(folder, title, note_id);
-        let next_full = self.resolve(&next_relative);
-        if let Some(parent) = next_full.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        }
-        fs::write(&next_full, markdown)
-            .await
-            .map_err(|err| AppError::Internal(err.to_string()))?;
-
-        if let Some((previous_folder, previous_title)) = previous {
-            let previous_relative = note_relative_path(previous_folder, previous_title, note_id);
-            if previous_relative != next_relative {
-                let previous_full = self.resolve(&previous_relative);
-                let _ = fs::remove_file(&previous_full).await;
-            }
-        }
-
-        Ok(next_relative)
-    }
-
     pub async fn sync_diagram_xml(
         &self,
         previous: Option<&str>,
@@ -724,13 +694,6 @@ fn sanitize_voice_managed_path(relative_path: &str) -> AppResult<String> {
             "voice actions are supported only in voice/".into(),
         ))
     }
-}
-
-fn note_relative_path(folder: &str, title: &str, note_id: Uuid) -> String {
-    let folder_relative =
-        sanitize_relative_path("notes", folder).unwrap_or_else(|_| "notes".into());
-    let slug = slugify(title);
-    format!("{folder_relative}/{slug}-{note_id}.md")
 }
 
 fn diagram_relative_path(title: &str, diagram_id: Uuid) -> String {

@@ -2,9 +2,9 @@ import * as AuthSession from 'expo-auth-session'
 import * as WebBrowser from 'expo-web-browser'
 import type {
   NoteShareState,
-  NoteDocumentOperationBatch,
-  NoteOperationsPullResponse,
-  NoteOperationsPushResponse,
+  NoteDocumentPullResponse,
+  PushNoteDocumentUpdatesRequest,
+  PushNoteDocumentUpdatesResponse,
   NoteSessionOpenResponse,
   ServerAccount,
   ServerIdentity,
@@ -34,10 +34,15 @@ export type RemoteNoteSnapshot = {
   title: string
   folder: string
   markdown: string
-  document: unknown
+  document?: unknown
   revision: number
   updated_at: string
   visibility?: 'private' | 'org' | 'users'
+  editor_format?: string
+  loro_snapshot_b64?: string
+  loro_updates_b64?: string[]
+  loro_version?: number
+  loro_needs_migration?: boolean
 }
 
 export type RemoteServerUser = {
@@ -82,7 +87,7 @@ export async function testServerConnection(baseUrl: string, token?: string) {
   let noteCount: number | null = null
   if (token) {
     try {
-      const notes = await requestJson<RemoteNoteSnapshot[]>(`${normalizedBaseUrl}/api/v1/notes`, undefined, token)
+      const notes = await requestJson<RemoteNoteSnapshot[]>(`${normalizedBaseUrl}/api/v2/notes`, undefined, token)
       noteCount = notes.length
     } catch {
       noteCount = null
@@ -95,7 +100,7 @@ export async function testServerConnection(baseUrl: string, token?: string) {
 }
 
 export async function listRemoteNotes(baseUrl: string) {
-  return requestJson<RemoteNoteSnapshot[]>(`${baseUrl.replace(/\/$/, '')}/api/v1/notes`)
+  return requestJson<RemoteNoteSnapshot[]>(`${baseUrl.replace(/\/$/, '')}/api/v2/notes`)
 }
 
 export async function loginWithOidc(baseUrl: string): Promise<SessionResponse> {
@@ -144,7 +149,7 @@ export function createServerAccount(baseUrl: string, label: string, authType: 'p
 
 export async function openNoteSession(baseUrl: string, token: string, noteId: string, clientId: string) {
   return requestJson<NoteSessionOpenResponse>(
-    `${baseUrl}/api/v1/notes/${noteId}/session/open`,
+    `${baseUrl}/api/v2/notes/${noteId}/session/open`,
     {
       method: 'POST',
       body: JSON.stringify({ client_id: clientId }),
@@ -156,18 +161,18 @@ export async function openNoteSession(baseUrl: string, token: string, noteId: st
 export async function createRemoteNote(
   baseUrl: string,
   token: string,
-  payload: { title: string; folder: string; markdown: string; document: unknown; visibility: 'private' | 'org' | 'users' },
+  payload: { title: string; folder: string; markdown: string; visibility: 'private' | 'org' | 'users' },
 ) {
   return requestJson<{
     id: string
     title: string
     folder: string
     markdown: string
-    document: unknown
+    document?: unknown
     revision: number
     updated_at: string
   }>(
-    `${baseUrl}/api/v1/notes`,
+    `${baseUrl}/api/v2/notes`,
     {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -176,16 +181,13 @@ export async function createRemoteNote(
   )
 }
 
-export async function updateRemoteNote(
+export async function updateRemoteNoteMetadata(
   baseUrl: string,
   token: string,
   noteId: string,
   payload: {
     title?: string
     folder?: string
-    markdown?: string
-    revision: number
-    document?: unknown
     visibility?: 'private' | 'org' | 'users'
   },
 ) {
@@ -194,11 +196,11 @@ export async function updateRemoteNote(
     title: string
     folder: string
     markdown: string
-    document: unknown
+    document?: unknown
     revision: number
     updated_at: string
   }>(
-    `${baseUrl}/api/v1/notes/${noteId}`,
+    `${baseUrl}/api/v2/notes/${noteId}/metadata`,
     {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -209,7 +211,7 @@ export async function updateRemoteNote(
 
 export async function closeNoteSession(baseUrl: string, token: string, noteId: string, sessionId: string) {
   return requestJson<{ ok: boolean }>(
-    `${baseUrl}/api/v1/notes/${noteId}/session/close`,
+    `${baseUrl}/api/v2/notes/${noteId}/session/close`,
     {
       method: 'POST',
       body: JSON.stringify({ session_id: sessionId }),
@@ -218,25 +220,25 @@ export async function closeNoteSession(baseUrl: string, token: string, noteId: s
   )
 }
 
-export async function pullNoteOperations(baseUrl: string, token: string, noteId: string, sinceRevision: number) {
-  return requestJson<NoteOperationsPullResponse>(
-    `${baseUrl}/api/v1/notes/${noteId}/operations?since_revision=${sinceRevision}`,
+export async function pullNoteDocument(baseUrl: string, token: string, noteId: string) {
+  return requestJson<NoteDocumentPullResponse>(
+    `${baseUrl}/api/v2/notes/${noteId}/document`,
     undefined,
     token,
   )
 }
 
-export async function pushNoteOperations(
+export async function pushNoteDocumentUpdates(
   baseUrl: string,
   token: string,
   noteId: string,
-  batch: NoteDocumentOperationBatch,
+  payload: PushNoteDocumentUpdatesRequest,
 ) {
-  return requestJson<NoteOperationsPushResponse>(
-    `${baseUrl}/api/v1/notes/${noteId}/operations`,
+  return requestJson<PushNoteDocumentUpdatesResponse>(
+    `${baseUrl}/api/v2/notes/${noteId}/document/updates`,
     {
       method: 'POST',
-      body: JSON.stringify({ batch }),
+      body: JSON.stringify(payload),
     },
     token,
   )

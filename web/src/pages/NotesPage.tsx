@@ -1,16 +1,31 @@
-import { useLayoutEffect, useMemo, useRef, useState, type FormEventHandler, type KeyboardEventHandler, type MouseEventHandler, type RefObject } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEventHandler, type MouseEventHandler, type RefObject } from 'react'
+import { EditorContent, useEditor } from '@tiptap/react'
+import StarterKit from '@tiptap/starter-kit'
+import { Table } from '@tiptap/extension-table'
+import TableCell from '@tiptap/extension-table-cell'
+import TableHeader from '@tiptap/extension-table-header'
+import TableRow from '@tiptap/extension-table-row'
+import TaskItem from '@tiptap/extension-task-item'
+import TaskList from '@tiptap/extension-task-list'
+import { marked } from 'marked'
+import TurndownService from 'turndown'
 import { ConfirmModal } from '../components/ConfirmModal'
 import { FolderPromptModal } from '../components/FolderPromptModal'
-import { FileTreeHeader, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
+import { FileTreeHeader } from '../components/FileTreeNode'
+import { LibraryDeletedTreeNode } from '../components/LibraryDeletedTreeNode'
 import { LibraryActionBar } from '../components/LibraryActionBar'
 import { NewFolderIcon, NewNoteIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { LibraryShell } from '../components/LibraryShell'
 import { NotesFormatToolbar } from './notes/NotesFormatToolbar'
 import { NoteLibraryTreeNode } from '../components/NoteLibraryTreeNode'
 import type { NoteContextMenuState, NoteContextSubmenu, NoteEditorMode } from '../lib/app-config'
-import type { Note, NoteBlock, NoteDocument, ResourceVisibility } from '../lib/types'
-import type { FileTreeSortState, NoteInsertKind, NoteFolderNode, NoteToolbarAction } from '../lib/ui-helpers'
+import type { AdminDeletedItem, Note, ResourceVisibility } from '../lib/types'
+import type { NoteFolderNode, NoteToolbarAction } from '../lib/ui-helpers'
 import { filterNoteFolderNode, getCaretRectForOffset, normalizeFolderPath, toggleFileTreeSortState } from '../lib/ui-helpers'
+import { buildDeletedLibraryTreeNode } from '../lib/deleted-tree'
+import { api } from '../lib/api'
+import { getTreeRangeSelection, toggleMarkedTreePath, useLibraryTreeControls } from '../lib/library-tree-controls'
+import { createMarkdownBinding, replaceMarkdownContent, resolveStableTextCursorOffset, type LoroMarkdownBinding } from '../lib/loro-note'
 
 type NotePresence = {
   user: string
@@ -21,6 +36,7 @@ type RemoteCursor = {
   clientId: string
   user: string
   offset: number
+  cursorB64?: string | null
   color: string
 }
 
@@ -28,6 +44,13 @@ type RemoteCursorDecoration = RemoteCursor & {
   top: number
   left: number
   height: number
+}
+
+function renderedTextOffsetFromMarkdown(markdown: string) {
+  const html = marked.parse(markdown, { async: false })
+  const container = document.createElement('div')
+  container.innerHTML = html
+  return container.textContent?.length ?? 0
 }
 
 type Props = {
@@ -43,6 +66,7 @@ type Props = {
   selectedNoteFolderPath: string | null
   noteTree: NoteFolderNode[]
   notes: Note[]
+  deletedItems: AdminDeletedItem[]
   selectedNoteId: string | null
   markedPaths: string[]
   draggingPath: string | null
@@ -51,7 +75,6 @@ type Props = {
   noteTitleModalOpen: boolean
   noteEditorMode: NoteEditorMode
   noteDraft: string
-  selectedNoteDocument: NoteDocument | null
   activePresence: NotePresence[]
   remoteCursors: RemoteCursor[]
   noteEditorRef: RefObject<HTMLDivElement | null>
@@ -79,27 +102,20 @@ type Props = {
   onChangeSelectedNoteTitle: (value: string) => void
   onRequestSave: () => void
   onDeleteNote: () => void
+  onRestoreDeletedNote: (id: string) => void
   confirmNoteDelete: boolean
   onEnterFullscreen: () => void
   onExitFullscreen: () => void
   onOpenShareDialog: (target: { resourceKey: string; label: string; visibility?: ResourceVisibility }) => void
   resourceKeyForNote: (noteId: string) => string
   onSetNoteEditorMode: (mode: NoteEditorMode) => void
-  onRichDocumentChange: (document: NoteDocument) => void
-  handleNoteEditorClick: MouseEventHandler<HTMLDivElement>
   openNoteContextMenu: MouseEventHandler<HTMLDivElement>
-  handleNoteEditorInput: FormEventHandler<HTMLDivElement>
-  handleNoteEditorKeyDown: KeyboardEventHandler<HTMLDivElement>
   onRawDraftChange: (value: string) => void
   onRawDraftKeyDown: KeyboardEventHandler<HTMLTextAreaElement>
   onCopySelection: () => Promise<void>
   onPasteFromClipboard: () => Promise<void>
   onSetNoteContextMenu: (state: NoteContextMenuState) => void
   onSetNoteContextSubmenu: (submenu: NoteContextSubmenu) => void
-  onInsertNoteElement: (kind: NoteInsertKind) => void
-  onRunToolbarAction: (action: NoteToolbarAction) => void
-  onAddTableRow: (position: 'before' | 'after') => void
-  onAddTableColumn: (position: 'before' | 'after') => void
 }
 
 export function NotesPage({
@@ -115,6 +131,7 @@ export function NotesPage({
   selectedNoteFolderPath,
   noteTree,
   notes,
+  deletedItems,
   selectedNoteId,
   markedPaths,
   draggingPath,
@@ -123,7 +140,6 @@ export function NotesPage({
   noteTitleModalOpen,
   noteEditorMode,
   noteDraft,
-  selectedNoteDocument,
   activePresence,
   remoteCursors,
   noteEditorRef,
@@ -151,47 +167,42 @@ export function NotesPage({
   onChangeSelectedNoteTitle,
   onRequestSave,
   onDeleteNote,
+  onRestoreDeletedNote,
   confirmNoteDelete,
   onEnterFullscreen,
   onExitFullscreen,
   onOpenShareDialog,
   resourceKeyForNote,
   onSetNoteEditorMode,
-  onRichDocumentChange,
-  handleNoteEditorClick,
   openNoteContextMenu,
-  handleNoteEditorInput,
-  handleNoteEditorKeyDown,
   onRawDraftChange,
   onRawDraftKeyDown,
   onCopySelection,
   onPasteFromClipboard,
   onSetNoteContextMenu,
   onSetNoteContextSubmenu,
-  onInsertNoteElement,
-  onRunToolbarAction,
-  onAddTableRow,
-  onAddTableColumn,
 }: Props) {
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [renameFolderOpen, setRenameFolderOpen] = useState(false)
   const [deleteNoteOpen, setDeleteNoteOpen] = useState(false)
-  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
-  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
-  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
+  const {
+    sidebarSearchOpen,
+    setSidebarSearchOpen,
+    sidebarSearchQuery,
+    setSidebarSearchQuery,
+    metaFilterOpen,
+    setMetaFilterOpen,
+    sortState,
+    setSortState,
+    rowMetaVisibility,
+    setRowMetaVisibility,
+  } = useLibraryTreeControls()
   const [showToc, setShowToc] = useState(false)
-  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
-  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
-    type: true,
-    size: true,
-    modified: true,
-    created: true,
-  })
   const [newFolderName, setNewFolderName] = useState('')
   const [renameFolderName, setRenameFolderName] = useState(currentLibraryFolderPath.split('/').pop() ?? '')
   const noteRootNode = useMemo(
     () => ({
-      name: 'Inbox',
+      name: 'Notes',
       path: 'Inbox',
       children: noteTree,
       notes: notes
@@ -204,30 +215,13 @@ export function NotesPage({
     () => filterNoteFolderNode(noteRootNode, sidebarSearchQuery),
     [noteRootNode, sidebarSearchQuery],
   )
+  const deletedNoteTreeNode = useMemo(() => buildDeletedLibraryTreeNode('note', deletedItems), [deletedItems])
   const [remoteCursorDecorations, setRemoteCursorDecorations] = useState<RemoteCursorDecoration[]>([])
-  const [activeBlockId, setActiveBlockId] = useState<string | null>(null)
-  const [undoStack, setUndoStack] = useState<NoteDocument[]>([])
-  const [redoStack, setRedoStack] = useState<NoteDocument[]>([])
-  const blockInputRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
   const treeContainerRef = useRef<HTMLDivElement | null>(null)
+  const loroBindingRef = useRef<LoroMarkdownBinding | null>(null)
+  const loroPushTimeoutRef = useRef<number | null>(null)
+  const turndown = useMemo(() => new TurndownService(), [])
   void isCompactViewport
-  void handleNoteEditorClick
-  void handleNoteEditorInput
-  void handleNoteEditorKeyDown
-  void onRunToolbarAction
-
-  const visibleBlocks = useMemo(
-    () =>
-      [...(selectedNoteDocument?.blocks ?? [])]
-        .filter((block) => !block.deleted)
-        .sort((left, right) => left.order - right.order),
-    [selectedNoteDocument],
-  )
-
-  const activeBlock =
-    visibleBlocks.find((block) => block.id === activeBlockId) ??
-    visibleBlocks[0] ??
-    null
 
   const toc = useMemo(
     () =>
@@ -243,17 +237,202 @@ export function NotesPage({
     [noteDraft],
   )
 
+  useEffect(() => {
+    let cancelled = false
+    if (!selectedNote?.id) {
+      loroBindingRef.current = null
+      return
+    }
+    void api
+      .pullNoteDocument(selectedNote.id)
+      .then((response) => {
+        if (cancelled) return
+        loroBindingRef.current = createMarkdownBinding(
+          response.document.snapshot_b64 || selectedNote.loro_snapshot_b64,
+          response.document.legacy_markdown || noteDraft,
+          response.document.updates_b64?.length ? response.document.updates_b64 : selectedNote.loro_updates_b64,
+        )
+      })
+      .catch(() => {
+        if (!cancelled) {
+          loroBindingRef.current = createMarkdownBinding(
+            selectedNote.loro_snapshot_b64,
+            noteDraft,
+            selectedNote.loro_updates_b64,
+          )
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedNote?.id, selectedNote?.loro_snapshot_b64, selectedNote?.loro_updates_b64, noteDraft])
+
+  const tiptapEditor = useEditor({
+    extensions: [
+      StarterKit.configure({
+        heading: { levels: [1, 2, 3] },
+      }),
+      Table.configure({ resizable: false }),
+      TableRow,
+      TableHeader,
+      TableCell,
+      TaskList,
+      TaskItem.configure({ nested: true }),
+    ],
+    content: typeof marked.parse(noteDraft) === 'string' ? marked.parse(noteDraft) : '',
+    immediatelyRender: false,
+    onUpdate: ({ editor }) => {
+      const markdown = turndown.turndown(editor.getHTML())
+      if (markdown !== noteDraft) {
+        onRawDraftChange(markdown)
+      }
+      if (!selectedNote?.id || !loroBindingRef.current) return
+      const exported = replaceMarkdownContent(loroBindingRef.current, markdown)
+      if (!exported) return
+      if (loroPushTimeoutRef.current) {
+        window.clearTimeout(loroPushTimeoutRef.current)
+      }
+      const contentHtml = editor.getHTML()
+      loroPushTimeoutRef.current = window.setTimeout(() => {
+        void api.pushNoteDocumentUpdates(selectedNote.id!, {
+          client_id: `web-${selectedNote.id}`,
+          snapshot_b64: exported.snapshotB64,
+          update_b64: exported.updateB64,
+          editor_format: 'tiptap_loro',
+          content_markdown: markdown,
+          content_html: contentHtml,
+        })
+      }, 400)
+    },
+  })
+
+  useEffect(() => {
+    if (!tiptapEditor) return
+    const nextHtml = typeof marked.parse(noteDraft) === 'string' ? marked.parse(noteDraft) : ''
+    if (tiptapEditor.getHTML() !== nextHtml) {
+      tiptapEditor.commands.setContent(nextHtml, { emitUpdate: false })
+    }
+  }, [noteDraft, tiptapEditor])
+
+  useEffect(() => {
+    return () => {
+      if (loroPushTimeoutRef.current) {
+        window.clearTimeout(loroPushTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  function runTiptapToolbarAction(action: NoteToolbarAction) {
+    if (!tiptapEditor) {
+      return
+    }
+    const chain = tiptapEditor.chain().focus()
+    switch (action) {
+      case 'undo':
+        chain.undo().run()
+        return
+      case 'redo':
+        chain.redo().run()
+        return
+      case 'bold':
+        chain.toggleBold().run()
+        return
+      case 'italic':
+        chain.toggleItalic().run()
+        return
+      case 'underline':
+        chain.toggleUnderline().run()
+        return
+      case 'heading-1':
+        chain.toggleHeading({ level: 1 }).run()
+        return
+      case 'heading-2':
+        chain.toggleHeading({ level: 2 }).run()
+        return
+      case 'heading-3':
+        chain.toggleHeading({ level: 3 }).run()
+        return
+      case 'quote':
+        chain.toggleBlockquote().run()
+        return
+      case 'bullet-list':
+        chain.toggleBulletList().run()
+        return
+      case 'code-block':
+        chain.toggleCodeBlock().run()
+        return
+      case 'table':
+        if (!tiptapEditor.isActive('table')) {
+          chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
+        }
+        return
+      case 'divider':
+        chain.setHorizontalRule().run()
+        return
+      case 'link': {
+        const url = window.prompt('Enter link URL', 'https://')
+        if (!url?.trim()) return
+        chain.setLink({ href: url.trim() }).run()
+        return
+      }
+    }
+  }
+
+  function insertTiptapElement(kind: 'paragraph' | 'heading-1' | 'heading-2' | 'heading-3' | 'quote' | 'bullet-list' | 'numbered-list' | 'task-list' | 'code-block' | 'divider' | 'table') {
+    if (!tiptapEditor) {
+      return
+    }
+    const chain = tiptapEditor.chain().focus()
+    switch (kind) {
+      case 'paragraph':
+        chain.setParagraph().run()
+        return
+      case 'heading-1':
+        chain.setHeading({ level: 1 }).run()
+        return
+      case 'heading-2':
+        chain.setHeading({ level: 2 }).run()
+        return
+      case 'heading-3':
+        chain.setHeading({ level: 3 }).run()
+        return
+      case 'quote':
+        chain.toggleBlockquote().run()
+        return
+      case 'bullet-list':
+        chain.toggleBulletList().run()
+        return
+      case 'numbered-list':
+        chain.toggleOrderedList().run()
+        return
+      case 'task-list':
+        chain.toggleTaskList().run()
+        return
+      case 'code-block':
+        chain.toggleCodeBlock().run()
+        return
+      case 'divider':
+        chain.setHorizontalRule().run()
+        return
+      case 'table':
+        chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
+        return
+    }
+  }
+
+  function mutateTiptapTable(kind: 'row-before' | 'row-after' | 'col-before' | 'col-after') {
+    if (!tiptapEditor) return
+    const chain = tiptapEditor.chain().focus()
+    if (kind === 'row-before') chain.addRowBefore().run()
+    if (kind === 'row-after') chain.addRowAfter().run()
+    if (kind === 'col-before') chain.addColumnBefore().run()
+    if (kind === 'col-after') chain.addColumnAfter().run()
+  }
+
   function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
-    if (options?.shiftKey && selectedNoteId && treeContainerRef.current) {
-      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
-        .map((element) => element.dataset.fileTreePath)
-        .filter((value): value is string => Boolean(value))
-      const anchorPath = `note:${selectedNoteId}`
-      const anchorIndex = orderedPaths.indexOf(anchorPath)
-      const targetIndex = orderedPaths.indexOf(path)
-      if (anchorIndex >= 0 && targetIndex >= 0) {
-        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
-        const range = orderedPaths.slice(start, end + 1).filter((entry) => entry.startsWith('note:'))
+    if (options?.shiftKey && selectedNoteId) {
+      const range = getTreeRangeSelection(treeContainerRef.current, `note:${selectedNoteId}`, path, (entry) => entry.startsWith('note:'))
+      if (range) {
         onSetMarkedPaths(Array.from(new Set(range)))
         const noteId = path.startsWith('note:') ? path.slice('note:'.length) : null
         const note = noteId ? notes.find((entry) => entry.id === noteId) : null
@@ -263,9 +442,7 @@ export function NotesPage({
     }
 
     if (options?.metaKey || options?.ctrlKey) {
-      onSetMarkedPaths((current) =>
-        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
-      )
+      onSetMarkedPaths((current) => toggleMarkedTreePath(current, path))
       const noteId = path.startsWith('note:') ? path.slice('note:'.length) : null
       const note = noteId ? notes.find((entry) => entry.id === noteId) : null
       if (note) onSelectNote(note)
@@ -279,235 +456,18 @@ export function NotesPage({
   }
 
   function handleTreeOpen(path: string) {
+    if (path.startsWith('deleted-note:')) {
+      void onRestoreDeletedNote(path.slice('deleted-note:'.length))
+      return
+    }
     if (!path.startsWith('note:')) return
     const noteId = path.slice('note:'.length)
     const note = notes.find((entry) => entry.id === noteId)
     if (note) onSelectNote(note)
   }
 
-  function normalizeDocumentBlocks(blocks: NoteBlock[]) {
-    return blocks.map((block, index) => ({
-      ...block,
-      order: index,
-      attrs: { ...block.attrs },
-    }))
-  }
-
-  function cloneDocument(document: NoteDocument) {
-    return {
-      ...document,
-      clock: { ...document.clock },
-      blocks: document.blocks.map((block) => ({ ...block, attrs: { ...block.attrs } })),
-    }
-  }
-
-  function createBlock(kind: NoteBlock['kind'], text = '', previous?: NoteBlock | null): NoteBlock {
-    return {
-      id: previous?.id ?? `block-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-      kind,
-      text,
-      attrs:
-        kind === 'heading'
-          ? { level: previous?.attrs.level ?? '1' }
-          : previous?.attrs
-            ? { ...previous.attrs }
-            : {},
-      order: 0,
-      deleted: false,
-      last_modified_by: previous?.last_modified_by ?? selectedNote?.last_editor_id ?? 'local',
-      last_modified_counter: (selectedNoteDocument?.clock[selectedNote?.last_editor_id ?? 'local'] ?? 0) + 1,
-    }
-  }
-
-  function commitRichDocument(nextBlocks: NoteBlock[], options?: { pushHistory?: boolean; focusBlockId?: string | null }) {
-    if (!selectedNoteDocument) return
-    const nextDocument: NoteDocument = {
-      ...selectedNoteDocument,
-      blocks: normalizeDocumentBlocks(nextBlocks),
-      last_operation_id: `local:${Date.now().toString(36)}`,
-    }
-    if (options?.pushHistory !== false) {
-      setUndoStack((current) => [...current, cloneDocument(selectedNoteDocument)])
-      setRedoStack([])
-    }
-    onRichDocumentChange(nextDocument)
-    if (options?.focusBlockId !== undefined) {
-      setActiveBlockId(options.focusBlockId)
-    }
-  }
-
-  function updateActiveBlock(mutator: (block: NoteBlock) => NoteBlock) {
-    if (!selectedNoteDocument || !activeBlock) return
-    commitRichDocument(
-      visibleBlocks.map((block) => (block.id === activeBlock.id ? mutator(block) : block)),
-      { focusBlockId: activeBlock.id },
-    )
-  }
-
-  function wrapTextSelection(
-    textarea: HTMLTextAreaElement,
-    before: string,
-    after = before,
-  ) {
-    const start = textarea.selectionStart
-    const end = textarea.selectionEnd
-    const source = textarea.value
-    const selected = source.slice(start, end) || 'text'
-    const nextText = `${source.slice(0, start)}${before}${selected}${after}${source.slice(end)}`
-    updateActiveBlock((block) => ({ ...block, text: nextText }))
-    window.requestAnimationFrame(() => {
-      const next = blockInputRefs.current[activeBlock?.id ?? '']
-      if (!next) return
-      next.focus()
-      const selectionStart = start + before.length
-      const selectionEnd = selectionStart + selected.length
-      next.selectionStart = selectionStart
-      next.selectionEnd = selectionEnd
-    })
-  }
-
-  function splitActiveBlock(textarea: HTMLTextAreaElement) {
-    if (!selectedNoteDocument || !activeBlock) return
-    const start = textarea.selectionStart
-    const end = textarea.selectionEnd
-    const source = activeBlock.text
-    const beforeText = source.slice(0, start)
-    const afterText = source.slice(end)
-    const currentIndex = visibleBlocks.findIndex((block) => block.id === activeBlock.id)
-    const nextBlock = createBlock(activeBlock.kind, afterText, { ...activeBlock, id: '' })
-    if (activeBlock.kind === 'heading') {
-      nextBlock.kind = 'paragraph'
-      nextBlock.attrs = {}
-    }
-    const nextBlocks = visibleBlocks.flatMap((block, index) => {
-      if (index !== currentIndex) return [block]
-      return [{ ...block, text: beforeText }, nextBlock]
-    })
-    commitRichDocument(nextBlocks, { focusBlockId: nextBlock.id })
-    window.requestAnimationFrame(() => {
-      const next = blockInputRefs.current[nextBlock.id]
-      if (!next) return
-      next.focus()
-      next.selectionStart = 0
-      next.selectionEnd = 0
-    })
-  }
-
-  function mergeWithPreviousBlock(textarea: HTMLTextAreaElement) {
-    if (!selectedNoteDocument || !activeBlock) return
-    if (textarea.selectionStart !== 0 || textarea.selectionEnd !== 0) return
-    const currentIndex = visibleBlocks.findIndex((block) => block.id === activeBlock.id)
-    if (currentIndex <= 0) return
-    const previous = visibleBlocks[currentIndex - 1]
-    const nextText = `${previous.text}${activeBlock.text}`
-    const nextBlocks = visibleBlocks.flatMap((block, index) => {
-      if (index === currentIndex - 1) return [{ ...previous, text: nextText }]
-      if (index === currentIndex) return []
-      return [block]
-    })
-    commitRichDocument(nextBlocks, { focusBlockId: previous.id })
-    window.requestAnimationFrame(() => {
-      const next = blockInputRefs.current[previous.id]
-      if (!next) return
-      next.focus()
-      next.selectionStart = previous.text.length
-      next.selectionEnd = previous.text.length
-    })
-  }
-
-  function appendBlockAfter(block: NoteBlock, kind: NoteBlock['kind'] = 'paragraph', text = '') {
-    const currentIndex = visibleBlocks.findIndex((entry) => entry.id === block.id)
-    const nextBlock = createBlock(kind, text)
-    const nextBlocks = visibleBlocks.flatMap((entry, index) => (index === currentIndex ? [entry, nextBlock] : [entry]))
-    commitRichDocument(nextBlocks, { focusBlockId: nextBlock.id })
-    window.requestAnimationFrame(() => blockInputRefs.current[nextBlock.id]?.focus())
-  }
-
-  function applyToolbarAction(action: NoteToolbarAction) {
-    if (!selectedNoteDocument) return
-    const focusedInput = activeBlockId ? blockInputRefs.current[activeBlockId] : null
-    switch (action) {
-      case 'undo': {
-        const previous = undoStack[undoStack.length - 1]
-        if (!previous) return
-        setUndoStack((current) => current.slice(0, -1))
-        setRedoStack((current) => [...current, cloneDocument(selectedNoteDocument)])
-        onRichDocumentChange(previous)
-        return
-      }
-      case 'redo': {
-        const next = redoStack[redoStack.length - 1]
-        if (!next) return
-        setRedoStack((current) => current.slice(0, -1))
-        setUndoStack((current) => [...current, cloneDocument(selectedNoteDocument)])
-        onRichDocumentChange(next)
-        return
-      }
-      case 'bold':
-        if (focusedInput) wrapTextSelection(focusedInput, '**')
-        return
-      case 'italic':
-        if (focusedInput) wrapTextSelection(focusedInput, '*')
-        return
-      case 'underline':
-        if (focusedInput) wrapTextSelection(focusedInput, '<u>', '</u>')
-        return
-      case 'link': {
-        if (!focusedInput) return
-        const url = window.prompt('Enter link URL', 'https://')
-        if (!url?.trim()) return
-        wrapTextSelection(focusedInput, '[', `](${url.trim()})`)
-        return
-      }
-      case 'heading-1':
-      case 'heading-2':
-      case 'heading-3':
-        if (!activeBlock) return
-        updateActiveBlock((block) => ({
-          ...block,
-          kind: 'heading',
-          attrs: { ...block.attrs, level: action === 'heading-1' ? '1' : action === 'heading-2' ? '2' : '3' },
-        }))
-        return
-      case 'quote':
-        if (!activeBlock) return
-        updateActiveBlock((block) => ({ ...block, kind: 'quote' }))
-        return
-      case 'bullet-list':
-        if (!activeBlock) return
-        updateActiveBlock((block) => ({ ...block, kind: 'bullet_list' }))
-        return
-      case 'code-block':
-        if (!activeBlock) return
-        updateActiveBlock((block) => ({ ...block, kind: 'code' }))
-        return
-      case 'table':
-        if (!activeBlock) return
-        updateActiveBlock((block) => ({
-          ...block,
-          kind: 'table',
-          text: block.text.trim() ? block.text : '| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |',
-        }))
-        return
-      case 'divider':
-        if (!activeBlock) return
-        appendBlockAfter(activeBlock, 'paragraph', '---')
-        return
-      default:
-        return
-    }
-  }
-
-  void splitActiveBlock
-  void mergeWithPreviousBlock
-  void applyToolbarAction
-
   useLayoutEffect(() => {
     if (noteEditorMode !== 'rich' || !noteEditorRef.current || remoteCursors.length === 0) {
-      setRemoteCursorDecorations([])
-      return
-    }
-    if (noteEditorRef.current.dataset.noteEditorModel === 'blocks') {
       setRemoteCursorDecorations([])
       return
     }
@@ -515,7 +475,13 @@ export function NotesPage({
     const editorRect = noteEditorRef.current.getBoundingClientRect()
     const nextDecorations = remoteCursors
       .map((cursor) => {
-        const rect = getCaretRectForOffset(noteEditorRef.current!, cursor.offset)
+        const markdownOffset =
+          cursor.cursorB64 && loroBindingRef.current
+            ? resolveStableTextCursorOffset(loroBindingRef.current, cursor.cursorB64) ?? cursor.offset
+            : cursor.offset
+        const renderedOffset =
+          markdownOffset > 0 ? renderedTextOffsetFromMarkdown(noteDraft.slice(0, markdownOffset)) : 0
+        const rect = getCaretRectForOffset(noteEditorRef.current!, renderedOffset)
         if (!rect) return null
         return {
           ...cursor,
@@ -528,12 +494,6 @@ export function NotesPage({
 
     setRemoteCursorDecorations(nextDecorations)
   }, [noteDraft, noteEditorMode, noteEditorRef, remoteCursors])
-
-  useLayoutEffect(() => {
-    setUndoStack([])
-    setRedoStack([])
-    setActiveBlockId(visibleBlocks[0]?.id ?? null)
-  }, [selectedNote?.id])
 
   return (
     <>
@@ -656,7 +616,6 @@ export function NotesPage({
                   activeFolderPath={selectedNoteFolderPath}
                   selectedNoteId={selectedNoteId}
                   markedPaths={markedPaths}
-                  hideRoot
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
                   onSelectPath={handleTreeSelection}
@@ -671,6 +630,25 @@ export function NotesPage({
               ) : (
                 <div className="empty-state">No matching notes.</div>
               )}
+              {deletedNoteTreeNode ? (
+                <LibraryDeletedTreeNode
+                  kind="note"
+                  node={deletedNoteTreeNode}
+                  deletedItems={deletedItems}
+                  selectedPath={selectedNoteId ? `note:${selectedNoteId}` : ''}
+                  activePath={selectedNoteId ? `note:${selectedNoteId}` : null}
+                  markedPaths={markedPaths}
+                  draggingPath={draggingPath}
+                  dropTargetPath={dropTargetPath}
+                  onSelect={handleTreeSelection}
+                  onOpen={handleTreeOpen}
+                  onDragStart={onDragStart as (event: React.DragEvent<HTMLElement>, path: string) => void}
+                  onDragEnd={onDragEnd}
+                  onDropTargetChange={onDropTargetChange}
+                  onDrop={onDrop}
+                  rowMetaVisibility={rowMetaVisibility}
+                />
+              ) : null}
             </div>
           </>
         }
@@ -914,20 +892,12 @@ export function NotesPage({
                 </div>
               </div>
               <div className="notes-editor-card">
-                {noteEditorMode === 'rich' ? <NotesFormatToolbar onRunAction={onRunToolbarAction} /> : null}
+                {noteEditorMode === 'rich' ? <NotesFormatToolbar onRunAction={runTiptapToolbarAction} /> : null}
                 {noteEditorMode === 'rich' ? (
                   <>
-                    <div
-                      ref={noteEditorRef}
-                      className="markdown-editor"
-                      data-placeholder="Select or create a note"
-                      contentEditable
-                      suppressContentEditableWarning
-                      onClick={handleNoteEditorClick}
-                      onInput={handleNoteEditorInput}
-                      onKeyDown={handleNoteEditorKeyDown}
-                      onContextMenu={openNoteContextMenu}
-                    />
+                    <div ref={noteEditorRef} className="markdown-editor note-tiptap-shell" onContextMenu={openNoteContextMenu}>
+                      <EditorContent editor={tiptapEditor} />
+                    </div>
                     <div className="notes-remote-cursor-layer" aria-hidden="true">
                       {remoteCursorDecorations.map((cursor) => (
                         <div
@@ -1003,7 +973,7 @@ export function NotesPage({
                                   key={kind}
                                   className="note-context-menu-item"
                                   onClick={() => {
-                                    onInsertNoteElement(kind)
+                                    insertTiptapElement(kind)
                                     onSetNoteContextMenu(null)
                                     onSetNoteContextSubmenu(null)
                                   }}
@@ -1028,41 +998,41 @@ export function NotesPage({
                               <div className="note-context-submenu">
                                 <button
                                   className="note-context-menu-item"
-                                  onClick={() => {
-                                    onAddTableRow('before')
-                                    onSetNoteContextMenu(null)
-                                    onSetNoteContextSubmenu(null)
-                                  }}
+                                    onClick={() => {
+                                      mutateTiptapTable('row-before')
+                                      onSetNoteContextMenu(null)
+                                      onSetNoteContextSubmenu(null)
+                                    }}
                                 >
                                   Add row before
                                 </button>
                                 <button
                                   className="note-context-menu-item"
-                                  onClick={() => {
-                                    onAddTableRow('after')
-                                    onSetNoteContextMenu(null)
-                                    onSetNoteContextSubmenu(null)
-                                  }}
+                                    onClick={() => {
+                                      mutateTiptapTable('row-after')
+                                      onSetNoteContextMenu(null)
+                                      onSetNoteContextSubmenu(null)
+                                    }}
                                 >
                                   Add row after
                                 </button>
                                 <button
                                   className="note-context-menu-item"
-                                  onClick={() => {
-                                    onAddTableColumn('before')
-                                    onSetNoteContextMenu(null)
-                                    onSetNoteContextSubmenu(null)
-                                  }}
+                                    onClick={() => {
+                                      mutateTiptapTable('col-before')
+                                      onSetNoteContextMenu(null)
+                                      onSetNoteContextSubmenu(null)
+                                    }}
                                 >
                                   Add column before
                                 </button>
                                 <button
                                   className="note-context-menu-item"
-                                  onClick={() => {
-                                    onAddTableColumn('after')
-                                    onSetNoteContextMenu(null)
-                                    onSetNoteContextSubmenu(null)
-                                  }}
+                                    onClick={() => {
+                                      mutateTiptapTable('col-after')
+                                      onSetNoteContextMenu(null)
+                                      onSetNoteContextSubmenu(null)
+                                    }}
                                 >
                                   Add column after
                                 </button>

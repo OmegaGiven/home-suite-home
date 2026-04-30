@@ -50,34 +50,21 @@ type CreateAuthActionsContext = {
   showActionNotice: (message: string) => void
 }
 
+function filterHiddenConflictNoteNodes(nodes: FileNode[]): FileNode[] {
+  return nodes
+    .flatMap((node) => {
+      if (node.path === 'notes' || node.path.startsWith('notes/')) return []
+      const children = filterHiddenConflictNoteNodes(node.children)
+      return [{ ...node, children }]
+    })
+}
+
 function isConflictForkNote(note: Note) {
   return Boolean(note.conflict_tag || note.forked_from_note_id)
 }
 
 function filterVisibleNotes(notes: Note[]) {
   return notes.filter((note) => !isConflictForkNote(note))
-}
-
-function noteIdFromManagedPath(path: string) {
-  const match = path.match(/-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.md$/i)
-  return match?.[1] ?? null
-}
-
-function filterHiddenConflictNoteNodes(nodes: FileNode[], notes: Note[]): FileNode[] {
-  const hiddenNoteIds = new Set(notes.filter((note) => isConflictForkNote(note)).map((note) => note.id))
-  if (hiddenNoteIds.size === 0) return nodes
-  return nodes
-    .flatMap((node) => {
-      if (node.kind === 'file' && node.path.startsWith('notes/')) {
-        const noteId = noteIdFromManagedPath(node.path)
-        if (noteId && hiddenNoteIds.has(noteId)) return []
-      }
-      const children = filterHiddenConflictNoteNodes(node.children, notes)
-      if (node.kind === 'directory' && node.path.startsWith('notes') && children.length === 0 && node.path !== 'notes') {
-        return []
-      }
-      return [{ ...node, children }]
-    })
 }
 
 export function createAuthActions(context: CreateAuthActionsContext) {
@@ -101,7 +88,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     const visibleNotes = filterVisibleNotes(workspace.notes)
     context.rememberPersistedNotes(visibleNotes)
     context.setNotes(visibleNotes)
-    context.setFilesTree(filterHiddenConflictNoteNodes(workspace.file_tree, workspace.notes))
+    context.setFilesTree(filterHiddenConflictNoteNodes(workspace.file_tree))
     context.setSelectedFilePath('')
     context.setSelectedNoteId(visibleNotes[0]?.id ?? null)
     context.setSelectedFolderPath(context.normalizeFolderPath(visibleNotes[0]?.folder ?? 'Inbox'))
@@ -175,7 +162,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
         const visibleNotes = filterVisibleNotes(cachedWorkspace.notes)
         context.rememberPersistedNotes(visibleNotes)
         context.setNotes(visibleNotes)
-        context.setFilesTree(filterHiddenConflictNoteNodes(cachedWorkspace.file_tree, cachedWorkspace.notes))
+        context.setFilesTree(filterHiddenConflictNoteNodes(cachedWorkspace.file_tree))
         context.setSelectedNoteId(visibleNotes[0]?.id ?? null)
         context.setSelectedFolderPath(context.normalizeFolderPath(visibleNotes[0]?.folder ?? 'Inbox'))
         context.setCustomFolders((current) =>

@@ -8,10 +8,7 @@ import type {
   GoogleCalendarConfig,
   Message,
   Note,
-  NoteDocument,
-  NoteDocumentOperationBatch,
-  NoteOperationsPullResponse,
-  NoteOperationsPushResponse,
+  NoteDocumentPullResponse,
   NoteSessionOpenResponse,
   OidcConfig,
   ResourceShare,
@@ -37,6 +34,8 @@ import type {
   AdminAuditEntry,
   AdminDeletedItem,
   UpdateAccountCredentialsRequest,
+  PushNoteDocumentUpdatesRequest,
+  PushNoteDocumentUpdatesResponse,
   UserProfile,
 } from './types'
 import { isNativePlatform, serverBaseStore, sessionStore } from './platform'
@@ -218,54 +217,40 @@ export const api = {
     return request<SessionResponse>(`/api/v1/auth/oidc/callback?${query.toString()}`)
   },
   listNotes() {
-    return request<Note[]>('/api/v1/notes')
+    return request<Note[]>('/api/v2/notes')
   },
-  createNote(title: string, folder?: string, markdown?: string, document?: NoteDocument | null) {
-    return request<Note>('/api/v1/notes', {
+  createNote(title: string, folder?: string, markdown?: string) {
+    return request<Note>('/api/v2/notes', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, folder, markdown, document }),
-    })
-  },
-  updateNote(note: Note, options?: { keepalive?: boolean }) {
-    return request<Note>(`/api/v1/notes/${note.id}`, {
-      method: 'PUT',
-      keepalive: options?.keepalive,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        title: note.title,
-        folder: note.folder,
-        markdown: note.markdown,
-        document: note.document,
-        revision: note.revision,
-      }),
+      body: JSON.stringify({ title, folder, markdown }),
     })
   },
   deleteNote(id: string) {
-    return request<void>(`/api/v1/notes/${id}`, { method: 'DELETE' })
+    return request<void>(`/api/v2/notes/${id}`, { method: 'DELETE' })
   },
   openNoteSession(id: string, clientId: string) {
-    return request<NoteSessionOpenResponse>(`/api/v1/notes/${id}/session/open`, {
+    return request<NoteSessionOpenResponse>(`/api/v2/notes/${id}/session/open`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_id: clientId }),
     })
   },
   closeNoteSession(id: string, sessionId: string) {
-    return request<void>(`/api/v1/notes/${id}/session/close`, {
+    return request<void>(`/api/v2/notes/${id}/session/close`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId }),
     })
   },
-  pullNoteOperations(id: string, sinceRevision: number) {
-    return request<NoteOperationsPullResponse>(`/api/v1/notes/${id}/operations?since_revision=${sinceRevision}`)
+  pullNoteDocument(id: string) {
+    return request<NoteDocumentPullResponse>(`/api/v2/notes/${id}/document`)
   },
-  pushNoteOperations(id: string, batch: NoteDocumentOperationBatch) {
-    return request<NoteOperationsPushResponse>(`/api/v1/notes/${id}/operations`, {
+  pushNoteDocumentUpdates(id: string, payload: PushNoteDocumentUpdatesRequest) {
+    return request<PushNoteDocumentUpdatesResponse>(`/api/v2/notes/${id}/document/updates`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ batch }),
+      body: JSON.stringify(payload),
     })
   },
   listDiagrams() {
@@ -497,6 +482,14 @@ export const api = {
   },
   restoreAdminDeletedItem(id: string) {
     return request<{ ok: boolean }>(`/api/v1/admin/deleted-items/${encodeURIComponent(id)}/restore`, {
+      method: 'POST',
+    })
+  },
+  getDeletedItems() {
+    return request<AdminDeletedItem[]>('/api/v1/deleted-items')
+  },
+  restoreDeletedItem(id: string) {
+    return request<{ ok: boolean }>(`/api/v1/deleted-items/${encodeURIComponent(id)}/restore`, {
       method: 'POST',
     })
   },

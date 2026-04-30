@@ -25,8 +25,7 @@ function operationKey(operation: SyncOperation): string {
   switch (operation.kind) {
     case 'create_note':
       return `create-note:${operation.title}`
-    case 'update_note':
-    case 'apply_note_operations':
+    case 'update_note_document':
     case 'delete_note':
       return operation.id
     case 'create_diagram':

@@ -4,7 +4,7 @@ use axum::{
     extract::{Multipart, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::Response,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use chrono::Utc;
 use pulldown_cmark::{Options, Parser, html};
@@ -25,12 +25,12 @@ use crate::{
         CreateIcsCalendarConnectionRequest, CreateLocalCalendarConnectionRequest,
         CreateMessageRequest, CreateNoteRequest, CreateRoomRequest, CreateTaskRequest,
         CreateUserRequest, DeleteFileRequest, GoogleCalendarConfigResponse, HealthResponse,
-        LoginRequest, MoveFileRequest, NoteOperationsPushRequest, NoteSessionCloseRequest,
-        NoteSessionOpenRequest, OidcConfigResponse, OidcMobileExchangeRequest, RealtimeEvent, RenameFileRequest,
+        LoginRequest, MoveFileRequest, NoteSessionCloseRequest,
+        NoteSessionOpenRequest, OidcConfigResponse, OidcMobileExchangeRequest, PushNoteDocumentUpdatesRequest, RealtimeEvent, RenameFileRequest,
         RtcConfig, SetupAdminRequest, SyncBootstrapRequest, SyncPullRequest, SyncPushRequest,
         ToggleMessageReactionRequest,
         UpdateAccountCredentialsRequest, UpdateCalendarConnectionRequest,
-        UpdateCalendarEventRequest, UpdateDiagramRequest, UpdateNoteRequest, UpdateTaskRequest,
+        UpdateCalendarEventRequest, UpdateDiagramRequest, UpdateNoteMetadataRequest, UpdateNoteRequest, UpdateTaskRequest,
         UpdateVoiceMemoRequest,
         UpdateResourceShareRequest, UpdateUserAccessRequest,
     },
@@ -97,11 +97,17 @@ pub fn router(state: AppState) -> Router {
             get(get_admin_storage_overview),
         )
         .route("/api/v1/admin/db", get(get_admin_database_overview))
+        .route("/api/v2/admin/notes/migrate-loro", post(migrate_notes_to_loro))
         .route("/api/v1/admin/audit", get(list_admin_audit_entries))
         .route("/api/v1/admin/deleted-items", get(list_admin_deleted_items))
         .route(
             "/api/v1/admin/deleted-items/{id}/restore",
             post(restore_admin_deleted_item),
+        )
+        .route("/api/v1/deleted-items", get(list_deleted_items))
+        .route(
+            "/api/v1/deleted-items/{id}/restore",
+            post(restore_deleted_item),
         )
         .route(
             "/api/v1/admin/system/update",
@@ -126,7 +132,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/notes/{id}", put(update_note).delete(delete_note))
         .route("/api/v1/notes/{id}/session/open", post(open_note_session))
         .route("/api/v1/notes/{id}/session/close", post(close_note_session))
-        .route("/api/v1/notes/{id}/operations", get(pull_note_operations).post(push_note_operations))
+        .route("/api/v2/notes", get(list_notes).post(create_note))
+        .route("/api/v2/notes/{id}", delete(delete_note))
+        .route("/api/v2/notes/{id}/session/open", post(open_note_session))
+        .route("/api/v2/notes/{id}/session/close", post(close_note_session))
+        .route("/api/v2/notes/{id}/metadata", put(update_note_metadata))
+        .route("/api/v2/notes/{id}/document", get(get_note_document))
+        .route("/api/v2/notes/{id}/document/updates", post(push_note_document_updates))
         .route("/api/v1/diagrams", get(list_diagrams).post(create_diagram))
         .route("/api/v1/diagrams/{id}", put(update_diagram))
         .route(
@@ -320,6 +332,14 @@ async fn get_admin_database_overview(
     Ok(Json(state.admin_database_overview().await))
 }
 
+async fn migrate_notes_to_loro(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<crate::models::NoteDocumentMigrationSummary>> {
+    let _user = require_manage_org_settings_user(&state, &headers).await?;
+    Ok(Json(state.migrate_all_notes_to_loro().await?))
+}
+
 async fn list_admin_deleted_items(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -343,6 +363,24 @@ async fn restore_admin_deleted_item(
 ) -> AppResult<Json<serde_json::Value>> {
     let _user = require_manage_org_settings_user(&state, &headers).await?;
     state.restore_deleted_item(&id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn list_deleted_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<Vec<crate::models::AdminDeletedItem>>> {
+    let user = authenticated_user(&state, &headers).await?;
+    Ok(Json(state.list_deleted_items_for_user(user.id).await))
+}
+
+async fn restore_deleted_item(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<serde_json::Value>> {
+    let user = authenticated_user(&state, &headers).await?;
+    state.restore_deleted_item_for_user(user.id, &id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -757,20 +795,26 @@ async fn update_note(
 ) -> AppResult<Json<crate::models::Note>> {
     let mut note = state.update_note(id, payload).await?;
     note.rendered_html = markdown_to_html(&note.markdown);
-    let _ = state.realtime.send(RealtimeEvent::NotePatch {
+    let _ = state.realtime.send(RealtimeEvent::NoteDocumentUpdate {
         note_id: note.id,
-        title: note.title.clone(),
-        folder: note.folder.clone(),
-        markdown: note.markdown.clone(),
-        revision: note.revision,
-        document: Some(note.document.clone()),
+        client_id: "server-update-note".into(),
+        snapshot_b64: Some(note.loro_snapshot_b64.clone()),
+        update_b64: String::new(),
+        version: note.loro_version,
+        editor_format: note.editor_format.clone(),
+        content_markdown: note.markdown.clone(),
+        content_html: note.rendered_html.clone(),
     });
     Ok(Json(note))
 }
 
-#[derive(Deserialize)]
-struct NoteOperationsQuery {
-    since_revision: Option<u64>,
+async fn update_note_metadata(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+    Json(payload): Json<UpdateNoteMetadataRequest>,
+) -> AppResult<Json<crate::models::Note>> {
+    let note = state.update_note_metadata(id, payload).await?;
+    Ok(Json(note))
 }
 
 async fn open_note_session(
@@ -794,28 +838,23 @@ async fn close_note_session(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn pull_note_operations(
+async fn get_note_document(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Query(query): Query<NoteOperationsQuery>,
-) -> AppResult<Json<crate::models::NoteOperationsPullResponse>> {
+) -> AppResult<Json<crate::models::NoteDocumentPullResponse>> {
     let user = authenticated_user(&state, &headers).await?;
-    Ok(Json(
-        state
-            .pull_note_operations(id, user, query.since_revision.unwrap_or(0))
-            .await?,
-    ))
+    Ok(Json(state.get_note_document(id, user).await?))
 }
 
-async fn push_note_operations(
+async fn push_note_document_updates(
     Path(id): Path<Uuid>,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<NoteOperationsPushRequest>,
-) -> AppResult<Json<crate::models::NoteOperationsPushResponse>> {
+    Json(payload): Json<PushNoteDocumentUpdatesRequest>,
+) -> AppResult<Json<crate::models::PushNoteDocumentUpdatesResponse>> {
     let user = authenticated_user(&state, &headers).await?;
-    Ok(Json(state.push_note_operations(id, user, payload.batch).await?))
+    Ok(Json(state.push_note_document_updates(id, user, payload).await?))
 }
 
 async fn delete_note(Path(id): Path<Uuid>, State(state): State<AppState>) -> AppResult<StatusCode> {

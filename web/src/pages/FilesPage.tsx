@@ -1,11 +1,12 @@
-import { useMemo, useRef, useState, type CSSProperties, type ChangeEvent, type DragEvent, type ReactNode, type RefObject } from 'react'
+import { useMemo, useRef, type CSSProperties, type ChangeEvent, type DragEvent, type ReactNode, type RefObject } from 'react'
 import { LibraryActionBar } from '../components/LibraryActionBar'
 import { NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
-import { FileTreeHeader, FileTreeNode, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
+import { FileTreeHeader, FileTreeNode } from '../components/FileTreeNode'
 import { LibraryShell } from '../components/LibraryShell'
 import { PaneSplitter } from '../components/PaneSplitter'
 import type { FileNode, ResourceVisibility } from '../lib/types'
-import { aggregateFileNodeSize, ancestorDirectoryPaths, fileTypeLabel, filterFileTree, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState, type FileTreeSortState } from '../lib/ui-helpers'
+import { getTreeRangeSelection, toggleMarkedTreePath, useLibraryTreeControls } from '../lib/library-tree-controls'
+import { aggregateFileNodeSize, ancestorDirectoryPaths, fileTypeLabel, filterFileTree, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState } from '../lib/ui-helpers'
 import { FilesModals } from './files/FilesModals'
 import { FilesPreviewPane } from './files/FilesPreviewPane'
 
@@ -151,16 +152,18 @@ export function FilesPage({
   onBeginRenameCurrentFile,
 }: Props) {
   const treeContainerRef = useRef<HTMLDivElement | null>(null)
-  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
-  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
-  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
-  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
-  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
-    type: true,
-    size: true,
-    modified: true,
-    created: true,
-  })
+  const {
+    sidebarSearchOpen,
+    setSidebarSearchOpen,
+    sidebarSearchQuery,
+    setSidebarSearchQuery,
+    metaFilterOpen,
+    setMetaFilterOpen,
+    sortState,
+    setSortState,
+    rowMetaVisibility,
+    setRowMetaVisibility,
+  } = useLibraryTreeControls()
   const filteredFilesTree = useMemo(
     () => filterFileTree(filesTree, sidebarSearchQuery, displayNameForFileNode),
     [filesTree, sidebarSearchQuery, displayNameForFileNode],
@@ -175,15 +178,9 @@ export function FilesPage({
   )
 
   function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
-    if (options?.shiftKey && selectedFilePath && treeContainerRef.current) {
-      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
-        .map((element) => element.dataset.fileTreePath)
-        .filter((value): value is string => Boolean(value))
-      const anchorIndex = orderedPaths.indexOf(selectedFilePath)
-      const targetIndex = orderedPaths.indexOf(path)
-      if (anchorIndex >= 0 && targetIndex >= 0) {
-        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
-        const range = orderedPaths.slice(start, end + 1)
+    if (options?.shiftKey && selectedFilePath) {
+      const range = getTreeRangeSelection(treeContainerRef.current, selectedFilePath, path, () => true)
+      if (range) {
         onSetMarkedFilePaths(Array.from(new Set(range)))
         selectFileTreeNode(path)
         return
@@ -191,9 +188,7 @@ export function FilesPage({
     }
 
     if (options?.metaKey || options?.ctrlKey) {
-      onSetMarkedFilePaths((current) =>
-        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
-      )
+      onSetMarkedFilePaths((current) => toggleMarkedTreePath(current, path))
       selectFileTreeNode(path)
       return
     }

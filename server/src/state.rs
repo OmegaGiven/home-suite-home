@@ -4,9 +4,12 @@ use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 use ical::IcalParser;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use loro::{ExportMode, LoroDoc};
+use pulldown_cmark::{Options, Parser, html};
 use reqwest::Client;
 use serde_json::Value;
 use tokio::{process::Command, sync::{RwLock, broadcast}};
@@ -22,18 +25,19 @@ use crate::{
         CreateIcsCalendarConnectionRequest, CreateLocalCalendarConnectionRequest,
         CreateMessageRequest, CreateNoteRequest, CreateRoomRequest, CreateTaskRequest,
         CreateUserRequest, DeletedResourceKind, Diagram, GoogleCalendarConfigResponse, JobStatus, Message,
-        MessageReaction, Note, NoteBlock, NoteBlockKind, NoteConflictRecord, NoteDocument,
-        NoteDocumentOperationBatch, NoteOperation, NoteOperationRecord, NoteOperationsPullResponse,
-        NoteOperationsPushResponse, NoteSession, NoteSessionCloseRequest, NoteSessionOpenRequest,
+        MessageReaction, Note, NoteConflictRecord, NoteDocument,
+        NoteDocumentMigrationSummary, NoteDocumentPullResponse, NoteDocumentState,
+        NoteSession, NoteSessionCloseRequest, NoteSessionOpenRequest,
         NoteSessionOpenResponse, ObjectNamespace, ObjectNamespaceKind, OidcConfigResponse,
         OidcProviderSettings, PendingCredentialChangeRequest, RealtimeEvent, ResourceShare,
+        PushNoteDocumentUpdatesRequest, PushNoteDocumentUpdatesResponse,
         ResourceVisibility, Room, SessionResponse, SetupAdminRequest, StoredUser,
         SyncBootstrapRequest, SyncConflict, SyncCursorSet, SyncEntityKind, SyncEnvelope,
         SyncOperation, SyncPullRequest, SyncPushRequest, SyncPushResponse, SyncTombstone,
         SystemUpdateStatus, TaskItem, TaskStatus, ToggleMessageReactionRequest, TranscriptSegment,
         TranscriptionJob,
         UpdateAccountCredentialsRequest, UpdateCalendarConnectionRequest,
-        UpdateCalendarEventRequest, UpdateDiagramRequest, UpdateNoteRequest,
+        UpdateCalendarEventRequest, UpdateDiagramRequest, UpdateNoteMetadataRequest, UpdateNoteRequest,
         UpdateResourceShareRequest, UpdateTaskRequest, UpdateUserAccessRequest, UserProfile,
         UserToolScope, VoiceMemo,
     },
@@ -80,8 +84,6 @@ pub(crate) struct StateData {
     pub sync_tombstones: Vec<SyncTombstone>,
     #[serde(default)]
     pub pending_credential_changes: HashMap<Uuid, PendingCredentialChangeRequest>,
-    #[serde(default)]
-    pub note_operations: HashMap<Uuid, Vec<NoteOperationRecord>>,
     #[serde(default)]
     pub note_sessions: HashMap<Uuid, Vec<NoteSession>>,
     #[serde(default)]
@@ -308,7 +310,7 @@ impl AppState {
             let snapshot = app.inner.read().await.clone();
             app.persist_snapshot(snapshot).await?;
         }
-        app.sync_note_files().await?;
+        app.storage.reset_managed_root("notes").await?;
         app.sync_diagram_files().await?;
         Ok(app)
     }
@@ -576,8 +578,7 @@ impl AppState {
         for operation in payload.operations {
             let entity = match &operation {
                 SyncOperation::CreateNote { .. }
-                | SyncOperation::UpdateNote { .. }
-                | SyncOperation::ApplyNoteOperations { .. }
+                | SyncOperation::UpdateNoteDocument { .. }
                 | SyncOperation::DeleteNote { .. } => {
                     SyncEntityKind::Notes
                 }
@@ -605,7 +606,6 @@ impl AppState {
                             title,
                             folder,
                             markdown,
-                            document: None,
                             visibility: None,
                         },
                         Some(client_generated_id),
@@ -621,24 +621,28 @@ impl AppState {
                 SyncOperation::UpdateDiagram { id, title, xml, revision } => {
                     self.update_diagram(id, UpdateDiagramRequest { title, xml, revision }).await.map(|_| ())
                 }
-                SyncOperation::UpdateNote { id, title, folder, markdown, revision } => {
-                    self.update_note(
+                SyncOperation::UpdateNoteDocument {
+                    id,
+                    editor_format,
+                    content_markdown,
+                    snapshot_b64,
+                    update_b64,
+                    content_html,
+                } => self
+                    .push_note_document_updates(
                         id,
-                        UpdateNoteRequest {
-                            title,
-                            folder,
-                            markdown,
-                            revision,
-                            document: None,
-                            visibility: None,
+                        user.clone(),
+                        PushNoteDocumentUpdatesRequest {
+                            client_id: "sync_push".into(),
+                            snapshot_b64,
+                            update_b64: update_b64.unwrap_or_default(),
+                            editor_format: Some(editor_format),
+                            content_markdown: Some(content_markdown),
+                            content_html,
                         },
                     )
                     .await
-                    .map(|_| ())
-                }
-                SyncOperation::ApplyNoteOperations { id, batch } => {
-                    self.apply_note_operation_batch(id, batch).await.map(|_| ())
-                }
+                    .map(|_| ()),
                 SyncOperation::DeleteNote { id } => self.delete_note(id).await,
                 SyncOperation::CreateTask { client_generated_id, title, description, start_at, end_at, all_day, calendar_connection_id } => {
                     self.create_task_with_id(
@@ -742,23 +746,9 @@ impl AppState {
                     folder.clone().unwrap_or_else(|| "Inbox".into())
                 };
             }
-            SyncOperation::UpdateNote { id, revision, title, folder, .. } => {
-                conflict.field = "revision".into();
-                conflict.local_value = revision.to_string();
-                let state = self.inner.read().await;
-                if let Some(note) = state.notes.get(id) {
-                    conflict.remote_value = note.revision.to_string();
-                    if matches!(error, AppError::BadRequest(message) if message == "revision mismatch") {
-                        conflict.reason = format!("{} for {}", error, note.title);
-                    }
-                }
-                if conflict.remote_value.is_empty() && (title.is_some() || folder.is_some()) {
-                    conflict.field = if title.is_some() { "title".into() } else { "folder".into() };
-                    conflict.local_value = title.clone().or_else(|| folder.clone()).unwrap_or_default();
-                }
-            }
-            SyncOperation::ApplyNoteOperations { id, .. } => {
+            SyncOperation::UpdateNoteDocument { id, content_markdown, .. } => {
                 conflict.field = "document".into();
+                conflict.local_value = content_markdown.clone();
                 let state = self.inner.read().await;
                 if let Some(note) = state.notes.get(id) {
                     conflict.remote_value = note.title.clone();
@@ -2104,15 +2094,6 @@ impl AppState {
             ),
             table_from_records("notes", "Notes", state.notes.values().cloned().collect::<Vec<_>>()),
             table_from_records(
-                "note_operations",
-                "Note Operations",
-                state
-                    .note_operations
-                    .values()
-                    .flat_map(|records| records.clone())
-                    .collect::<Vec<_>>(),
-            ),
-            table_from_records(
                 "note_sessions",
                 "Note Sessions",
                 state
@@ -2221,6 +2202,52 @@ impl AppState {
         items
     }
 
+    pub async fn list_deleted_items_for_user(&self, user_id: Uuid) -> Vec<AdminDeletedItem> {
+        let state = self.inner.read().await;
+        let mut items = Vec::new();
+        items.extend(state.notes.values().filter_map(|note| {
+            if note.author_id != user_id {
+                return None;
+            }
+            Some(AdminDeletedItem {
+                id: format!("note:{}", note.id),
+                kind: DeletedResourceKind::Note,
+                label: note.title.clone(),
+                original_path: note_relative_path_for_move(note),
+                deleted_at: note.deleted_at?,
+                purge_at: note.purge_at?,
+            })
+        }));
+        items.extend(state.diagrams.values().filter_map(|diagram| {
+            if diagram.author_id != user_id {
+                return None;
+            }
+            Some(AdminDeletedItem {
+                id: format!("diagram:{}", diagram.id),
+                kind: DeletedResourceKind::Diagram,
+                label: diagram_display_name(&diagram.title),
+                original_path: diagram_relative_path_for_move(diagram),
+                deleted_at: diagram.deleted_at?,
+                purge_at: diagram.purge_at?,
+            })
+        }));
+        items.extend(state.memos.values().filter_map(|memo| {
+            if memo.owner_id != user_id {
+                return None;
+            }
+            Some(AdminDeletedItem {
+                id: format!("voice:{}", memo.id),
+                kind: DeletedResourceKind::VoiceMemo,
+                label: memo.title.clone(),
+                original_path: memo.audio_path.clone(),
+                deleted_at: memo.deleted_at?,
+                purge_at: memo.purge_at?,
+            })
+        }));
+        items.sort_by(|left, right| right.deleted_at.cmp(&left.deleted_at));
+        items
+    }
+
     pub async fn list_audit_entries(&self) -> Vec<AdminAuditEntry> {
         self.inner.read().await.audit_log.clone()
     }
@@ -2246,9 +2273,6 @@ impl AppState {
             if uses_postgres {
                 self.persistence.update_note(&restored, previous_revision).await?;
             }
-            self.storage
-                .sync_note_markdown(None, restored.id, &restored.title, &restored.folder, &restored.markdown)
-                .await?;
             append_audit_entry(
                 &mut state,
                 "api.admin",
@@ -2811,6 +2835,175 @@ impl AppState {
         })
     }
 
+    pub async fn get_note_document(
+        &self,
+        note_id: Uuid,
+        user: UserProfile,
+    ) -> AppResult<NoteDocumentPullResponse> {
+        let mut state = self.inner.write().await;
+        let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
+        if note.deleted_at.is_some() {
+            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
+        }
+        ensure_note_loro_foundation(note);
+        let note = note.clone();
+        let sessions = state.note_sessions.entry(note_id).or_default();
+        sessions.retain(|entry| (Utc::now() - entry.last_seen_at) < Duration::seconds(45));
+        let visible_sessions = sessions.clone();
+        let share = Self::resource_share_for_note(&state, &note);
+        let snapshot = state.clone();
+        drop(state);
+        self.persist_snapshot(snapshot).await?;
+        let _ = user;
+        Ok(NoteDocumentPullResponse {
+            document: note_document_state_from_note(&note),
+            note,
+            share,
+            sessions: visible_sessions,
+        })
+    }
+
+    pub async fn push_note_document_updates(
+        &self,
+        note_id: Uuid,
+        user: UserProfile,
+        payload: PushNoteDocumentUpdatesRequest,
+    ) -> AppResult<PushNoteDocumentUpdatesResponse> {
+        let mut state = self.inner.write().await;
+        let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
+        if note.deleted_at.is_some() {
+            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
+        }
+        ensure_note_loro_foundation(note);
+        let editor_format = payload
+            .editor_format
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("tiptap_loro")
+            .to_string();
+        let update_b64 = payload.update_b64.trim().to_string();
+        let snapshot_b64 = payload
+            .snapshot_b64
+            .as_ref()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let content_markdown = payload.content_markdown;
+        let content_html = payload.content_html;
+
+        if update_b64.is_empty() {
+            if let Some(markdown) = content_markdown.as_ref() {
+                note.markdown = markdown.clone();
+                note.loro_snapshot_b64 = snapshot_b64
+                    .or_else(|| generate_loro_snapshot_from_markdown(markdown))
+                    .ok_or_else(|| AppError::BadRequest("unable to generate snapshot for markdown content".into()))?;
+                note.loro_updates_b64.clear();
+            } else if let Some(snapshot) = snapshot_b64 {
+                note.loro_snapshot_b64 = snapshot;
+                note.loro_updates_b64.clear();
+            } else {
+                return Err(AppError::BadRequest(
+                    "either update_b64 or a snapshot/markdown replacement is required".into(),
+                ));
+            }
+        } else {
+            if let Some(snapshot) = snapshot_b64 {
+                note.loro_snapshot_b64 = snapshot;
+            }
+            note.loro_updates_b64.push(update_b64.clone());
+        }
+        if let Some(markdown) = content_markdown.as_ref() {
+            note.markdown = markdown.clone();
+        } else if let Some(markdown) = markdown_from_loro_state(&note.loro_snapshot_b64, &note.loro_updates_b64) {
+            note.markdown = markdown;
+        }
+        if let Some(html) = content_html {
+            note.rendered_html = html;
+        } else {
+            note.rendered_html = markdown_to_html(&note.markdown);
+        }
+        note.loro_version += 1;
+        note.loro_needs_migration = false;
+        note.editor_format = editor_format;
+        compact_note_document_state(note);
+        note.updated_at = Utc::now();
+        note.last_editor_id = user.id;
+        note.revision += 1;
+        let note_snapshot = note.clone();
+        let snapshot = state.clone();
+        drop(state);
+        if self.persistence.uses_postgres() {
+            self.persistence
+                .update_note(&note_snapshot, note_snapshot.revision - 1)
+                .await?;
+        } else {
+            self.persist_snapshot(snapshot.clone()).await?;
+        }
+        let _ = self.realtime.send(RealtimeEvent::NoteDocumentUpdate {
+            note_id,
+            client_id: payload.client_id,
+            snapshot_b64: Some(note_snapshot.loro_snapshot_b64.clone()),
+            update_b64,
+            version: note_snapshot.loro_version,
+            editor_format: note_snapshot.editor_format.clone(),
+            content_markdown: note_snapshot.markdown.clone(),
+            content_html: note_snapshot.rendered_html.clone(),
+        });
+        if self.persistence.uses_postgres() {
+            self.persist_snapshot(snapshot).await?;
+        }
+        Ok(PushNoteDocumentUpdatesResponse {
+            document: note_document_state_from_note(&note_snapshot),
+            note: note_snapshot,
+        })
+    }
+
+    pub async fn migrate_all_notes_to_loro(&self) -> AppResult<NoteDocumentMigrationSummary> {
+        let mut state = self.inner.write().await;
+        let mut migrated_count = 0usize;
+        let mut skipped_count = 0usize;
+        let mut snapshots = Vec::new();
+
+        for note in state.notes.values_mut() {
+            let before_snapshot = note.loro_snapshot_b64.clone();
+            let before_version = note.loro_version;
+            let before_flag = note.loro_needs_migration;
+            let before_title = note.title.clone();
+            let before_folder = note.folder.clone();
+            ensure_note_foundation(note);
+            archive_legacy_conflict_note(note);
+            if note.loro_snapshot_b64 != before_snapshot
+                || note.loro_version != before_version
+                || note.loro_needs_migration != before_flag
+                || note.title != before_title
+                || note.folder != before_folder
+            {
+                migrated_count += 1;
+                snapshots.push(note.clone());
+            } else {
+                skipped_count += 1;
+            }
+        }
+
+        let snapshot = state.clone();
+        drop(state);
+
+        if self.persistence.uses_postgres() {
+            for note in &snapshots {
+                if self.persistence.update_note(note, note.revision).await.is_err() {
+                    self.persistence
+                        .update_note(note, note.revision.saturating_sub(1))
+                        .await?;
+                }
+            }
+        }
+        self.persist_snapshot(snapshot).await?;
+
+        Ok(NoteDocumentMigrationSummary {
+            migrated_count,
+            skipped_count,
+        })
+    }
+
     pub async fn close_note_session(
         &self,
         note_id: Uuid,
@@ -2827,218 +3020,114 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn pull_note_operations(
-        &self,
-        note_id: Uuid,
-        _user: UserProfile,
-        since_revision: u64,
-    ) -> AppResult<NoteOperationsPullResponse> {
-        let state = self.inner.read().await;
-        let note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
-        if note.deleted_at.is_some() {
-            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
-        }
-        let share = Self::resource_share_for_note(&state, &note);
-        let operations = state
-            .note_operations
-            .get(&note_id)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|entry| entry.resulting_revision > since_revision)
-            .collect::<Vec<_>>();
-        let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
-        Ok(NoteOperationsPullResponse {
-            note,
-            operations,
-            conflicts,
-            share,
-        })
-    }
-
-    pub async fn push_note_operations(
-        &self,
-        note_id: Uuid,
-        user: UserProfile,
-        mut batch: NoteDocumentOperationBatch,
-    ) -> AppResult<NoteOperationsPushResponse> {
+    pub async fn restore_deleted_item_for_user(&self, user_id: Uuid, item_id: &str) -> AppResult<()> {
         let mut state = self.inner.write().await;
-        let existing_note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
-        if existing_note.deleted_at.is_some() {
-            return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
-        }
-        if batch.actor_id.trim().is_empty() {
-            batch.actor_id = user.id.to_string();
-        }
-        if batch.client_id.trim().is_empty() {
-            batch.client_id = format!("mobile-{}", Uuid::new_v4());
-        }
-        if batch.operation_id.trim().is_empty() {
-            batch.operation_id = format!("op-{}", Uuid::new_v4());
-        }
-        if let Some(existing_operation) = state
-            .note_operations
-            .get(&note_id)
-            .and_then(|operations| operations.iter().find(|entry| entry.operation_id == batch.operation_id))
-            .cloned()
-        {
-            let note = state.notes.get(&note_id).cloned().ok_or(AppError::NotFound)?;
-            let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
-            return Ok(NoteOperationsPushResponse {
-                note,
-                applied: true,
-                operation: Some(existing_operation),
-                conflicts,
-            });
-        }
-
-        let stale_against_current = existing_note
-            .document
-            .clock
-            .iter()
-            .any(|(actor, counter)| batch.base_clock.get(actor).copied().unwrap_or(0) < *counter);
-
-        if stale_against_current {
-            if let Some(base_document) = batch.base_document.clone() {
-                let local_document = apply_operations_to_document(&base_document, &batch, &batch.actor_id)?;
-                let rebased_document = if let Some((merged_document, _)) =
-                    merge_documents_from_base(&base_document, &local_document, &existing_note.document)
-                {
-                    merged_document
-                } else {
-                    let base_markdown = batch
-                        .base_markdown
-                        .clone()
-                        .unwrap_or_else(|| markdown_from_note_document(&base_document));
-                    let local_markdown = markdown_from_note_document(&local_document);
-                    let (merged_markdown, _) =
-                        merge_concurrent_markdown(&base_markdown, &local_markdown, &existing_note.markdown);
-                    note_document_from_markdown(&merged_markdown, &batch.actor_id)
-                };
-                batch.operations = vec![NoteOperation::ReplaceDocument {
-                    blocks: rebased_document.blocks.clone(),
-                }];
-                batch.base_clock = existing_note.document.clock.clone();
-                batch.base_markdown = Some(existing_note.markdown.clone());
-                batch.base_document = Some(existing_note.document.clone());
-            }
-        }
-
-        if should_fork_note_document(&existing_note.document, &batch, &batch.actor_id) {
-            let local_document = apply_operations_to_document(&existing_note.document, &batch, &batch.actor_id)?;
-            let forked_ids = create_note_conflict_forks(&mut state, &existing_note, &local_document, &batch.actor_id);
-            let conflict = NoteConflictRecord {
-                id: format!("conflict-{}", Uuid::new_v4()),
-                note_id,
-                operation_id: batch.operation_id.clone(),
-                reason: "overlapping_block_edits".into(),
-                forked_note_ids: forked_ids.clone(),
-                created_at: Utc::now(),
-            };
-            state.note_conflicts.entry(note_id).or_default().push(conflict.clone());
-            let uses_postgres = self.persistence.uses_postgres();
-            if uses_postgres {
-                for fork_id in &forked_ids {
-                    if let Some(note) = state.notes.get(fork_id) {
-                        self.persistence.create_note(note).await?;
-                    }
-                }
-            }
-            let note = existing_note.clone();
-            let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
-            let snapshot = state.clone();
-            drop(state);
-            self.persist_snapshot(snapshot).await?;
-            return Ok(NoteOperationsPushResponse {
-                note,
-                applied: false,
-                operation: None,
-                conflicts,
-            });
-        }
-
-        let mut next_document = apply_operations_to_document(&existing_note.document, &batch, &batch.actor_id)?;
-        if next_document.last_operation_id.trim().is_empty() {
-            next_document.last_operation_id = batch.operation_id.clone();
-        }
-        let next_markdown = markdown_from_note_document(&next_document);
-        let current_used = storage_used_bytes_for_user(&state, &self.storage, user.id);
-        let projected_used = current_used
-            .saturating_sub(existing_note.markdown.len() as u64)
-            .saturating_add(next_markdown.len() as u64);
-        enforce_storage_limit(&state, user.id, current_used, projected_used, false)?;
-
-        let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
-        let previous_title = note.title.clone();
-        let previous_folder = note.folder.clone();
-        for operation in &batch.operations {
-            match operation {
-                NoteOperation::SetTitle { title } => note.title = title.clone(),
-                NoteOperation::SetFolder { folder } => note.folder = folder.clone(),
-                _ => {}
-            }
-        }
-        note.document = next_document;
-        note.markdown = next_markdown;
-        note.revision += 1;
-        note.updated_at = Utc::now();
-        note.last_editor_id = user.id;
-        let note_snapshot = note.clone();
-        let expected_revision = existing_note.revision;
-        let operation_record = NoteOperationRecord {
-            note_id,
-            operation_id: batch.operation_id.clone(),
-            actor_id: batch.actor_id.clone(),
-            client_id: batch.client_id.clone(),
-            created_at: Utc::now(),
-            resulting_revision: note_snapshot.revision,
-            batch: batch.clone(),
-        };
-        state.note_operations.entry(note_id).or_default().push(operation_record.clone());
         let uses_postgres = self.persistence.uses_postgres();
-        if uses_postgres {
-            self.persistence.update_note(&note_snapshot, expected_revision).await?;
+        if let Some(id) = item_id.strip_prefix("note:") {
+            let note_id = Uuid::parse_str(id).map_err(|_| AppError::BadRequest("invalid deleted note id".into()))?;
+            let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
+            if note.author_id != user_id {
+                return Err(AppError::NotFound);
+            }
+            if note.deleted_at.is_none() {
+                return Ok(());
+            }
+            let previous_revision = note.revision;
+            note.deleted_at = None;
+            note.purge_at = None;
+            note.updated_at = Utc::now();
+            note.revision += 1;
+            let restored = note.clone();
+            state.sync_tombstones.retain(|entry| {
+                !(entry.entity == SyncEntityKind::Notes && entry.id == restored.id.to_string())
+            });
+            if uses_postgres {
+                self.persistence.update_note(&restored, previous_revision).await?;
+            }
+            append_audit_entry(
+                &mut state,
+                "api.user",
+                "restore_note",
+                "note",
+                restored.id.to_string(),
+                restored.title.clone(),
+                serde_json::json!({ "path": note_relative_path_for_move(&restored) }),
+            );
+            return Ok(());
         }
-        self.storage
-            .sync_note_markdown(
-                Some((&previous_folder, &previous_title)),
-                note_snapshot.id,
-                &note_snapshot.title,
-                &note_snapshot.folder,
-                &note_snapshot.markdown,
-            )
-            .await?;
-        let share = Self::resource_share_for_note(&state, &note_snapshot);
-        let conflicts = state.note_conflicts.get(&note_id).cloned().unwrap_or_default();
-        let snapshot = state.clone();
-        drop(state);
-        self.persist_snapshot(snapshot).await?;
-        let _ = self.realtime.send(RealtimeEvent::NoteOperations {
-            note_id,
-            title: note_snapshot.title.clone(),
-            folder: note_snapshot.folder.clone(),
-            markdown: note_snapshot.markdown.clone(),
-            revision: note_snapshot.revision,
-            client_id: batch.client_id.clone(),
-            user: user.display_name.clone(),
-            batch: batch.clone(),
-            document: Some(note_snapshot.document.clone()),
-        });
-        let _ = self.realtime.send(RealtimeEvent::NotePatch {
-            note_id,
-            title: note_snapshot.title.clone(),
-            folder: note_snapshot.folder.clone(),
-            markdown: note_snapshot.markdown.clone(),
-            revision: note_snapshot.revision,
-            document: Some(note_snapshot.document.clone()),
-        });
-        let _ = share;
-        Ok(NoteOperationsPushResponse {
-            note: note_snapshot,
-            applied: true,
-            operation: Some(operation_record),
-            conflicts,
-        })
+        if let Some(id) = item_id.strip_prefix("diagram:") {
+            let diagram_id = Uuid::parse_str(id)
+                .map_err(|_| AppError::BadRequest("invalid deleted diagram id".into()))?;
+            let diagram = state.diagrams.get_mut(&diagram_id).ok_or(AppError::NotFound)?;
+            if diagram.author_id != user_id {
+                return Err(AppError::NotFound);
+            }
+            if diagram.deleted_at.is_none() {
+                return Ok(());
+            }
+            let previous_revision = diagram.revision;
+            diagram.deleted_at = None;
+            diagram.purge_at = None;
+            diagram.updated_at = Utc::now();
+            diagram.revision += 1;
+            let restored = diagram.clone();
+            state.sync_tombstones.retain(|entry| {
+                !(entry.entity == SyncEntityKind::Diagrams && entry.id == restored.id.to_string())
+            });
+            if uses_postgres {
+                self.persistence.update_diagram(&restored, previous_revision).await?;
+            }
+            self.storage
+                .sync_diagram_xml(None, &restored.title, restored.id, &restored.xml)
+                .await?;
+            append_audit_entry(
+                &mut state,
+                "api.user",
+                "restore_diagram",
+                "diagram",
+                restored.id.to_string(),
+                diagram_display_name(&restored.title),
+                serde_json::json!({ "path": diagram_relative_path_for_move(&restored) }),
+            );
+            return Ok(());
+        }
+        if let Some(id) = item_id.strip_prefix("voice:") {
+            let memo_id = Uuid::parse_str(id).map_err(|_| AppError::BadRequest("invalid deleted memo id".into()))?;
+            let memo_key = {
+                let memo = state.memos.get_mut(&memo_id).ok_or(AppError::NotFound)?;
+                if memo.owner_id != user_id {
+                    return Err(AppError::NotFound);
+                }
+                if memo.deleted_at.is_none() {
+                    return Ok(());
+                }
+                let memo_key = memo.id.to_string();
+                memo.deleted_at = None;
+                memo.purge_at = None;
+                memo.updated_at = Utc::now();
+                memo_key
+            };
+            state.sync_tombstones.retain(|entry| {
+                !(entry.entity == SyncEntityKind::VoiceMemos && entry.id == memo_key)
+            });
+            if let Some((audit_id, audit_title, audit_path)) = state
+                .memos
+                .get(&memo_id)
+                .map(|memo| (memo.id.to_string(), memo.title.clone(), memo.audio_path.clone()))
+            {
+                append_audit_entry(
+                    &mut state,
+                    "api.user",
+                    "restore_voice_memo",
+                    "voice_memo",
+                    audit_id,
+                    audit_title,
+                    serde_json::json!({ "path": audit_path }),
+                );
+            }
+            return Ok(());
+        }
+        Err(AppError::NotFound)
     }
 
     async fn create_note_with_id(&self, payload: CreateNoteRequest, forced_id: Option<Uuid>) -> AppResult<Note> {
@@ -3062,9 +3151,12 @@ impl AppState {
             folder: payload.folder.unwrap_or_else(|| "Inbox".into()),
             markdown: String::new(),
             rendered_html: String::new(),
-            document: payload
-                .document
-                .unwrap_or_else(|| note_document_from_markdown(&markdown, &author_id.to_string())),
+            editor_format: "legacy_markdown".into(),
+            loro_snapshot_b64: String::new(),
+            loro_updates_b64: Vec::new(),
+            loro_version: 0,
+            loro_needs_migration: true,
+            document: None,
             revision: 1,
             created_at: now,
             updated_at: now,
@@ -3076,15 +3168,14 @@ impl AppState {
             purge_at: None,
         };
         let mut note = note;
-        note.markdown = markdown_from_note_document(&note.document);
+        note.markdown = markdown;
+        note.rendered_html = markdown_to_html(&note.markdown);
+        ensure_note_loro_foundation(&mut note);
         let uses_postgres = self.persistence.uses_postgres();
         if uses_postgres {
             self.persistence.create_note(&note).await?;
         }
         state.notes.insert(note.id, note.clone());
-        self.storage
-            .sync_note_markdown(None, note.id, &note.title, &note.folder, &note.markdown)
-            .await?;
         let snapshot = state.clone();
         drop(state);
         if !uses_postgres {
@@ -3104,17 +3195,13 @@ impl AppState {
         if payload.revision != existing_note.revision {
             return Err(AppError::BadRequest("revision mismatch".into()));
         }
-        let previous_title = existing_note.title.clone();
-        let previous_folder = existing_note.folder.clone();
         let old_size = existing_note.markdown.len() as u64;
         let next_title = payload.title.unwrap_or(existing_note.title.clone());
         let next_folder = payload.folder.unwrap_or(existing_note.folder.clone());
-        let next_document = payload
-            .document
+        let next_markdown = payload
+            .markdown
             .clone()
-            .or_else(|| payload.markdown.as_ref().map(|markdown| note_document_from_markdown(markdown, &user_id.to_string())))
-            .unwrap_or_else(|| existing_note.document.clone());
-        let next_markdown = markdown_from_note_document(&next_document);
+            .unwrap_or_else(|| existing_note.markdown.clone());
         let projected_used = current_used
             .saturating_sub(old_size)
             .saturating_add(next_markdown.len() as u64);
@@ -3123,13 +3210,15 @@ impl AppState {
         note.title = next_title;
         note.folder = next_folder;
         note.markdown = next_markdown;
-        note.document = next_document;
+        note.rendered_html = markdown_to_html(&note.markdown);
+        note.document = None;
         if let Some(visibility) = payload.visibility {
             note.visibility = visibility;
         }
         note.revision += 1;
         note.updated_at = Utc::now();
         note.last_editor_id = user_id;
+        ensure_note_loro_foundation(note);
         let note_snapshot = note.clone();
         let expected_revision = payload.revision;
         let uses_postgres = self.persistence.uses_postgres();
@@ -3138,15 +3227,6 @@ impl AppState {
                 .update_note(&note_snapshot, expected_revision)
                 .await?;
         }
-        self.storage
-            .sync_note_markdown(
-                Some((&previous_folder, &previous_title)),
-                note_snapshot.id,
-                &note_snapshot.title,
-                &note_snapshot.folder,
-                &note_snapshot.markdown,
-            )
-            .await?;
         let snapshot = state.clone();
         drop(state);
         if !uses_postgres {
@@ -3155,102 +3235,34 @@ impl AppState {
         Ok(note_snapshot)
     }
 
-    pub async fn apply_note_operation_batch(
-        &self,
-        id: Uuid,
-        batch: NoteDocumentOperationBatch,
-    ) -> AppResult<Note> {
+    pub async fn update_note_metadata(&self, id: Uuid, payload: UpdateNoteMetadataRequest) -> AppResult<Note> {
         let mut state = self.inner.write().await;
         let user_id = state.user.id;
-        let existing_note = state.notes.get(&id).cloned().ok_or(AppError::NotFound)?;
-        if existing_note.deleted_at.is_some() {
+        let note = state.notes.get_mut(&id).ok_or(AppError::NotFound)?;
+        if note.deleted_at.is_some() {
             return Err(AppError::BadRequest("note has been deleted and can be restored from admin".into()));
         }
-        let actor_id = if batch.actor_id.trim().is_empty() {
-            user_id.to_string()
-        } else {
-            batch.actor_id.clone()
-        };
-        if state
-            .note_operations
-            .get(&id)
-            .and_then(|operations| operations.iter().find(|entry| entry.operation_id == batch.operation_id))
-            .is_some()
-        {
-            return Ok(existing_note);
-        }
 
-        if should_fork_note_document(&existing_note.document, &batch, &actor_id) {
-            let local_document = apply_operations_to_document(
-                &existing_note.document,
-                &batch,
-                &actor_id,
-            )?;
-            let forked_ids = create_note_conflict_forks(&mut state, &existing_note, &local_document, &actor_id);
-            let uses_postgres = self.persistence.uses_postgres();
-            if uses_postgres {
-                for fork_id in &forked_ids {
-                    if let Some(note) = state.notes.get(fork_id) {
-                        self.persistence.create_note(note).await?;
-                    }
-                }
-            }
-            let snapshot = state.clone();
-            drop(state);
-            if !uses_postgres {
-                self.persist_snapshot(snapshot).await?;
-            }
-            return Err(AppError::BadRequest(format!(
-                "note forked due to conflicting block edits:{}",
-                forked_ids
-                    .iter()
-                    .map(Uuid::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            )));
+        if let Some(title) = payload.title {
+            note.title = title;
         }
-
-        let mut next_document = apply_operations_to_document(&existing_note.document, &batch, &actor_id)?;
-        if next_document.last_operation_id.trim().is_empty() {
-            next_document.last_operation_id = batch.operation_id.clone();
+        if let Some(folder) = payload.folder {
+            note.folder = folder;
         }
-        let next_markdown = markdown_from_note_document(&next_document);
-        let current_used = storage_used_bytes_for_user(&state, &self.storage, user_id);
-        let projected_used = current_used
-            .saturating_sub(existing_note.markdown.len() as u64)
-            .saturating_add(next_markdown.len() as u64);
-        enforce_storage_limit(&state, user_id, current_used, projected_used, false)?;
-
-        let note = state.notes.get_mut(&id).ok_or(AppError::NotFound)?;
-        let previous_title = note.title.clone();
-        let previous_folder = note.folder.clone();
-        for operation in &batch.operations {
-            match operation {
-                NoteOperation::SetTitle { title } => note.title = title.clone(),
-                NoteOperation::SetFolder { folder } => note.folder = folder.clone(),
-                _ => {}
-            }
+        if let Some(visibility) = payload.visibility {
+            note.visibility = visibility;
         }
-        note.document = next_document;
-        note.markdown = next_markdown;
-        note.revision += 1;
         note.updated_at = Utc::now();
         note.last_editor_id = user_id;
+        note.revision += 1;
         let note_snapshot = note.clone();
-        let expected_revision = existing_note.revision;
+        let expected_revision = note_snapshot.revision - 1;
         let uses_postgres = self.persistence.uses_postgres();
         if uses_postgres {
-            self.persistence.update_note(&note_snapshot, expected_revision).await?;
+            self.persistence
+                .update_note(&note_snapshot, expected_revision)
+                .await?;
         }
-        self.storage
-            .sync_note_markdown(
-                Some((&previous_folder, &previous_title)),
-                note_snapshot.id,
-                &note_snapshot.title,
-                &note_snapshot.folder,
-                &note_snapshot.markdown,
-            )
-            .await?;
         let snapshot = state.clone();
         drop(state);
         if !uses_postgres {
@@ -3951,15 +3963,6 @@ impl AppState {
     pub async fn list_files(&self) -> AppResult<Vec<crate::models::FileNode>> {
         let drive = self.storage.list_drive_tree().await?;
         let state = self.inner.read().await;
-        let mut notes = state
-            .notes
-            .values()
-            .filter(|note| is_note_active(note))
-            .cloned()
-            .collect::<Vec<_>>();
-        for note in &mut notes {
-            ensure_note_foundation(note);
-        }
         let mut memos = state
             .memos
             .values()
@@ -3975,12 +3978,7 @@ impl AppState {
             .filter(|diagram| is_diagram_active(diagram))
             .cloned()
             .collect::<Vec<_>>();
-        Ok(vec![
-            build_notes_projection(&notes),
-            build_diagrams_projection(&diagrams),
-            build_voice_projection(&memos),
-            drive,
-        ])
+        Ok(vec![build_diagrams_projection(&diagrams), build_voice_projection(&memos), drive])
     }
 
     pub async fn create_managed_folder(&self, path: String) -> AppResult<crate::models::FileNode> {
@@ -4068,24 +4066,6 @@ impl AppState {
         self.persistence.save_snapshot(&bytes).await
     }
 
-    async fn sync_note_files(&self) -> AppResult<()> {
-        self.storage.reset_managed_root("notes").await?;
-        let notes = self
-            .inner
-            .read()
-            .await
-            .notes
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for note in notes {
-            self.storage
-                .sync_note_markdown(None, note.id, &note.title, &note.folder, &note.markdown)
-                .await?;
-        }
-        Ok(())
-    }
-
     async fn sync_diagram_files(&self) -> AppResult<()> {
         self.storage.reset_managed_root("diagrams").await?;
         let diagrams = self
@@ -4129,8 +4109,6 @@ impl AppState {
             let mut state = self.inner.write().await;
             let user_id = state.user.id;
             let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
-            let previous_folder = note.folder.clone();
-            let previous_title = note.title.clone();
             note.folder = notes_folder_from_destination(destination_dir, None);
             note.revision += 1;
             note.updated_at = Utc::now();
@@ -4142,15 +4120,6 @@ impl AppState {
                     .update_note(&moved, moved.revision - 1)
                     .await?;
             }
-            self.storage
-                .sync_note_markdown(
-                    Some((&previous_folder, &previous_title)),
-                    moved.id,
-                    &moved.title,
-                    &moved.folder,
-                    &moved.markdown,
-                )
-                .await?;
             let snapshot = state.clone();
             drop(state);
             if !uses_postgres {
@@ -4200,8 +4169,6 @@ impl AppState {
 
         for note_id in matching_ids {
             let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
-            let previous_folder = note.folder.clone();
-            let previous_title = note.title.clone();
             note.folder = note.folder.replacen(&source_folder, &destination_folder, 1);
             note.revision += 1;
             note.updated_at = Utc::now();
@@ -4212,15 +4179,6 @@ impl AppState {
                     .update_note(&moved, moved.revision - 1)
                     .await?;
             }
-            self.storage
-                .sync_note_markdown(
-                    Some((&previous_folder, &previous_title)),
-                    moved.id,
-                    &moved.title,
-                    &moved.folder,
-                    &moved.markdown,
-                )
-                .await?;
         }
 
         let snapshot = state.clone();
@@ -4316,8 +4274,6 @@ impl AppState {
             let mut state = self.inner.write().await;
             let user_id = state.user.id;
             let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
-            let previous_folder = note.folder.clone();
-            let previous_title = note.title.clone();
             note.title = new_name.trim().to_string();
             note.revision += 1;
             note.updated_at = Utc::now();
@@ -4329,15 +4285,6 @@ impl AppState {
                     .update_note(&renamed, renamed.revision - 1)
                     .await?;
             }
-            self.storage
-                .sync_note_markdown(
-                    Some((&previous_folder, &previous_title)),
-                    renamed.id,
-                    &renamed.title,
-                    &renamed.folder,
-                    &renamed.markdown,
-                )
-                .await?;
             let snapshot = state.clone();
             drop(state);
             if !uses_postgres {
@@ -4386,8 +4333,6 @@ impl AppState {
 
         for note_id in matching_ids {
             let note = state.notes.get_mut(&note_id).ok_or(AppError::NotFound)?;
-            let previous_folder = note.folder.clone();
-            let previous_title = note.title.clone();
             note.folder = note.folder.replacen(&source_folder, &destination_folder, 1);
             note.revision += 1;
             note.updated_at = Utc::now();
@@ -4398,15 +4343,6 @@ impl AppState {
                     .update_note(&renamed, renamed.revision - 1)
                     .await?;
             }
-            self.storage
-                .sync_note_markdown(
-                    Some((&previous_folder, &previous_title)),
-                    renamed.id,
-                    &renamed.title,
-                    &renamed.folder,
-                    &renamed.markdown,
-                )
-                .await?;
         }
 
         let snapshot = state.clone();
@@ -5845,7 +5781,12 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         folder: "Getting Started".into(),
         markdown: welcome_note_markdown.clone(),
         rendered_html: String::new(),
-        document: note_document_from_markdown(&welcome_note_markdown, &user.id.to_string()),
+        editor_format: "legacy_markdown".into(),
+        loro_snapshot_b64: String::new(),
+        loro_updates_b64: Vec::new(),
+        loro_version: 0,
+        loro_needs_migration: true,
+        document: None,
         forked_from_note_id: None,
         conflict_tag: None,
         revision: 1,
@@ -5956,7 +5897,6 @@ fn seed_state(config: &Config) -> AppResult<StateData> {
         resource_shares: HashMap::new(),
         sync_tombstones: Vec::new(),
         pending_credential_changes: HashMap::new(),
-        note_operations: HashMap::new(),
         note_sessions: HashMap::new(),
         note_conflicts: HashMap::new(),
         deleted_drive_items: HashMap::new(),
@@ -6080,8 +6020,7 @@ where
 fn operation_id_string(operation: &SyncOperation) -> String {
     match operation {
         SyncOperation::CreateNote { title, .. } => format!("create-note:{title}"),
-        SyncOperation::UpdateNote { id, .. }
-        | SyncOperation::ApplyNoteOperations { id, .. }
+        SyncOperation::UpdateNoteDocument { id, .. }
         | SyncOperation::DeleteNote { id } => id.to_string(),
         SyncOperation::CreateDiagram { title, .. } => format!("create-diagram:{title}"),
         SyncOperation::UpdateDiagram { id, .. } => id.to_string(),
@@ -6157,6 +6096,8 @@ fn default_note_object_id(note_id: Uuid) -> String {
     format!("note:{note_id}")
 }
 
+const LORO_UPDATE_COMPACTION_THRESHOLD: usize = 32;
+
 fn default_audio_object_id(memo_id: Uuid) -> String {
     format!("audio:{memo_id}")
 }
@@ -6170,65 +6111,53 @@ fn default_user_namespace(owner_id: Uuid) -> ObjectNamespace {
     }
 }
 
-fn next_block_counter(clock: &HashMap<String, u64>, actor: &str) -> u64 {
-    clock.get(actor).copied().unwrap_or(0) + 1
+fn markdown_to_html(markdown: &str) -> String {
+    let parser = Parser::new_ext(markdown, Options::all());
+    let mut rendered = String::new();
+    html::push_html(&mut rendered, parser);
+    rendered
 }
 
-fn note_document_from_markdown(markdown: &str, actor: &str) -> NoteDocument {
-    let mut blocks = Vec::new();
-    let mut clock = HashMap::new();
-    let mut counter = 0u64;
-    for (index, raw_block) in markdown.split("\n\n").enumerate() {
-        let text = raw_block.trim_end_matches('\n').to_string();
-        counter += 1;
-        let kind = if text.starts_with("```") {
-            NoteBlockKind::Code
-        } else if text.starts_with(">") {
-            NoteBlockKind::Quote
-        } else if text.starts_with("- [") {
-            NoteBlockKind::Checklist
-        } else if text.starts_with("- ") || text.starts_with("* ") {
-            NoteBlockKind::BulletList
-        } else if text
-            .chars()
-            .next()
-            .map(|character| character == '#')
-            .unwrap_or(false)
-        {
-            NoteBlockKind::Heading
-        } else {
-            NoteBlockKind::Paragraph
-        };
-        blocks.push(NoteBlock {
-            id: format!("block-{}-{}", index, counter),
-            kind,
-            text,
-            attrs: HashMap::new(),
-            order: index as f64,
-            deleted: false,
-            last_modified_by: actor.to_string(),
-            last_modified_counter: counter,
-        });
+fn generate_loro_snapshot_from_markdown(markdown: &str) -> Option<String> {
+    let doc = LoroDoc::new();
+    let text = doc.get_text("content");
+    if text.insert(0, markdown).is_err() {
+        return None;
     }
-    if blocks.is_empty() {
-        blocks.push(NoteBlock {
-            id: "block-0-1".into(),
-            kind: NoteBlockKind::Paragraph,
-            text: String::new(),
-            attrs: HashMap::new(),
-            order: 0.0,
-            deleted: false,
-            last_modified_by: actor.to_string(),
-            last_modified_counter: 1,
-        });
-        counter = 1;
+    let snapshot = doc.export(ExportMode::Snapshot).ok()?;
+    Some(BASE64.encode(snapshot))
+}
+
+fn import_loro_payload(doc: &LoroDoc, payload_b64: &str) -> Option<()> {
+    let trimmed = payload_b64.trim();
+    if trimmed.is_empty() {
+        return Some(());
     }
-    clock.insert(actor.to_string(), counter);
-    NoteDocument {
-        blocks,
-        clock,
-        last_operation_id: format!("seed:{actor}:{counter}"),
+    let bytes = BASE64.decode(trimmed).ok()?;
+    doc.import(&bytes).ok()?;
+    Some(())
+}
+
+fn markdown_from_loro_state(snapshot_b64: &str, updates_b64: &[String]) -> Option<String> {
+    if snapshot_b64.trim().is_empty() && updates_b64.iter().all(|update| update.trim().is_empty()) {
+        return Some(String::new());
     }
+    let doc = LoroDoc::new();
+    import_loro_payload(&doc, snapshot_b64)?;
+    for update in updates_b64 {
+        import_loro_payload(&doc, update)?;
+    }
+    Some(doc.get_text("content").to_string())
+}
+
+fn snapshot_from_loro_state(snapshot_b64: &str, updates_b64: &[String]) -> Option<String> {
+    let doc = LoroDoc::new();
+    import_loro_payload(&doc, snapshot_b64)?;
+    for update in updates_b64 {
+        import_loro_payload(&doc, update)?;
+    }
+    let snapshot = doc.export(ExportMode::Snapshot).ok()?;
+    Some(BASE64.encode(snapshot))
 }
 
 fn markdown_from_note_document(document: &NoteDocument) -> String {
@@ -6246,292 +6175,6 @@ fn markdown_from_note_document(document: &NoteDocument) -> String {
         .join("\n\n")
 }
 
-fn merge_concurrent_markdown(
-    base_markdown: &str,
-    local_markdown: &str,
-    remote_markdown: &str,
-) -> (String, bool) {
-    if local_markdown == remote_markdown {
-        return (local_markdown.to_string(), false);
-    }
-    if local_markdown == base_markdown {
-        return (remote_markdown.to_string(), false);
-    }
-    if remote_markdown == base_markdown {
-        return (local_markdown.to_string(), false);
-    }
-
-    let base_lines = base_markdown.split('\n').collect::<Vec<_>>();
-    let local_lines = local_markdown.split('\n').collect::<Vec<_>>();
-    let remote_lines = remote_markdown.split('\n').collect::<Vec<_>>();
-    let max_length = base_lines.len().max(local_lines.len()).max(remote_lines.len());
-    let mut merged = Vec::new();
-    let mut had_conflict = false;
-
-    for index in 0..max_length {
-        let base_line = base_lines.get(index).copied();
-        let local_line = local_lines.get(index).copied();
-        let remote_line = remote_lines.get(index).copied();
-
-        if local_line == remote_line {
-            if let Some(line) = local_line {
-                merged.push(line.to_string());
-            }
-            continue;
-        }
-        if local_line == base_line {
-            if let Some(line) = remote_line {
-                merged.push(line.to_string());
-            }
-            continue;
-        }
-        if remote_line == base_line {
-            if let Some(line) = local_line {
-                merged.push(line.to_string());
-            }
-            continue;
-        }
-
-        had_conflict = true;
-        merged.push("<<<<<<< Your edit".into());
-        if let Some(line) = local_line {
-            merged.push(line.to_string());
-        }
-        merged.push("=======".into());
-        if let Some(line) = remote_line {
-            merged.push(line.to_string());
-        }
-        merged.push(">>>>>>> Remote edit".into());
-    }
-
-    (merged.join("\n"), had_conflict)
-}
-
-#[derive(Clone)]
-struct TextChange {
-    prefix_len: usize,
-    base_end: usize,
-    replacement: Vec<char>,
-}
-
-fn tokenize_merge_units(text: &str) -> Vec<String> {
-    text.split_whitespace().map(|part| part.to_string()).collect()
-}
-
-fn lcs_table(left: &[String], right: &[String]) -> Vec<Vec<usize>> {
-    let mut table = vec![vec![0; right.len() + 1]; left.len() + 1];
-    for i in (0..left.len()).rev() {
-        for j in (0..right.len()).rev() {
-            table[i][j] = if left[i] == right[j] {
-                table[i + 1][j + 1] + 1
-            } else {
-                table[i + 1][j].max(table[i][j + 1])
-            };
-        }
-    }
-    table
-}
-
-fn shortest_common_supersequence_tokens(left: &[String], right: &[String]) -> Vec<String> {
-    let table = lcs_table(left, right);
-    let mut i = 0usize;
-    let mut j = 0usize;
-    let mut merged = Vec::new();
-    while i < left.len() && j < right.len() {
-        if left[i] == right[j] {
-            merged.push(left[i].clone());
-            i += 1;
-            j += 1;
-        } else if table[i + 1][j] >= table[i][j + 1] {
-            merged.push(left[i].clone());
-            i += 1;
-        } else {
-            merged.push(right[j].clone());
-            j += 1;
-        }
-    }
-    while i < left.len() {
-        merged.push(left[i].clone());
-        i += 1;
-    }
-    while j < right.len() {
-        merged.push(right[j].clone());
-        j += 1;
-    }
-    merged
-}
-
-fn merge_overlapping_replacements(local: &str, remote: &str) -> String {
-    if local == remote {
-        return local.to_string();
-    }
-    if local.contains(remote) {
-        return local.to_string();
-    }
-    if remote.contains(local) {
-        return remote.to_string();
-    }
-
-    let local_tokens = tokenize_merge_units(local);
-    let remote_tokens = tokenize_merge_units(remote);
-    if local_tokens.is_empty() {
-        return remote.to_string();
-    }
-    if remote_tokens.is_empty() {
-        return local.to_string();
-    }
-
-    let table = lcs_table(&local_tokens, &remote_tokens);
-    let lcs_len = table[0][0];
-    let overlap_ratio = lcs_len as f64 / local_tokens.len().max(remote_tokens.len()) as f64;
-    if overlap_ratio < 0.5 {
-        return format!("{local}\n{remote}");
-    }
-
-    shortest_common_supersequence_tokens(&local_tokens, &remote_tokens).join(" ")
-}
-
-fn diff_text_change(base: &str, variant: &str) -> TextChange {
-    let base_chars = base.chars().collect::<Vec<_>>();
-    let variant_chars = variant.chars().collect::<Vec<_>>();
-    let mut prefix_len = 0usize;
-    while prefix_len < base_chars.len()
-        && prefix_len < variant_chars.len()
-        && base_chars[prefix_len] == variant_chars[prefix_len]
-    {
-        prefix_len += 1;
-    }
-
-    let mut suffix_len = 0usize;
-    while suffix_len < (base_chars.len().saturating_sub(prefix_len))
-        && suffix_len < (variant_chars.len().saturating_sub(prefix_len))
-        && base_chars[base_chars.len() - 1 - suffix_len] == variant_chars[variant_chars.len() - 1 - suffix_len]
-    {
-        suffix_len += 1;
-    }
-
-    let base_end = base_chars.len().saturating_sub(suffix_len);
-    let replacement_end = variant_chars.len().saturating_sub(suffix_len);
-    TextChange {
-        prefix_len,
-        base_end,
-        replacement: variant_chars[prefix_len..replacement_end].to_vec(),
-    }
-}
-
-fn merge_concurrent_plain_text(base: &str, local: &str, remote: &str) -> (String, bool) {
-    if local == remote {
-        return (local.to_string(), false);
-    }
-    if local == base {
-        return (remote.to_string(), false);
-    }
-    if remote == base {
-        return (local.to_string(), false);
-    }
-
-    let base_chars = base.chars().collect::<Vec<_>>();
-    let local_change = diff_text_change(base, local);
-    let remote_change = diff_text_change(base, remote);
-
-    if local_change.prefix_len == remote_change.prefix_len && local_change.base_end == remote_change.base_end {
-        if local_change.replacement == remote_change.replacement {
-            return (local.to_string(), false);
-        }
-        let local_replacement = local_change.replacement.iter().collect::<String>();
-        let remote_replacement = remote_change.replacement.iter().collect::<String>();
-        let merged_replacement = merge_overlapping_replacements(&local_replacement, &remote_replacement);
-        let mut merged = base_chars[..local_change.prefix_len].to_vec();
-        merged.extend(merged_replacement.chars());
-        merged.extend(base_chars[local_change.base_end..].iter().copied());
-        return (merged.into_iter().collect(), false);
-    }
-
-    let (first, second) = if local_change.base_end <= remote_change.prefix_len {
-        (local_change, remote_change)
-    } else if remote_change.base_end <= local_change.prefix_len {
-        (remote_change, local_change)
-    } else {
-        return merge_concurrent_markdown(base, local, remote);
-    };
-
-    let mut merged = Vec::new();
-    merged.extend(base_chars[..first.prefix_len].iter().copied());
-    merged.extend(first.replacement.iter().copied());
-    merged.extend(base_chars[first.base_end..second.prefix_len].iter().copied());
-    merged.extend(second.replacement.iter().copied());
-    merged.extend(base_chars[second.base_end..].iter().copied());
-    (merged.into_iter().collect(), false)
-}
-
-fn merge_documents_from_base(
-    base_document: &NoteDocument,
-    local_document: &NoteDocument,
-    remote_document: &NoteDocument,
-) -> Option<(NoteDocument, bool)> {
-    let base_blocks = base_document
-        .blocks
-        .iter()
-        .filter(|block| !block.deleted)
-        .cloned()
-        .collect::<Vec<_>>();
-    let local_blocks = local_document
-        .blocks
-        .iter()
-        .filter(|block| !block.deleted)
-        .cloned()
-        .collect::<Vec<_>>();
-    let remote_blocks = remote_document
-        .blocks
-        .iter()
-        .filter(|block| !block.deleted)
-        .cloned()
-        .collect::<Vec<_>>();
-
-    if local_blocks.len() != remote_blocks.len() {
-        return None;
-    }
-
-    let mut merged_blocks = Vec::with_capacity(remote_blocks.len());
-    let mut had_conflict = false;
-
-    for index in 0..local_blocks.len() {
-        let base_block = base_blocks.get(index);
-        let local_block = &local_blocks[index];
-        let remote_block = &remote_blocks[index];
-
-        if local_block.kind != remote_block.kind
-            || local_block.attrs != remote_block.attrs
-        {
-            return None;
-        }
-        if let Some(base_block) = base_block {
-            if base_block.kind != local_block.kind || base_block.attrs != local_block.attrs {
-                return None;
-            }
-        }
-
-        let (merged_text, block_conflict) = merge_concurrent_plain_text(
-            &base_block.map(|block| block.text.as_str()).unwrap_or(""),
-            &local_block.text,
-            &remote_block.text,
-        );
-        had_conflict |= block_conflict;
-        let mut merged_block = remote_block.clone();
-        merged_block.text = merged_text;
-        merged_blocks.push(merged_block);
-    }
-
-    Some((
-        NoteDocument {
-            blocks: merged_blocks,
-            clock: remote_document.clock.clone(),
-            last_operation_id: remote_document.last_operation_id.clone(),
-        },
-        had_conflict,
-    ))
-}
-
 fn ensure_note_foundation(note: &mut Note) {
     if note.object_id.trim().is_empty() {
         note.object_id = default_note_object_id(note.id);
@@ -6539,12 +6182,82 @@ fn ensure_note_foundation(note: &mut Note) {
     if note.namespace.root.trim().is_empty() || note.namespace.owner_id.is_nil() {
         note.namespace = default_user_namespace(note.author_id);
     }
-    if note.document.blocks.is_empty() {
-        note.document = note_document_from_markdown(&note.markdown, &note.author_id.to_string());
+    if note.markdown.is_empty() {
+        if let Some(markdown) = markdown_from_loro_state(&note.loro_snapshot_b64, &note.loro_updates_b64)
+            .filter(|markdown| !markdown.is_empty())
+        {
+            note.markdown = markdown;
+        } else if let Some(document) = note.document.as_ref().filter(|document| !document.blocks.is_empty()) {
+            note.markdown = markdown_from_note_document(document);
+            note.document = None;
+        }
     }
-    let materialized = markdown_from_note_document(&note.document);
-    if note.markdown != materialized {
-        note.markdown = materialized;
+    if note.rendered_html.is_empty() && !note.markdown.is_empty() {
+        note.rendered_html = markdown_to_html(&note.markdown);
+    }
+    ensure_note_loro_foundation(note);
+}
+
+fn ensure_note_loro_foundation(note: &mut Note) {
+    if note.editor_format.trim().is_empty() {
+        note.editor_format = "legacy_markdown".into();
+    }
+    if note.loro_snapshot_b64.is_empty() {
+        if let Some(snapshot_b64) = generate_loro_snapshot_from_markdown(&note.markdown) {
+            note.loro_snapshot_b64 = snapshot_b64;
+            note.loro_updates_b64.clear();
+            note.loro_version = note.revision.max(1);
+            note.loro_needs_migration = false;
+            note.editor_format = "tiptap_loro".into();
+        } else {
+            note.loro_needs_migration = true;
+        }
+    } else if note.markdown.is_empty() {
+        if let Some(markdown) = markdown_from_loro_state(&note.loro_snapshot_b64, &note.loro_updates_b64) {
+            note.markdown = markdown;
+        }
+    }
+}
+
+fn note_document_state_from_note(note: &Note) -> NoteDocumentState {
+    NoteDocumentState {
+        note_id: note.id,
+        editor_format: note.editor_format.clone(),
+        snapshot_b64: note.loro_snapshot_b64.clone(),
+        updates_b64: note.loro_updates_b64.clone(),
+        version: note.loro_version,
+        needs_migration: note.loro_needs_migration,
+        legacy_markdown: note.markdown.clone(),
+        rendered_html: note.rendered_html.clone(),
+        updated_at: note.updated_at,
+    }
+}
+
+fn compact_note_document_state(note: &mut Note) {
+    if note.loro_updates_b64.len() < LORO_UPDATE_COMPACTION_THRESHOLD {
+        return;
+    }
+    if let Some(snapshot_b64) = snapshot_from_loro_state(&note.loro_snapshot_b64, &note.loro_updates_b64) {
+        note.loro_snapshot_b64 = snapshot_b64;
+        note.loro_updates_b64.clear();
+        note.loro_needs_migration = false;
+    }
+}
+
+fn archive_legacy_conflict_note(note: &mut Note) {
+    if note.forked_from_note_id.is_none() && note.conflict_tag.as_deref().unwrap_or("").trim().is_empty() {
+        return;
+    }
+    if !note.title.starts_with("[Legacy Conflict] ") {
+        note.title = format!("[Legacy Conflict] {}", note.title.trim());
+    }
+    let normalized_folder = note.folder.trim().trim_matches('/').replace('\\', "/");
+    if !normalized_folder.starts_with("Legacy Conflicts") {
+        note.folder = if normalized_folder.is_empty() {
+            "Legacy Conflicts".into()
+        } else {
+            format!("Legacy Conflicts/{normalized_folder}")
+        };
     }
 }
 
@@ -6593,213 +6306,6 @@ fn summarize_transcript_topic(transcript: &str) -> String {
         .chars()
         .take(160)
         .collect()
-}
-
-fn should_fork_note_document(
-    document: &NoteDocument,
-    batch: &NoteDocumentOperationBatch,
-    actor_id: &str,
-) -> bool {
-    if batch.operations.is_empty() {
-        return false;
-    }
-    for operation in &batch.operations {
-        match operation {
-            NoteOperation::SetTitle { .. } | NoteOperation::SetFolder { .. } => {}
-            NoteOperation::ReplaceDocument { .. } => {
-                for (actor, counter) in &document.clock {
-                    if actor != actor_id
-                        && batch.base_clock.get(actor).copied().unwrap_or(0) < *counter
-                    {
-                        return true;
-                    }
-                }
-            }
-            NoteOperation::UpdateBlockText { block_id, .. }
-            | NoteOperation::UpdateBlockAttrs { block_id, .. }
-            | NoteOperation::DeleteBlock { block_id }
-            | NoteOperation::MoveBlock { block_id, .. } => {
-                if let Some(block) = document.blocks.iter().find(|candidate| candidate.id == *block_id) {
-                    if block.last_modified_by == actor_id {
-                        continue;
-                    }
-                    let seen_counter = batch
-                        .base_clock
-                        .get(&block.last_modified_by)
-                        .copied()
-                        .unwrap_or(0);
-                    if seen_counter < block.last_modified_counter {
-                        return true;
-                    }
-                }
-            }
-            NoteOperation::InsertBlock { after_block_id, .. } => {
-                if let Some(anchor_id) = after_block_id {
-                    if let Some(block) = document.blocks.iter().find(|candidate| candidate.id == *anchor_id) {
-                        if block.last_modified_by == actor_id {
-                            continue;
-                        }
-                        let seen_counter = batch
-                            .base_clock
-                            .get(&block.last_modified_by)
-                            .copied()
-                            .unwrap_or(0);
-                        if seen_counter < block.last_modified_counter {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    false
-}
-
-fn apply_operations_to_document(
-    document: &NoteDocument,
-    batch: &NoteDocumentOperationBatch,
-    actor_id: &str,
-) -> AppResult<NoteDocument> {
-    let mut next = document.clone();
-    let mut counter = next_block_counter(&next.clock, actor_id);
-    for operation in &batch.operations {
-        match operation {
-            NoteOperation::SetTitle { .. } | NoteOperation::SetFolder { .. } => {}
-            NoteOperation::ReplaceDocument { blocks } => {
-                next.blocks = blocks
-                    .iter()
-                    .enumerate()
-                    .map(|(index, block)| NoteBlock {
-                        id: if block.id.trim().is_empty() {
-                            format!("block-{}-{}", index, counter)
-                        } else {
-                            block.id.clone()
-                        },
-                        kind: block.kind.clone(),
-                        text: block.text.clone(),
-                        attrs: block.attrs.clone(),
-                        order: index as f64,
-                        deleted: block.deleted,
-                        last_modified_by: actor_id.to_string(),
-                        last_modified_counter: counter,
-                    })
-                    .collect();
-                counter += 1;
-            }
-            NoteOperation::InsertBlock { block, after_block_id } => {
-                let insertion_order = after_block_id
-                    .as_ref()
-                    .and_then(|anchor_id| next.blocks.iter().find(|candidate| candidate.id == *anchor_id))
-                    .map(|anchor| anchor.order + 0.5)
-                    .unwrap_or_else(|| next.blocks.iter().map(|candidate| candidate.order).fold(-1.0, f64::max) + 1.0);
-                next.blocks.push(NoteBlock {
-                    id: if block.id.trim().is_empty() {
-                        format!("block-insert-{}", counter)
-                    } else {
-                        block.id.clone()
-                    },
-                    kind: block.kind.clone(),
-                    text: block.text.clone(),
-                    attrs: block.attrs.clone(),
-                    order: insertion_order,
-                    deleted: false,
-                    last_modified_by: actor_id.to_string(),
-                    last_modified_counter: counter,
-                });
-                counter += 1;
-            }
-            NoteOperation::UpdateBlockText { block_id, text } => {
-                let block = next
-                    .blocks
-                    .iter_mut()
-                    .find(|candidate| candidate.id == *block_id)
-                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
-                block.text = text.clone();
-                block.last_modified_by = actor_id.to_string();
-                block.last_modified_counter = counter;
-                counter += 1;
-            }
-            NoteOperation::UpdateBlockAttrs { block_id, attrs } => {
-                let block = next
-                    .blocks
-                    .iter_mut()
-                    .find(|candidate| candidate.id == *block_id)
-                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
-                block.attrs = attrs.clone();
-                block.last_modified_by = actor_id.to_string();
-                block.last_modified_counter = counter;
-                counter += 1;
-            }
-            NoteOperation::DeleteBlock { block_id } => {
-                let block = next
-                    .blocks
-                    .iter_mut()
-                    .find(|candidate| candidate.id == *block_id)
-                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
-                block.deleted = true;
-                block.last_modified_by = actor_id.to_string();
-                block.last_modified_counter = counter;
-                counter += 1;
-            }
-            NoteOperation::MoveBlock { block_id, after_block_id } => {
-                let max_order = next.blocks.iter().map(|candidate| candidate.order).fold(0.0, f64::max);
-                let new_order = after_block_id
-                    .as_ref()
-                    .and_then(|anchor_id| next.blocks.iter().find(|candidate| candidate.id == *anchor_id))
-                    .map(|anchor| anchor.order + 0.5)
-                    .unwrap_or(max_order + 1.0);
-                let block = next
-                    .blocks
-                    .iter_mut()
-                    .find(|candidate| candidate.id == *block_id)
-                    .ok_or_else(|| AppError::BadRequest(format!("unknown note block: {block_id}")))?;
-                block.order = new_order;
-                block.last_modified_by = actor_id.to_string();
-                block.last_modified_counter = counter;
-                counter += 1;
-            }
-        }
-    }
-    next.clock.insert(actor_id.to_string(), counter.saturating_sub(1));
-    next.last_operation_id = batch.operation_id.clone();
-    next.blocks.sort_by(|left, right| left.order.total_cmp(&right.order));
-    Ok(next)
-}
-
-fn create_note_conflict_forks(
-    state: &mut StateData,
-    original: &Note,
-    incoming_document: &NoteDocument,
-    actor_id: &str,
-) -> Vec<Uuid> {
-    let now = Utc::now();
-    let remote_fork_id = Uuid::new_v4();
-    let local_fork_id = Uuid::new_v4();
-    let mut remote_fork = original.clone();
-    remote_fork.id = remote_fork_id;
-    remote_fork.object_id = default_note_object_id(remote_fork_id);
-    remote_fork.title = format!("{} (remote conflict)", original.title);
-    remote_fork.forked_from_note_id = Some(original.id);
-    remote_fork.conflict_tag = Some("remote_conflict".into());
-    remote_fork.created_at = now;
-    remote_fork.updated_at = now;
-    remote_fork.revision = 1;
-
-    let mut local_fork = original.clone();
-    local_fork.id = local_fork_id;
-    local_fork.object_id = default_note_object_id(local_fork_id);
-    local_fork.title = format!("{} (local conflict)", original.title);
-    local_fork.document = incoming_document.clone();
-    local_fork.markdown = markdown_from_note_document(incoming_document);
-    local_fork.forked_from_note_id = Some(original.id);
-    local_fork.conflict_tag = Some(format!("local_conflict:{actor_id}"));
-    local_fork.created_at = now;
-    local_fork.updated_at = now;
-    local_fork.revision = 1;
-
-    state.notes.insert(remote_fork.id, remote_fork);
-    state.notes.insert(local_fork.id, local_fork);
-    vec![remote_fork_id, local_fork_id]
 }
 
 fn file_node_directory(
@@ -6863,35 +6369,6 @@ fn sort_file_tree(node: &mut crate::models::FileNode) {
             _ => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
         }
     });
-}
-
-fn build_notes_projection(notes: &[Note]) -> crate::models::FileNode {
-    let mut root = file_node_directory("notes".into(), "notes".into(), None, None);
-    for note in notes {
-        let folders = note
-            .folder
-            .split('/')
-            .filter(|part| !part.is_empty() && *part != "Inbox")
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let leaf = crate::models::FileNode {
-            name: format!("{}-{}.md", slug_for_note_title(&note.title), note.id),
-            path: note_relative_path_for_move(note),
-            kind: crate::models::FileNodeKind::File,
-            object_id: Some(note.object_id.clone()),
-            object_kind: Some(crate::models::WorkspaceObjectKind::NoteDocument),
-            namespace: Some(note.namespace.clone()),
-            visibility: Some(note.visibility.clone()),
-            resource_key: Some(format!("note:{}", note.id)),
-            size_bytes: Some(note.markdown.len() as u64),
-            created_at: Some(note.created_at.to_rfc3339()),
-            updated_at: Some(note.updated_at.to_rfc3339()),
-            children: Vec::new(),
-        };
-        insert_projected_node(&mut root, &folders, leaf);
-    }
-    sort_file_tree(&mut root);
-    root
 }
 
 fn build_diagrams_projection(diagrams: &[Diagram]) -> crate::models::FileNode {
@@ -6988,6 +6465,7 @@ mod tests {
                 title: "Test".into(),
                 folder: None,
                 markdown: None,
+                visibility: None,
             })
             .await
             .expect("create note");
@@ -7000,6 +6478,7 @@ mod tests {
                     folder: None,
                     markdown: Some("updated".into()),
                     revision: 999,
+                    visibility: None,
                 },
             )
             .await
@@ -7017,6 +6496,7 @@ mod tests {
                 CreateRoomRequest {
                     name: "persisted".into(),
                     kind: crate::models::RoomKind::Channel,
+                    folder: None,
                     participant_ids: Vec::new(),
                 },
                 &creator,
@@ -7026,5 +6506,317 @@ mod tests {
 
         let state_file = state.config.storage_root.join("state.json");
         assert!(fs::try_exists(state_file).await.expect("state file check"));
+    }
+
+    #[tokio::test]
+    async fn notes_are_not_mirrored_into_managed_markdown_files() {
+        let state = test_state().await;
+        let user = state.inner.read().await.user.clone();
+        let note = state
+            .create_note(CreateNoteRequest {
+                title: "CRDT Note".into(),
+                folder: Some("Inbox/Tests".into()),
+                markdown: Some("# Hello\n\nworld".into()),
+                visibility: None,
+            })
+            .await
+            .expect("create note");
+
+        let note_dir = state.config.storage_root.join("notes");
+        let mut entries = fs::read_dir(&note_dir).await.expect("read notes dir");
+        assert!(entries.next_entry().await.expect("read dir entry").is_none());
+
+        let document = state
+            .get_note_document(note.id, user)
+            .await
+            .expect("load note document");
+        assert!(!document.document.snapshot_b64.is_empty());
+    }
+
+    #[tokio::test]
+    async fn note_document_updates_are_compacted_into_snapshot() {
+        let state = test_state().await;
+        let user = state.inner.read().await.user.clone();
+        let note = state
+            .create_note(CreateNoteRequest {
+                title: "Compaction".into(),
+                folder: Some("Inbox".into()),
+                markdown: Some("seed".into()),
+                visibility: None,
+            })
+            .await
+            .expect("create note");
+        let doc = LoroDoc::new();
+        let text = doc.get_text("content");
+        text.insert(0, "seed").expect("seed text");
+        doc.commit();
+
+        for index in 0..LORO_UPDATE_COMPACTION_THRESHOLD {
+            let markdown = format!("version {index}");
+            let previous = text.to_string();
+            if !previous.is_empty() {
+                text.delete(0, previous.len()).expect("delete prior text");
+            }
+            text.insert(0, &markdown).expect("insert new text");
+            doc.commit();
+            let update_b64 = BASE64.encode(
+                doc.export(ExportMode::all_updates())
+                    .expect("export loro updates"),
+            );
+            state
+                .push_note_document_updates(
+                    note.id,
+                    user.clone(),
+                    PushNoteDocumentUpdatesRequest {
+                        client_id: "test-client".into(),
+                        snapshot_b64: None,
+                        update_b64,
+                        editor_format: Some("test_editor".into()),
+                        content_markdown: Some(markdown),
+                        content_html: None,
+                    },
+                )
+                .await
+                .expect("push document update");
+        }
+
+        let pulled = state
+            .get_note_document(note.id, user)
+            .await
+            .expect("pull compacted note");
+        assert!(pulled.document.updates_b64.is_empty());
+        assert!(!pulled.document.snapshot_b64.is_empty());
+        assert_eq!(pulled.note.markdown, format!("version {}", LORO_UPDATE_COMPACTION_THRESHOLD - 1));
+    }
+
+    #[tokio::test]
+    async fn sync_push_replays_note_document_crdt_payloads() {
+        let state = test_state().await;
+        let user = state.inner.read().await.user.clone();
+        let note = state
+            .create_note(CreateNoteRequest {
+                title: "Offline replay".into(),
+                folder: Some("Inbox".into()),
+                markdown: Some("seed".into()),
+                visibility: None,
+            })
+            .await
+            .expect("create note");
+
+        let response = state
+            .sync_push(
+                user.clone(),
+                SyncPushRequest {
+                    operations: vec![SyncOperation::UpdateNoteDocument {
+                        id: note.id,
+                        editor_format: "workspace_markdown".into(),
+                        content_markdown: "offline changed".into(),
+                        snapshot_b64: Some("snapshot-payload".into()),
+                        update_b64: Some("update-payload".into()),
+                        content_html: Some("<p>offline changed</p>".into()),
+                    }],
+                },
+            )
+            .await
+            .expect("sync push update note document");
+
+        assert!(response.conflicts.is_empty());
+        let updated = response
+            .envelope
+            .notes
+            .into_iter()
+            .find(|entry| entry.id == note.id)
+            .expect("updated note in envelope");
+        assert_eq!(updated.markdown, "offline changed");
+        assert_eq!(updated.loro_snapshot_b64, "snapshot-payload");
+        assert_eq!(updated.loro_updates_b64, vec!["update-payload".to_string()]);
+
+        let pulled = state
+            .get_note_document(note.id, user)
+            .await
+            .expect("pull note document");
+        assert_eq!(pulled.document.snapshot_b64, "snapshot-payload");
+        assert_eq!(pulled.document.updates_b64, vec!["update-payload".to_string()]);
+        assert_eq!(pulled.document.legacy_markdown, "offline changed");
+    }
+
+    #[tokio::test]
+    async fn snapshot_only_note_document_replacement_derives_markdown_from_loro() {
+        let state = test_state().await;
+        let user = state.inner.read().await.user.clone();
+        let note = state
+            .create_note(CreateNoteRequest {
+                title: "Snapshot Replace".into(),
+                folder: Some("Inbox".into()),
+                markdown: Some("seed".into()),
+                visibility: None,
+            })
+            .await
+            .expect("create note");
+
+        let snapshot_b64 = generate_loro_snapshot_from_markdown("# Derived\n\nfrom snapshot")
+            .expect("generate snapshot");
+
+        let response = state
+            .push_note_document_updates(
+                note.id,
+                user,
+                PushNoteDocumentUpdatesRequest {
+                    client_id: "test-client".into(),
+                    snapshot_b64: Some(snapshot_b64.clone()),
+                    update_b64: String::new(),
+                    editor_format: Some("tiptap_loro".into()),
+                    content_markdown: None,
+                    content_html: None,
+                },
+            )
+            .await
+            .expect("replace note from snapshot");
+
+        assert_eq!(response.note.markdown, "# Derived\n\nfrom snapshot");
+        assert_eq!(response.note.loro_snapshot_b64, snapshot_b64);
+        assert!(response.note.loro_updates_b64.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_note_document_updates_emits_realtime_event() {
+        let state = test_state().await;
+        let user = state.inner.read().await.user.clone();
+        let mut realtime = state.realtime.subscribe();
+        let note = state
+            .create_note(CreateNoteRequest {
+                title: "Realtime".into(),
+                folder: Some("Inbox".into()),
+                markdown: Some("seed".into()),
+                visibility: None,
+            })
+            .await
+            .expect("create note");
+
+        state
+            .push_note_document_updates(
+                note.id,
+                user,
+                PushNoteDocumentUpdatesRequest {
+                    client_id: "test-client".into(),
+                    snapshot_b64: Some("snapshot-payload".into()),
+                    update_b64: "update-payload".into(),
+                    editor_format: Some("test_editor".into()),
+                    content_markdown: Some("realtime changed".into()),
+                    content_html: Some("<p>realtime changed</p>".into()),
+                },
+            )
+            .await
+            .expect("push document update");
+
+        let event = realtime.recv().await.expect("receive realtime event");
+        match event {
+            RealtimeEvent::NoteDocumentUpdate {
+                note_id,
+                client_id,
+                snapshot_b64,
+                update_b64,
+                version,
+                editor_format,
+                content_markdown,
+                content_html,
+            } => {
+                assert_eq!(note_id, note.id);
+                assert_eq!(client_id, "test-client");
+                assert_eq!(snapshot_b64.as_deref(), Some("snapshot-payload"));
+                assert_eq!(update_b64, "update-payload");
+                assert_eq!(version, 2);
+                assert_eq!(editor_format, "test_editor");
+                assert_eq!(content_markdown, "realtime changed");
+                assert_eq!(content_html, "<p>realtime changed</p>");
+            }
+            other => panic!("unexpected realtime event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn migration_archives_legacy_conflict_notes() {
+        let state = test_state().await;
+        let note = state
+            .create_note(CreateNoteRequest {
+                title: "Forked Copy".into(),
+                folder: Some("Inbox/Subfolder".into()),
+                markdown: Some("conflict body".into()),
+                visibility: None,
+            })
+            .await
+            .expect("create note");
+
+        {
+            let mut inner = state.inner.write().await;
+            let stored = inner.notes.get_mut(&note.id).expect("stored note");
+            stored.forked_from_note_id = Some(Uuid::new_v4());
+            stored.conflict_tag = Some("remote_conflict".into());
+        }
+
+        state
+            .migrate_all_notes_to_loro()
+            .await
+            .expect("migrate notes");
+
+        let migrated = state
+            .list_notes()
+            .await
+            .into_iter()
+            .find(|entry| entry.id == note.id)
+            .expect("migrated note");
+        assert!(migrated.title.starts_with("[Legacy Conflict] "));
+        assert_eq!(migrated.folder, "Legacy Conflicts/Inbox/Subfolder");
+    }
+
+    #[tokio::test]
+    async fn migration_preserves_note_metadata() {
+        let state = test_state().await;
+        let note = state
+            .create_note(CreateNoteRequest {
+                title: "Preserve Me".into(),
+                folder: Some("Projects/Specs".into()),
+                markdown: Some("seed".into()),
+                visibility: Some(crate::models::ResourceVisibility::Org),
+            })
+            .await
+            .expect("create note");
+
+        {
+            let mut inner = state.inner.write().await;
+            let stored = inner.notes.get_mut(&note.id).expect("stored note");
+            stored.editor_format = "legacy_markdown".into();
+            stored.loro_snapshot_b64.clear();
+            stored.loro_updates_b64.clear();
+            stored.loro_version = 0;
+            stored.loro_needs_migration = true;
+        }
+
+        let before = state
+            .list_notes()
+            .await
+            .into_iter()
+            .find(|entry| entry.id == note.id)
+            .expect("note before migration");
+
+        state
+            .migrate_all_notes_to_loro()
+            .await
+            .expect("migrate notes");
+
+        let after = state
+            .list_notes()
+            .await
+            .into_iter()
+            .find(|entry| entry.id == note.id)
+            .expect("note after migration");
+
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.title, before.title);
+        assert_eq!(after.folder, before.folder);
+        assert_eq!(after.visibility, before.visibility);
+        assert_eq!(after.author_id, before.author_id);
+        assert_eq!(after.created_at, before.created_at);
+        assert_eq!(after.updated_at, before.updated_at);
     }
 }

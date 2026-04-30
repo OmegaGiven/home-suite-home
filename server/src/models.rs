@@ -632,57 +632,6 @@ pub struct NoteDocument {
     pub last_operation_id: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum NoteOperation {
-    SetTitle {
-        title: String,
-    },
-    SetFolder {
-        folder: String,
-    },
-    ReplaceDocument {
-        blocks: Vec<NoteBlock>,
-    },
-    InsertBlock {
-        block: NoteBlock,
-        after_block_id: Option<String>,
-    },
-    UpdateBlockText {
-        block_id: String,
-        text: String,
-    },
-    UpdateBlockAttrs {
-        block_id: String,
-        attrs: HashMap<String, String>,
-    },
-    DeleteBlock {
-        block_id: String,
-    },
-    MoveBlock {
-        block_id: String,
-        after_block_id: Option<String>,
-    },
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
-pub struct NoteDocumentOperationBatch {
-    #[serde(default)]
-    pub actor_id: String,
-    #[serde(default)]
-    pub client_id: String,
-    #[serde(default)]
-    pub operation_id: String,
-    #[serde(default)]
-    pub base_clock: HashMap<String, u64>,
-    #[serde(default)]
-    pub base_markdown: Option<String>,
-    #[serde(default)]
-    pub base_document: Option<NoteDocument>,
-    #[serde(default)]
-    pub operations: Vec<NoteOperation>,
-}
-
 #[derive(Clone, Debug, Deserialize)]
 pub struct UpdateTaskRequest {
     pub title: String,
@@ -715,7 +664,17 @@ pub struct Note {
     pub markdown: String,
     pub rendered_html: String,
     #[serde(default)]
-    pub document: NoteDocument,
+    pub editor_format: String,
+    #[serde(default)]
+    pub loro_snapshot_b64: String,
+    #[serde(default)]
+    pub loro_updates_b64: Vec<String>,
+    #[serde(default)]
+    pub loro_version: u64,
+    #[serde(default)]
+    pub loro_needs_migration: bool,
+    #[serde(default)]
+    pub document: Option<NoteDocument>,
     pub revision: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -772,8 +731,6 @@ pub struct CreateNoteRequest {
     pub folder: Option<String>,
     pub markdown: Option<String>,
     #[serde(default)]
-    pub document: Option<NoteDocument>,
-    #[serde(default)]
     pub visibility: Option<ResourceVisibility>,
 }
 
@@ -784,20 +741,15 @@ pub struct UpdateNoteRequest {
     pub markdown: Option<String>,
     pub revision: u64,
     #[serde(default)]
-    pub document: Option<NoteDocument>,
-    #[serde(default)]
     pub visibility: Option<ResourceVisibility>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NoteOperationRecord {
-    pub note_id: Uuid,
-    pub operation_id: String,
-    pub actor_id: String,
-    pub client_id: String,
-    pub created_at: DateTime<Utc>,
-    pub resulting_revision: u64,
-    pub batch: NoteDocumentOperationBatch,
+#[derive(Clone, Debug, Deserialize)]
+pub struct UpdateNoteMetadataRequest {
+    pub title: Option<String>,
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<ResourceVisibility>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -835,31 +787,6 @@ pub struct NoteSessionCloseRequest {
     pub session_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct NoteOperationsPushRequest {
-    pub batch: NoteDocumentOperationBatch,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NoteOperationsPullResponse {
-    pub note: Note,
-    #[serde(default)]
-    pub operations: Vec<NoteOperationRecord>,
-    #[serde(default)]
-    pub conflicts: Vec<NoteConflictRecord>,
-    pub share: ResourceShare,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NoteOperationsPushResponse {
-    pub note: Note,
-    pub applied: bool,
-    #[serde(default)]
-    pub operation: Option<NoteOperationRecord>,
-    #[serde(default)]
-    pub conflicts: Vec<NoteConflictRecord>,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NoteSessionOpenResponse {
     pub note: Note,
@@ -868,6 +795,62 @@ pub struct NoteSessionOpenResponse {
     pub sessions: Vec<NoteSession>,
     #[serde(default)]
     pub conflicts: Vec<NoteConflictRecord>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteDocumentState {
+    pub note_id: Uuid,
+    #[serde(default)]
+    pub editor_format: String,
+    #[serde(default)]
+    pub snapshot_b64: String,
+    #[serde(default)]
+    pub updates_b64: Vec<String>,
+    #[serde(default)]
+    pub version: u64,
+    #[serde(default)]
+    pub needs_migration: bool,
+    #[serde(default)]
+    pub legacy_markdown: String,
+    #[serde(default)]
+    pub rendered_html: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteDocumentPullResponse {
+    pub note: Note,
+    pub document: NoteDocumentState,
+    pub share: ResourceShare,
+    #[serde(default)]
+    pub sessions: Vec<NoteSession>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct PushNoteDocumentUpdatesRequest {
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub snapshot_b64: Option<String>,
+    pub update_b64: String,
+    #[serde(default)]
+    pub editor_format: Option<String>,
+    #[serde(default)]
+    pub content_markdown: Option<String>,
+    #[serde(default)]
+    pub content_html: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PushNoteDocumentUpdatesResponse {
+    pub note: Note,
+    pub document: NoteDocumentState,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NoteDocumentMigrationSummary {
+    pub migrated_count: usize,
+    pub skipped_count: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1137,16 +1120,16 @@ pub enum SyncOperation {
         folder: Option<String>,
         markdown: Option<String>,
     },
-    UpdateNote {
+    UpdateNoteDocument {
         id: Uuid,
-        title: Option<String>,
-        folder: Option<String>,
-        markdown: Option<String>,
-        revision: u64,
-    },
-    ApplyNoteOperations {
-        id: Uuid,
-        batch: NoteDocumentOperationBatch,
+        editor_format: String,
+        content_markdown: String,
+        #[serde(default)]
+        snapshot_b64: Option<String>,
+        #[serde(default)]
+        update_b64: Option<String>,
+        #[serde(default)]
+        content_html: Option<String>,
     },
     DeleteNote {
         id: Uuid,
@@ -1334,6 +1317,8 @@ pub enum RealtimeEvent {
         client_id: String,
         offset: Option<usize>,
         #[serde(default)]
+        cursor_b64: Option<String>,
+        #[serde(default)]
         user_id: Option<Uuid>,
         #[serde(default)]
         avatar_path: Option<String>,
@@ -1344,37 +1329,19 @@ pub enum RealtimeEvent {
         #[serde(default)]
         updated_at: Option<DateTime<Utc>>,
     },
-    NotePatch {
+    NoteDocumentUpdate {
         note_id: Uuid,
-        title: String,
-        folder: String,
-        markdown: String,
-        revision: u64,
-        #[serde(default)]
-        document: Option<NoteDocument>,
-    },
-    NoteDraft {
-        note_id: Uuid,
-        title: String,
-        folder: String,
-        markdown: String,
-        revision: u64,
         client_id: String,
-        user: String,
         #[serde(default)]
-        document: Option<NoteDocument>,
-    },
-    NoteOperations {
-        note_id: Uuid,
-        title: String,
-        folder: String,
-        markdown: String,
-        revision: u64,
-        client_id: String,
-        user: String,
-        batch: NoteDocumentOperationBatch,
+        snapshot_b64: Option<String>,
+        update_b64: String,
+        version: u64,
         #[serde(default)]
-        document: Option<NoteDocument>,
+        editor_format: String,
+        #[serde(default)]
+        content_markdown: String,
+        #[serde(default)]
+        content_html: String,
     },
     ChatMessage {
         room_id: Uuid,

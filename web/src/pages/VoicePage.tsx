@@ -2,12 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { LibraryActionBar } from '../components/LibraryActionBar'
 import { MicrophoneIcon, NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { ConfirmModal } from '../components/ConfirmModal'
-import { FileTreeHeader, FileTreeNodes, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
+import { FileTreeHeader, FileTreeNodes } from '../components/FileTreeNode'
 import { FolderPromptModal } from '../components/FolderPromptModal'
+import { LibraryDeletedTreeNode } from '../components/LibraryDeletedTreeNode'
 import { LibraryShell } from '../components/LibraryShell'
 import { api } from '../lib/api'
-import type { FileNode, VoiceMemo } from '../lib/types'
-import { aggregateFileNodeSize, ancestorDirectoryPaths, filterFileNode, formatDurationSeconds, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState, type FileTreeSortState, voiceMemoDisplayTitle } from '../lib/ui-helpers'
+import type { AdminDeletedItem, FileNode, VoiceMemo } from '../lib/types'
+import { aggregateFileNodeSize, ancestorDirectoryPaths, filterFileNode, formatDurationSeconds, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState, voiceMemoDisplayTitle } from '../lib/ui-helpers'
+import { buildDeletedLibraryTreeNode } from '../lib/deleted-tree'
+import { getTreeRangeSelection, toggleMarkedTreePath, useLibraryTreeControls } from '../lib/library-tree-controls'
 
 type Props = {
   voiceTree: FileNode | null
@@ -15,6 +18,7 @@ type Props = {
   voicePaneSize: { width: number; height: number }
   activeVoiceSplitter: boolean
   memos: VoiceMemo[]
+  deletedItems: AdminDeletedItem[]
   selectedVoiceMemo: VoiceMemo | null
   selectedVoicePath: string | null
   selectedVoiceMemoSizeBytes: number | null
@@ -38,6 +42,7 @@ type Props = {
   onPollTranscript: (memo: VoiceMemo) => void
   onRenameVoiceMemo: (memoId: string, title: string) => Promise<void>
   onDeleteVoiceMemo: (memoId: string) => Promise<void>
+  onRestoreDeletedVoiceMemo: (id: string) => void
   confirmVoiceDelete: boolean
 }
 
@@ -47,6 +52,7 @@ export function VoicePage({
   voicePaneSize,
   activeVoiceSplitter,
   memos,
+  deletedItems,
   selectedVoiceMemo,
   selectedVoicePath,
   selectedVoiceMemoSizeBytes,
@@ -70,21 +76,24 @@ export function VoicePage({
   onPollTranscript,
   onRenameVoiceMemo,
   onDeleteVoiceMemo,
+  onRestoreDeletedVoiceMemo,
   confirmVoiceDelete,
 }: Props) {
   const [deleteMemoOpen, setDeleteMemoOpen] = useState(false)
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [renameFolderOpen, setRenameFolderOpen] = useState(false)
-  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
-  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
-  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
-  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
-  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
-    type: true,
-    size: true,
-    modified: true,
-    created: true,
-  })
+  const {
+    sidebarSearchOpen,
+    setSidebarSearchOpen,
+    sidebarSearchQuery,
+    setSidebarSearchQuery,
+    metaFilterOpen,
+    setMetaFilterOpen,
+    sortState,
+    setSortState,
+    rowMetaVisibility,
+    setRowMetaVisibility,
+  } = useLibraryTreeControls()
   const [newFolderName, setNewFolderName] = useState('')
   const [renameFolderName, setRenameFolderName] = useState(currentVoiceFolderPath.split('/').pop() ?? '')
   const treeContainerRef = useRef<HTMLDivElement | null>(null)
@@ -109,24 +118,19 @@ export function VoicePage({
     [currentVoiceFolderPath],
   )
   const visibleVoiceNodes = useMemo(
-    () => (filteredVoiceTree?.path === 'voice' ? filteredVoiceTree.children : filteredVoiceTree ? [filteredVoiceTree] : []),
+    () => (filteredVoiceTree ? [filteredVoiceTree] : []),
     [filteredVoiceTree],
   )
   const sortedVisibleVoiceNodes = useMemo(
     () => sortFileTree(visibleVoiceNodes, sortState, (node) => memoLabelByPath.get(node.path) ?? node.name),
     [visibleVoiceNodes, sortState, memoLabelByPath],
   )
+  const deletedVoiceTreeNode = useMemo(() => buildDeletedLibraryTreeNode('voice', deletedItems), [deletedItems])
 
   function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
-    if (options?.shiftKey && selectedVoicePath && treeContainerRef.current) {
-      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
-        .map((element) => element.dataset.fileTreePath)
-        .filter((value): value is string => Boolean(value))
-      const anchorIndex = orderedPaths.indexOf(selectedVoicePath)
-      const targetIndex = orderedPaths.indexOf(path)
-      if (anchorIndex >= 0 && targetIndex >= 0) {
-        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
-        const range = orderedPaths.slice(start, end + 1).filter((entry) => entry.startsWith('voice/'))
+    if (options?.shiftKey && selectedVoicePath) {
+      const range = getTreeRangeSelection(treeContainerRef.current, selectedVoicePath, path, (entry) => entry.startsWith('voice/'))
+      if (range) {
         onSetMarkedPaths(Array.from(new Set(range)))
         onSelectVoicePath(path)
         return
@@ -134,9 +138,7 @@ export function VoicePage({
     }
 
     if (options?.metaKey || options?.ctrlKey) {
-      onSetMarkedPaths((current) =>
-        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
-      )
+      onSetMarkedPaths((current) => toggleMarkedTreePath(current, path))
       onSelectVoicePath(path)
       return
     }
@@ -146,6 +148,10 @@ export function VoicePage({
   }
 
   function handleTreeOpen(path: string) {
+    if (path.startsWith('deleted-voice:')) {
+      void onRestoreDeletedVoiceMemo(path.slice('deleted-voice:'.length))
+      return
+    }
     if (!path.startsWith('voice/')) return
     onSelectVoicePath(path)
   }
@@ -298,6 +304,25 @@ export function VoicePage({
               ) : (
                 <div className="empty-state">{sidebarSearchQuery.trim() ? 'No matching voice files.' : 'No voice files yet.'}</div>
               )}
+              {deletedVoiceTreeNode ? (
+                <LibraryDeletedTreeNode
+                  kind="voice"
+                  node={deletedVoiceTreeNode}
+                  deletedItems={deletedItems}
+                  selectedPath={selectedVoicePath ?? ''}
+                  activePath={selectedVoicePath ?? null}
+                  markedPaths={markedPaths}
+                  draggingPath={draggingPath}
+                  dropTargetPath={dropTargetPath}
+                  onSelect={handleTreeSelection}
+                  onOpen={handleTreeOpen}
+                  onDragStart={onDragStart}
+                  onDragEnd={onDragEnd}
+                  onDropTargetChange={onDropTargetChange}
+                  onDrop={onDrop}
+                  rowMetaVisibility={rowMetaVisibility}
+                />
+              ) : null}
             </div>
           </>
         }

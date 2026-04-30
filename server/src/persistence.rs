@@ -11,8 +11,7 @@ use crate::{
     models::{
         AdminSettings, CalendarConnection, CalendarEvent, CalendarProvider, Diagram, JobStatus,
         Message, MessageReaction, Note, NoteConflictRecord, NoteDocument,
-        NoteDocumentOperationBatch, NoteOperationRecord, NoteSession, ObjectNamespace,
-        ResourceShare, ResourceVisibility, Room, RoomKind, StoredUser, SyncEntityKind,
+        NoteSession, ObjectNamespace, ResourceShare, ResourceVisibility, Room, RoomKind, StoredUser, SyncEntityKind,
         SyncTombstone, TaskItem, TaskStatus, TranscriptSegment, TranscriptionJob, UserProfile,
         UserToolScope, VoiceMemo,
     },
@@ -80,6 +79,11 @@ impl PersistenceBackend {
                                 folder text not null,
                                 markdown text not null,
                                 rendered_html text not null,
+                                editor_format text not null default 'legacy_markdown',
+                                loro_snapshot_b64 text not null default '',
+                                loro_updates_b64_json text not null default '[]',
+                                loro_version bigint not null default 0,
+                                loro_needs_migration boolean not null default true,
                                 document_json text not null default '{}',
                                 revision bigint not null,
                                 created_at text not null,
@@ -95,11 +99,23 @@ impl PersistenceBackend {
                             alter table notes add column if not exists namespace_json text not null default '{}';
                             alter table notes add column if not exists visibility text not null default 'private';
                             alter table notes add column if not exists shared_user_ids_json text not null default '[]';
+                            alter table notes add column if not exists editor_format text not null default 'legacy_markdown';
+                            alter table notes add column if not exists loro_snapshot_b64 text not null default '';
+                            alter table notes add column if not exists loro_updates_b64_json text not null default '[]';
+                            alter table notes add column if not exists loro_version bigint not null default 0;
+                            alter table notes add column if not exists loro_needs_migration boolean not null default true;
                             alter table notes add column if not exists document_json text not null default '{}';
                             alter table notes add column if not exists forked_from_note_id text;
                             alter table notes add column if not exists conflict_tag text;
                             alter table notes add column if not exists deleted_at text;
                             alter table notes add column if not exists purge_at text;
+                            create table if not exists note_document_updates (
+                                note_id text not null,
+                                sequence bigint generated always as identity primary key,
+                                update_b64 text not null
+                            );
+                            create index if not exists note_document_updates_note_id_idx
+                                on note_document_updates (note_id, sequence);
                             create table if not exists diagrams (
                                 id text primary key,
                                 title text not null,
@@ -246,21 +262,12 @@ impl PersistenceBackend {
                                 updated_at text not null,
                                 completed_at text
                             );
+                            drop table if exists note_operations;
                             create table if not exists sync_tombstones (
                                 entity text not null,
                                 id text not null,
                                 deleted_at text not null,
                                 primary key (entity, id)
-                            );
-                            create table if not exists note_operations (
-                                note_id text not null,
-                                operation_id text not null,
-                                actor_id text not null,
-                                client_id text not null,
-                                created_at text not null,
-                                resulting_revision bigint not null,
-                                batch_json text not null,
-                                primary key (note_id, operation_id)
                             );
                             create table if not exists note_sessions (
                                 note_id text not null,
@@ -409,17 +416,19 @@ impl PersistenceBackend {
         match self {
             Self::File { .. } => Ok(None),
             Self::Postgres { client, .. } => {
+                let note_updates = load_note_document_updates(client.as_ref()).await?;
                 let mut notes = HashMap::new();
                 for row in client
                     .query(
-                        "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at from notes",
+                        "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, editor_format, loro_snapshot_b64, loro_updates_b64_json, loro_version, loro_needs_migration, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at from notes",
                         &[],
                     )
                     .await
                     .map_err(|err| AppError::Internal(err.to_string()))?
                 {
+                    let note_id = parse_uuid(row.get::<_, String>(0).as_str())?;
                     let note = Note {
-                        id: parse_uuid(row.get::<_, String>(0).as_str())?,
+                        id: note_id,
                         object_id: row.get(1),
                         namespace: serde_json::from_str::<ObjectNamespace>(row.get::<_, String>(2).as_str())
                             .unwrap_or_default(),
@@ -433,17 +442,33 @@ impl PersistenceBackend {
                         folder: row.get(6),
                         markdown: row.get(7),
                         rendered_html: row.get(8),
-                        document: serde_json::from_str::<NoteDocument>(row.get::<_, String>(9).as_str())
-                            .unwrap_or_default(),
-                        revision: row.get::<_, i64>(10) as u64,
-                        created_at: parse_datetime(row.get::<_, String>(11).as_str())?,
-                        updated_at: parse_datetime(row.get::<_, String>(12).as_str())?,
-                        author_id: parse_uuid(row.get::<_, String>(13).as_str())?,
-                        last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
-                        forked_from_note_id: optional_uuid_from_string(row.get(15))?,
-                        conflict_tag: string_column_to_option(row.get::<_, Option<String>>(16)),
-                        deleted_at: optional_datetime_from_string(row.get(17))?,
-                        purge_at: optional_datetime_from_string(row.get(18))?,
+                        editor_format: row.get(9),
+                        loro_snapshot_b64: row.get(10),
+                        loro_updates_b64: note_updates
+                            .get(&note_id)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                serde_json::from_str::<Vec<String>>(row.get::<_, String>(11).as_str())
+                                    .unwrap_or_default()
+                            }),
+                        loro_version: row.get::<_, i64>(12) as u64,
+                        loro_needs_migration: row.get(13),
+                        document: serde_json::from_str::<Option<NoteDocument>>(row.get::<_, String>(14).as_str())
+                            .ok()
+                            .flatten()
+                            .or_else(|| {
+                                serde_json::from_str::<NoteDocument>(row.get::<_, String>(14).as_str())
+                                    .ok()
+                            }),
+                        revision: row.get::<_, i64>(15) as u64,
+                        created_at: parse_datetime(row.get::<_, String>(16).as_str())?,
+                        updated_at: parse_datetime(row.get::<_, String>(17).as_str())?,
+                        author_id: parse_uuid(row.get::<_, String>(18).as_str())?,
+                        last_editor_id: parse_uuid(row.get::<_, String>(19).as_str())?,
+                        forked_from_note_id: optional_uuid_from_string(row.get(20))?,
+                        conflict_tag: string_column_to_option(row.get::<_, Option<String>>(21)),
+                        deleted_at: optional_datetime_from_string(row.get(22))?,
+                        purge_at: optional_datetime_from_string(row.get(23))?,
                     };
                     notes.insert(note.id, note);
                 }
@@ -462,13 +487,15 @@ impl PersistenceBackend {
                     &note.shared_user_ids.iter().map(Uuid::to_string).collect::<Vec<_>>(),
                 )
                 .map_err(|err| AppError::Internal(err.to_string()))?;
+                let loro_updates_b64_json = serde_json::to_string(&note.loro_updates_b64)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
                 let document_json = serde_json::to_string(&note.document)
                     .map_err(|err| AppError::Internal(err.to_string()))?;
                 client
                     .execute(
                         "insert into notes
-                         (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at)
-                         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
+                         (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, editor_format, loro_snapshot_b64, loro_updates_b64_json, loro_version, loro_needs_migration, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at)
+                         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)",
                         &[
                             &note.id.to_string(),
                             &note.object_id,
@@ -479,6 +506,11 @@ impl PersistenceBackend {
                             &note.folder,
                             &note.markdown,
                             &note.rendered_html,
+                            &note.editor_format,
+                            &note.loro_snapshot_b64,
+                            &loro_updates_b64_json,
+                            &(note.loro_version as i64),
+                            &note.loro_needs_migration,
                             &document_json,
                             &(note.revision as i64),
                             &note.created_at.to_rfc3339(),
@@ -493,6 +525,7 @@ impl PersistenceBackend {
                     )
                     .await
                     .map_err(|err| AppError::Internal(err.to_string()))?;
+                sync_note_document_updates(client.as_ref(), note).await?;
                 Ok(true)
             }
         }
@@ -508,13 +541,15 @@ impl PersistenceBackend {
                     &note.shared_user_ids.iter().map(Uuid::to_string).collect::<Vec<_>>(),
                 )
                 .map_err(|err| AppError::Internal(err.to_string()))?;
+                let loro_updates_b64_json = serde_json::to_string(&note.loro_updates_b64)
+                    .map_err(|err| AppError::Internal(err.to_string()))?;
                 let document_json = serde_json::to_string(&note.document)
                     .map_err(|err| AppError::Internal(err.to_string()))?;
                 let updated = client
                     .execute(
                         "update notes
-                         set object_id=$2, namespace_json=$3, visibility=$4, shared_user_ids_json=$5, title=$6, folder=$7, markdown=$8, rendered_html=$9, document_json=$10, revision=$11, updated_at=$12, last_editor_id=$13, forked_from_note_id=$14, conflict_tag=$15, deleted_at=$16, purge_at=$17
-                         where id=$1 and revision=$18",
+                         set object_id=$2, namespace_json=$3, visibility=$4, shared_user_ids_json=$5, title=$6, folder=$7, markdown=$8, rendered_html=$9, editor_format=$10, loro_snapshot_b64=$11, loro_updates_b64_json=$12, loro_version=$13, loro_needs_migration=$14, document_json=$15, revision=$16, updated_at=$17, last_editor_id=$18, forked_from_note_id=$19, conflict_tag=$20, deleted_at=$21, purge_at=$22
+                         where id=$1 and revision=$23",
                         &[
                             &note.id.to_string(),
                             &note.object_id,
@@ -525,6 +560,11 @@ impl PersistenceBackend {
                             &note.folder,
                             &note.markdown,
                             &note.rendered_html,
+                            &note.editor_format,
+                            &note.loro_snapshot_b64,
+                            &loro_updates_b64_json,
+                            &(note.loro_version as i64),
+                            &note.loro_needs_migration,
                             &document_json,
                             &(note.revision as i64),
                             &note.updated_at.to_rfc3339(),
@@ -541,6 +581,7 @@ impl PersistenceBackend {
                 if updated == 0 {
                     return Err(AppError::BadRequest("revision mismatch".into()));
                 }
+                sync_note_document_updates(client.as_ref(), note).await?;
                 Ok(true)
             }
         }
@@ -866,7 +907,6 @@ async fn sync_relational_state(
         "delete from deleted_drive_items",
         "delete from note_conflicts",
         "delete from note_sessions",
-        "delete from note_operations",
         "delete from tasks",
         "delete from calendar_events",
         "delete from messages",
@@ -922,13 +962,15 @@ async fn sync_relational_state(
             &note.shared_user_ids.iter().map(Uuid::to_string).collect::<Vec<_>>(),
         )
         .map_err(|err| AppError::Internal(err.to_string()))?;
+        let loro_updates_b64_json = serde_json::to_string(&note.loro_updates_b64)
+            .map_err(|err| AppError::Internal(err.to_string()))?;
         let document_json = serde_json::to_string(&note.document)
             .map_err(|err| AppError::Internal(err.to_string()))?;
         client
             .execute(
                 "insert into notes
-                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at)
-                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
+                 (id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, editor_format, loro_snapshot_b64, loro_updates_b64_json, loro_version, loro_needs_migration, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at)
+                 values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)",
                 &[
                     &note.id.to_string(),
                     &note.object_id,
@@ -939,6 +981,11 @@ async fn sync_relational_state(
                     &note.folder,
                     &note.markdown,
                     &note.rendered_html,
+                    &note.editor_format,
+                    &note.loro_snapshot_b64,
+                    &loro_updates_b64_json,
+                    &(note.loro_version as i64),
+                    &note.loro_needs_migration,
                     &document_json,
                     &(note.revision as i64),
                     &note.created_at.to_rfc3339(),
@@ -953,6 +1000,7 @@ async fn sync_relational_state(
             )
             .await
             .map_err(|err| AppError::Internal(err.to_string()))?;
+        sync_note_document_updates(client, note).await?;
     }
 
     for diagram in snapshot.diagrams.values() {
@@ -1245,28 +1293,6 @@ async fn sync_relational_state(
             .map_err(|err| AppError::Internal(err.to_string()))?;
     }
 
-    for operations in snapshot.note_operations.values() {
-        for operation in operations {
-            client
-                .execute(
-                    "insert into note_operations (note_id, operation_id, actor_id, client_id, created_at, resulting_revision, batch_json)
-                     values ($1,$2,$3,$4,$5,$6,$7)",
-                    &[
-                        &operation.note_id.to_string(),
-                        &operation.operation_id,
-                        &operation.actor_id,
-                        &operation.client_id,
-                        &operation.created_at.to_rfc3339(),
-                        &(operation.resulting_revision as i64),
-                        &serde_json::to_string(&operation.batch)
-                            .map_err(|err| AppError::Internal(err.to_string()))?,
-                    ],
-                )
-                .await
-                .map_err(|err| AppError::Internal(err.to_string()))?;
-        }
-    }
-
     for sessions in snapshot.note_sessions.values() {
         for session in sessions {
             client
@@ -1382,17 +1408,19 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
     };
     let password_hash: String = user_row.get(11);
 
+    let note_updates = load_note_document_updates(client).await?;
     let mut notes = HashMap::new();
     for row in client
         .query(
-            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at from notes",
+            "select id, object_id, namespace_json, visibility, shared_user_ids_json, title, folder, markdown, rendered_html, editor_format, loro_snapshot_b64, loro_updates_b64_json, loro_version, loro_needs_migration, document_json, revision, created_at, updated_at, author_id, last_editor_id, forked_from_note_id, conflict_tag, deleted_at, purge_at from notes",
             &[],
         )
         .await
         .map_err(|err| AppError::Internal(err.to_string()))?
     {
+        let note_id = parse_uuid(row.get::<_, String>(0).as_str())?;
         let note = Note {
-            id: parse_uuid(row.get::<_, String>(0).as_str())?,
+            id: note_id,
             object_id: row.get(1),
             namespace: serde_json::from_str::<ObjectNamespace>(row.get::<_, String>(2).as_str()).unwrap_or_default(),
             visibility: parse_resource_visibility(row.get::<_, String>(3).as_str())?,
@@ -1405,16 +1433,30 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
             folder: row.get(6),
             markdown: row.get(7),
             rendered_html: row.get(8),
-            document: serde_json::from_str::<NoteDocument>(row.get::<_, String>(9).as_str()).unwrap_or_default(),
-            revision: row.get::<_, i64>(10) as u64,
-            created_at: parse_datetime(row.get::<_, String>(11).as_str())?,
-            updated_at: parse_datetime(row.get::<_, String>(12).as_str())?,
-            author_id: parse_uuid(row.get::<_, String>(13).as_str())?,
-            last_editor_id: parse_uuid(row.get::<_, String>(14).as_str())?,
-            forked_from_note_id: optional_uuid_from_string(row.get(15))?,
-            conflict_tag: string_column_to_option(row.get::<_, Option<String>>(16)),
-            deleted_at: optional_datetime_from_string(row.get(17))?,
-            purge_at: optional_datetime_from_string(row.get(18))?,
+            editor_format: row.get(9),
+            loro_snapshot_b64: row.get(10),
+            loro_updates_b64: note_updates
+                .get(&note_id)
+                .cloned()
+                .unwrap_or_else(|| serde_json::from_str::<Vec<String>>(row.get::<_, String>(11).as_str()).unwrap_or_default()),
+            loro_version: row.get::<_, i64>(12) as u64,
+            loro_needs_migration: row.get(13),
+            document: serde_json::from_str::<Option<NoteDocument>>(row.get::<_, String>(14).as_str())
+                .ok()
+                .flatten()
+                .or_else(|| {
+                    serde_json::from_str::<NoteDocument>(row.get::<_, String>(14).as_str())
+                        .ok()
+                }),
+            revision: row.get::<_, i64>(15) as u64,
+            created_at: parse_datetime(row.get::<_, String>(16).as_str())?,
+            updated_at: parse_datetime(row.get::<_, String>(17).as_str())?,
+            author_id: parse_uuid(row.get::<_, String>(18).as_str())?,
+            last_editor_id: parse_uuid(row.get::<_, String>(19).as_str())?,
+            forked_from_note_id: optional_uuid_from_string(row.get(20))?,
+            conflict_tag: string_column_to_option(row.get::<_, Option<String>>(21)),
+            deleted_at: optional_datetime_from_string(row.get(22))?,
+            purge_at: optional_datetime_from_string(row.get(23))?,
         };
         notes.insert(note.id, note);
     }
@@ -1752,30 +1794,6 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         });
     }
 
-    let mut note_operations: HashMap<Uuid, Vec<NoteOperationRecord>> = HashMap::new();
-    for row in client
-        .query(
-            "select note_id, operation_id, actor_id, client_id, created_at, resulting_revision, batch_json from note_operations order by created_at asc",
-            &[],
-        )
-        .await
-        .map_err(|err| AppError::Internal(err.to_string()))?
-    {
-        let record = NoteOperationRecord {
-            note_id: parse_uuid(row.get::<_, String>(0).as_str())?,
-            operation_id: row.get(1),
-            actor_id: row.get(2),
-            client_id: row.get(3),
-            created_at: parse_datetime(row.get::<_, String>(4).as_str())?,
-            resulting_revision: row.get::<_, i64>(5) as u64,
-            batch: serde_json::from_str::<NoteDocumentOperationBatch>(
-                row.get::<_, String>(6).as_str(),
-            )
-            .map_err(|err| AppError::Internal(err.to_string()))?,
-        };
-        note_operations.entry(record.note_id).or_default().push(record);
-    }
-
     let mut note_sessions: HashMap<Uuid, Vec<NoteSession>> = HashMap::new();
     for row in client
         .query(
@@ -1839,13 +1857,51 @@ async fn load_relational_state(client: &tokio_postgres::Client) -> AppResult<Opt
         tasks,
         resource_shares,
         sync_tombstones,
-        note_operations,
         note_sessions,
         note_conflicts,
         pending_credential_changes: HashMap::new(),
         deleted_drive_items,
         audit_log,
     }))
+}
+
+async fn load_note_document_updates(
+    client: &tokio_postgres::Client,
+) -> AppResult<HashMap<Uuid, Vec<String>>> {
+    let mut grouped = HashMap::<Uuid, Vec<String>>::new();
+    for row in client
+        .query(
+            "select note_id, update_b64 from note_document_updates order by note_id asc, sequence asc",
+            &[],
+        )
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?
+    {
+        let note_id = parse_uuid(row.get::<_, String>(0).as_str())?;
+        let update_b64: String = row.get(1);
+        grouped.entry(note_id).or_default().push(update_b64);
+    }
+    Ok(grouped)
+}
+
+async fn sync_note_document_updates(
+    client: &tokio_postgres::Client,
+    note: &Note,
+) -> AppResult<()> {
+    client
+        .execute("delete from note_document_updates where note_id = $1", &[&note.id.to_string()])
+        .await
+        .map_err(|err| AppError::Internal(err.to_string()))?;
+    for update_b64 in &note.loro_updates_b64 {
+        client
+            .execute(
+                "insert into note_document_updates (note_id, update_b64) values ($1, $2)",
+                &[&note.id.to_string(), update_b64],
+            )
+            .await
+            .map_err(|err| AppError::Internal(err.to_string()))?;
+    }
+    Ok(())
 }
 
 fn parse_uuid(value: &str) -> AppResult<Uuid> {

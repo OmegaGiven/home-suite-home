@@ -226,63 +226,6 @@ export interface ObjectNamespace {
   label: string
 }
 
-export type NoteBlockKind =
-  | 'paragraph'
-  | 'heading'
-  | 'quote'
-  | 'bullet_list'
-  | 'checklist'
-  | 'numbered_list'
-  | 'code'
-  | 'table'
-
-export interface NoteBlock {
-  id: string
-  kind: NoteBlockKind
-  text: string
-  attrs: Record<string, string>
-  order: number
-  deleted: boolean
-  last_modified_by: string
-  last_modified_counter: number
-}
-
-export interface NoteDocument {
-  blocks: NoteBlock[]
-  clock: Record<string, number>
-  last_operation_id: string
-}
-
-export type NoteOperation =
-  | { type: 'set_title'; title: string }
-  | { type: 'set_folder'; folder: string }
-  | { type: 'replace_document'; blocks: NoteBlock[] }
-  | { type: 'insert_block'; block: NoteBlock; after_block_id?: string | null }
-  | { type: 'update_block_text'; block_id: string; text: string }
-  | { type: 'update_block_attrs'; block_id: string; attrs: Record<string, string> }
-  | { type: 'delete_block'; block_id: string }
-  | { type: 'move_block'; block_id: string; after_block_id?: string | null }
-
-export interface NoteDocumentOperationBatch {
-  actor_id: string
-  client_id: string
-  operation_id: string
-  base_clock: Record<string, number>
-  base_markdown?: string | null
-  base_document?: NoteDocument | null
-  operations: NoteOperation[]
-}
-
-export interface NoteOperationRecord {
-  note_id: string
-  operation_id: string
-  actor_id: string
-  client_id: string
-  created_at: string
-  resulting_revision: number
-  batch: NoteDocumentOperationBatch
-}
-
 export interface NoteSession {
   session_id: string
   note_id: string
@@ -303,25 +246,44 @@ export interface NoteConflictRecord {
   created_at: string
 }
 
-export interface NoteOperationsPullResponse {
-  note: Note
-  operations: NoteOperationRecord[]
-  conflicts: NoteConflictRecord[]
-  share: ResourceShare
-}
-
-export interface NoteOperationsPushResponse {
-  note: Note
-  applied: boolean
-  operation?: NoteOperationRecord | null
-  conflicts: NoteConflictRecord[]
-}
-
 export interface NoteSessionOpenResponse {
   note: Note
   share: ResourceShare
   sessions: NoteSession[]
   conflicts: NoteConflictRecord[]
+}
+
+export interface NoteDocumentState {
+  note_id: string
+  editor_format: string
+  snapshot_b64: string
+  updates_b64: string[]
+  version: number
+  needs_migration: boolean
+  legacy_markdown: string
+  rendered_html: string
+  updated_at: string
+}
+
+export interface NoteDocumentPullResponse {
+  note: Note
+  document: NoteDocumentState
+  share: ResourceShare
+  sessions: NoteSession[]
+}
+
+export interface PushNoteDocumentUpdatesRequest {
+  client_id?: string
+  snapshot_b64?: string | null
+  update_b64: string
+  editor_format?: string | null
+  content_markdown?: string | null
+  content_html?: string | null
+}
+
+export interface PushNoteDocumentUpdatesResponse {
+  note: Note
+  document: NoteDocumentState
 }
 
 export interface Note {
@@ -334,7 +296,12 @@ export interface Note {
   folder: string
   markdown: string
   rendered_html: string
-  document: NoteDocument
+  editor_format?: string
+  loro_snapshot_b64?: string
+  loro_updates_b64?: string[]
+  loro_version?: number
+  loro_needs_migration?: boolean
+  document?: unknown
   revision: number
   created_at: string
   updated_at: string
@@ -508,21 +475,25 @@ export interface RtcConfig {
 }
 
 export type RealtimeEvent =
-  | { type: 'note_patch'; note_id: string; title: string; folder: string; markdown: string; revision: number; document?: NoteDocument | null }
-  | { type: 'note_draft'; note_id: string; title: string; folder: string; markdown: string; revision: number; client_id: string; user: string; document?: NoteDocument | null }
   | {
-      type: 'note_operations'
+      type: 'note_document_update'
       note_id: string
-      title: string
-      folder: string
-      markdown: string
-      revision: number
       client_id: string
-      user: string
-      batch: NoteDocumentOperationBatch
-      document?: NoteDocument | null
+      snapshot_b64?: string | null
+      update_b64: string
+      version: number
+      editor_format: string
+      content_markdown: string
+      content_html: string
     }
-  | { type: 'note_cursor'; note_id: string; user: string; client_id: string; offset: number | null }
+  | {
+      type: 'note_cursor'
+      note_id: string
+      user: string
+      client_id: string
+      offset: number | null
+      cursor_b64?: string | null
+    }
   | { type: 'chat_message'; room_id: string; body: string; author: string; author_id: string }
   | { type: 'chat_message_reactions_updated'; room_id: string; message_id: string }
   | { type: 'chat_rooms_updated' }
@@ -607,8 +578,15 @@ export interface SyncEnvelope {
 
 export type SyncOperation =
   | { kind: 'create_note'; client_generated_id: string; title: string; folder?: string | null; markdown?: string | null }
-  | { kind: 'update_note'; id: string; title?: string | null; folder?: string | null; markdown?: string | null; revision: number }
-  | { kind: 'apply_note_operations'; id: string; batch: NoteDocumentOperationBatch }
+  | {
+      kind: 'update_note_document'
+      id: string
+      editor_format: string
+      content_markdown: string
+      snapshot_b64?: string | null
+      update_b64?: string | null
+      content_html?: string | null
+    }
   | { kind: 'delete_note'; id: string }
   | { kind: 'create_diagram'; client_generated_id: string; title: string; xml?: string | null }
   | { kind: 'update_diagram'; id: string; title?: string | null; xml: string; revision: number }

@@ -27,24 +27,6 @@ export interface NoteDocument {
   last_operation_id: string
 }
 
-export type NoteOperation =
-  | { type: 'replace_document'; blocks: NoteBlock[] }
-  | { type: 'insert_block'; block: NoteBlock; after_block_id?: string | null }
-  | { type: 'update_block_text'; block_id: string; text: string }
-  | { type: 'update_block_attrs'; block_id: string; attrs: Record<string, string> }
-  | { type: 'delete_block'; block_id: string }
-  | { type: 'move_block'; block_id: string; after_block_id?: string | null }
-
-export interface NoteDocumentOperationBatch {
-  actor_id: string
-  client_id: string
-  operation_id: string
-  base_clock: Record<string, number>
-  base_markdown?: string | null
-  base_document?: NoteDocument | null
-  operations: NoteOperation[]
-}
-
 export interface UserProfile {
   id: string
   username: string
@@ -93,12 +75,24 @@ export interface LocalNoteRecord {
   title: string
   folder: string
   markdown: string
-  document: NoteDocument
+  document?: NoteDocument
+  editor_format?: string
+  loro_snapshot_b64?: string
+  loro_updates_b64?: string[]
+  loro_version?: number
+  loro_needs_migration?: boolean
   storage_mode: 'local' | 'synced'
   visibility: ResourceVisibility
   selected_server_identity_id?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface PendingNoteDocumentUpdatePayload {
+  kind: 'document_update'
+  editor_format: string
+  content_markdown: string
+  content_html?: string | null
 }
 
 export interface PendingNoteOperationRecord {
@@ -107,7 +101,7 @@ export interface PendingNoteOperationRecord {
   server_account_id: string
   server_identity_id: string
   created_at: string
-  batch: NoteDocumentOperationBatch
+  payload: PendingNoteDocumentUpdatePayload
 }
 
 export interface PresenceSession {
@@ -129,6 +123,7 @@ export interface RemoteCursor {
   user: string
   avatar_path?: string | null
   offset: number | null
+  cursor_b64?: string | null
   block_id?: string | null
   updated_at?: string | null
 }
@@ -142,53 +137,13 @@ export interface SyncConflictRecord {
   created_at: string
 }
 
-export interface NoteOperationRecord {
-  note_id: string
-  operation_id: string
-  actor_id: string
-  client_id: string
-  created_at: string
-  resulting_revision: number
-  batch: NoteDocumentOperationBatch
-}
-
-export interface NoteOperationsPullResponse {
-  note: {
-    id: string
-    title: string
-    folder: string
-    markdown: string
-    document: NoteDocument
-    revision: number
-    updated_at: string
-  }
-  operations: NoteOperationRecord[]
-  conflicts: SyncConflictRecord[]
-  share: NoteShareState
-}
-
-export interface NoteOperationsPushResponse {
-  note: {
-    id: string
-    title: string
-    folder: string
-    markdown: string
-    document: NoteDocument
-    revision: number
-    updated_at: string
-  }
-  applied: boolean
-  operation?: NoteOperationRecord
-  conflicts: SyncConflictRecord[]
-}
-
 export interface NoteSessionOpenResponse {
   note: {
     id: string
     title: string
     folder: string
     markdown: string
-    document: NoteDocument
+    document?: NoteDocument
     revision: number
     updated_at: string
   }
@@ -197,27 +152,76 @@ export interface NoteSessionOpenResponse {
   conflicts: SyncConflictRecord[]
 }
 
+export interface NoteDocumentState {
+  note_id: string
+  editor_format: string
+  snapshot_b64: string
+  updates_b64: string[]
+  version: number
+  needs_migration: boolean
+  legacy_markdown: string
+  rendered_html: string
+  updated_at: string
+}
+
+export interface NoteDocumentPullResponse {
+  note: {
+    id: string
+    title: string
+    folder: string
+    markdown: string
+    document?: NoteDocument
+    revision: number
+    updated_at: string
+    editor_format?: string
+    loro_snapshot_b64?: string
+    loro_updates_b64?: string[]
+    loro_version?: number
+    loro_needs_migration?: boolean
+  }
+  document: NoteDocumentState
+  share: NoteShareState
+  sessions: PresenceSession[]
+}
+
+export interface PushNoteDocumentUpdatesRequest {
+  client_id?: string
+  snapshot_b64?: string | null
+  update_b64: string
+  editor_format?: string | null
+  content_markdown?: string | null
+  content_html?: string | null
+}
+
+export interface PushNoteDocumentUpdatesResponse {
+  note: {
+    id: string
+    title: string
+    folder: string
+    markdown: string
+    document?: NoteDocument
+    revision: number
+    updated_at: string
+    editor_format?: string
+    loro_snapshot_b64?: string
+    loro_updates_b64?: string[]
+    loro_version?: number
+    loro_needs_migration?: boolean
+  }
+  document: NoteDocumentState
+}
+
 export type RealtimeEvent =
   | {
-      type: 'note_patch'
+      type: 'note_document_update'
       note_id: string
-      title: string
-      folder: string
-      markdown: string
-      revision: number
-      document?: NoteDocument | null
-    }
-  | {
-      type: 'note_operations'
-      note_id: string
-      title: string
-      folder: string
-      markdown: string
-      revision: number
       client_id: string
-      user: string
-      batch: NoteDocumentOperationBatch
-      document?: NoteDocument | null
+      snapshot_b64?: string | null
+      update_b64: string
+      version: number
+      editor_format: string
+      content_markdown: string
+      content_html: string
     }
   | {
       type: 'note_cursor'
@@ -225,6 +229,7 @@ export type RealtimeEvent =
       user: string
       client_id: string
       offset: number | null
+      cursor_b64?: string | null
       user_id?: string | null
       avatar_path?: string | null
       session_id?: string | null
@@ -312,85 +317,4 @@ export function documentFromMarkdown(markdown: string, actorId: string): NoteDoc
     clock: { [actorId]: blocks.length || 1 },
     last_operation_id: '',
   }
-}
-
-export function applyOperationsToDocument(
-  current: NoteDocument,
-  batch: NoteDocumentOperationBatch,
-): NoteDocument {
-  const actorId = batch.actor_id || 'local-user'
-  const next: NoteDocument = {
-    blocks: current.blocks.map((block) => ({ ...block, attrs: { ...block.attrs } })),
-    clock: { ...current.clock },
-    last_operation_id: batch.operation_id,
-  }
-  let counter = next.clock[actorId] ?? 0
-  for (const operation of batch.operations) {
-    counter += 1
-    switch (operation.type) {
-      case 'replace_document':
-        next.blocks = operation.blocks.map((block, index) => ({
-          ...block,
-          order: index + 1,
-          last_modified_by: actorId,
-          last_modified_counter: counter,
-        }))
-        break
-      case 'insert_block': {
-        const anchor = operation.after_block_id
-          ? next.blocks.find((block) => block.id === operation.after_block_id)
-          : null
-        next.blocks.push({
-          ...operation.block,
-          order: anchor ? anchor.order + 0.5 : next.blocks.length + 1,
-          last_modified_by: actorId,
-          last_modified_counter: counter,
-        })
-        break
-      }
-      case 'update_block_text': {
-        const block = next.blocks.find((candidate) => candidate.id === operation.block_id)
-        if (block) {
-          block.text = operation.text
-          block.last_modified_by = actorId
-          block.last_modified_counter = counter
-        }
-        break
-      }
-      case 'update_block_attrs': {
-        const block = next.blocks.find((candidate) => candidate.id === operation.block_id)
-        if (block) {
-          block.attrs = { ...operation.attrs }
-          block.last_modified_by = actorId
-          block.last_modified_counter = counter
-        }
-        break
-      }
-      case 'delete_block': {
-        const block = next.blocks.find((candidate) => candidate.id === operation.block_id)
-        if (block) {
-          block.deleted = true
-          block.last_modified_by = actorId
-          block.last_modified_counter = counter
-        }
-        break
-      }
-      case 'move_block': {
-        const block = next.blocks.find((candidate) => candidate.id === operation.block_id)
-        const anchor = operation.after_block_id
-          ? next.blocks.find((candidate) => candidate.id === operation.after_block_id)
-          : null
-        if (block) {
-          block.order = anchor ? anchor.order + 0.5 : Math.max(...next.blocks.map((entry) => entry.order), 0) + 1
-          block.last_modified_by = actorId
-          block.last_modified_counter = counter
-        }
-        break
-      }
-    }
-  }
-  next.blocks.sort((left, right) => left.order - right.order)
-  next.clock[actorId] = counter
-  next.last_operation_id = batch.operation_id
-  return next
 }

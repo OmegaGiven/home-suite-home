@@ -1,8 +1,7 @@
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from 'react'
 import { api } from './api'
 import type { RoutePath, NoteEditorMode } from './app-config'
-import type { FileNode, Note, NoteDocument, RealtimeEvent } from './types'
-import { buildReplaceDocumentBatch, markdownFromNoteDocument } from './note-document'
+import type { FileNode, Note, RealtimeEvent } from './types'
 
 export type NotePresenceEntry = {
   user: string
@@ -16,7 +15,6 @@ type CreateNoteActionsContext = {
   noteEditorMode: NoteEditorMode
   noteEditorRef: RefObject<HTMLDivElement | null>
   noteDraftRef: MutableRefObject<string>
-  currentNoteDocumentRef: MutableRefObject<NoteDocument | null>
   selectedNoteRef: MutableRefObject<Note | null>
   selectedNoteIdRef: MutableRefObject<string | null>
   selectedFolderPathRef: MutableRefObject<string>
@@ -40,8 +38,7 @@ type CreateNoteActionsContext = {
   setNoteSaveState: Dispatch<SetStateAction<'idle' | 'saving'>>
   setNotes: Dispatch<SetStateAction<Note[]>>
   setNoteDraft: Dispatch<SetStateAction<string>>
-  applySelectedNoteMarkdown: (markdown: string, options?: { note?: Note | null; document?: NoteDocument | null }) => void
-  applySelectedNoteDocument: (document: NoteDocument | null | undefined, options?: { note?: Note | null; markdown?: string }) => void
+  applySelectedNoteMarkdown: (markdown: string, options?: { note?: Note | null }) => void
   setCustomFolders: Dispatch<SetStateAction<string[]>>
   setSelectedNoteId: Dispatch<SetStateAction<string | null>>
   setSelectedFolderPath: Dispatch<SetStateAction<string>>
@@ -53,7 +50,6 @@ type CreateNoteActionsContext = {
     payload: { markdown: string; folder: string },
     options?: { keepalive?: boolean },
   ) => Promise<Note>
-  buildNoteDocument: (note: Note, markdown: string) => NoteDocument
   refreshFilesTree: () => Promise<void>
   showActionNotice: (message: string) => void
   normalizeFolderPath: (path: string) => string
@@ -72,12 +68,6 @@ export function createNoteActions(context: CreateNoteActionsContext) {
   }
 
   function currentNoteMarkdown() {
-    if (context.currentNoteDocumentRef.current) {
-      return markdownFromNoteDocument(context.currentNoteDocumentRef.current)
-    }
-    if (context.noteEditorMode === 'rich' && context.noteEditorRef.current) {
-      return context.editableHtmlToMarkdown(context.noteEditorRef.current)
-    }
     return context.noteDraftRef.current
   }
 
@@ -165,7 +155,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
     registerPresence(context.selectedNoteIdRef.current, context.notePresenceLabel)
   }
 
-  function broadcastNoteCursor(offset: number | null) {
+  function broadcastNoteCursor(cursor: { offset: number | null; cursorB64?: string | null }) {
     if (
       !context.selectedNoteIdRef.current ||
       !context.socketRef.current ||
@@ -178,38 +168,8 @@ export function createNoteActions(context: CreateNoteActionsContext) {
       note_id: context.selectedNoteIdRef.current,
       user: context.notePresenceLabel,
       client_id: context.clientIdRef.current,
-      offset,
-    }
-    context.socketRef.current.send(JSON.stringify(event))
-  }
-
-  function broadcastNoteDraft(markdown: string) {
-    const note = context.selectedNoteRef.current
-    if (!note || !context.socketRef.current || context.socketRef.current.readyState !== WebSocket.OPEN) {
-      return
-    }
-    const document = context.buildNoteDocument(note, markdown)
-    const batch = buildReplaceDocumentBatch(
-      note,
-      { ...note, markdown, document },
-      markdown,
-      document.blocks[0]?.last_modified_by || note.last_editor_id,
-      context.clientIdRef.current,
-    )
-    if (!batch) {
-      return
-    }
-    const event: RealtimeEvent = {
-      type: 'note_operations',
-      note_id: note.id,
-      title: note.title,
-      folder: context.selectedFolderPathRef.current || note.folder,
-      markdown,
-      revision: note.revision,
-      client_id: context.clientIdRef.current,
-      user: context.notePresenceLabel,
-      batch,
-      document,
+      offset: cursor.offset,
+      cursor_b64: cursor.cursorB64 ?? null,
     }
     context.socketRef.current.send(JSON.stringify(event))
   }
@@ -245,16 +205,13 @@ export function createNoteActions(context: CreateNoteActionsContext) {
     }, 700)
   }
 
-  function scheduleNoteDraftBroadcast(markdown: string) {
+  function scheduleNoteDraftBroadcast(_markdown: string) {
     const noteId = context.selectedNoteRef.current?.id
     markNoteLocallyDirty(noteId)
     if (context.noteDraftBroadcastTimeoutRef.current) {
       window.clearTimeout(context.noteDraftBroadcastTimeoutRef.current)
-    }
-    context.noteDraftBroadcastTimeoutRef.current = window.setTimeout(() => {
       context.noteDraftBroadcastTimeoutRef.current = null
-      broadcastNoteDraft(markdown)
-    }, 180)
+    }
     scheduleLiveNoteSave(noteId)
   }
 
@@ -322,7 +279,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
         context.realtimeDraftBaseRef.current[updated.id] = updated.markdown
         clearNoteLocallyDirty(updated.id)
         if (updated.id === context.selectedNoteIdRef.current) {
-          context.applySelectedNoteDocument(updated.document, { note: updated, markdown: updated.markdown })
+          context.applySelectedNoteMarkdown(updated.markdown, { note: updated })
         }
         context.setCustomFolders((current) => context.mergeFolderPaths(current, [updated.folder || 'Inbox']))
         await context.refreshFilesTree()
@@ -374,7 +331,7 @@ export function createNoteActions(context: CreateNoteActionsContext) {
             context.realtimeDraftBaseRef.current[rebased.id] = rebased.markdown
             clearNoteLocallyDirty(rebased.id)
             if (rebased.id === context.selectedNoteIdRef.current) {
-              context.applySelectedNoteDocument(rebased.document, { note: rebased, markdown: rebased.markdown })
+              context.applySelectedNoteMarkdown(rebased.markdown, { note: rebased })
             }
             await context.refreshFilesTree()
             if (options?.notify !== false && !options?.quiet) {

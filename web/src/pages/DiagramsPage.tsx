@@ -2,13 +2,16 @@ import { useMemo, useRef, useState, type KeyboardEventHandler, type RefObject } 
 import { DrawioDiagramEditor, type DrawioDiagramEditorHandle } from '../components/DrawioDiagramEditor'
 import { FolderPromptModal } from '../components/FolderPromptModal'
 import { DiagramLibraryTreeNode } from '../components/DiagramLibraryTreeNode'
-import { FileTreeHeader, FileTreeNodes, type FileTreeRowMetaVisibility } from '../components/FileTreeNode'
+import { FileTreeHeader, FileTreeNodes } from '../components/FileTreeNode'
+import { LibraryDeletedTreeNode } from '../components/LibraryDeletedTreeNode'
 import { LibraryActionBar } from '../components/LibraryActionBar'
 import { NewDiagramIcon, NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActionIcons'
 import { LibraryShell } from '../components/LibraryShell'
 import type { DiagramEditorMode } from '../lib/app-config'
-import type { Diagram, FileNode } from '../lib/types'
-import { aggregateFileNodeSize, ancestorDirectoryPaths, deriveDirectoryPath, diagramDisplayName, fileTypeLabel, filterDiagramFolderNode, filterFileNode, formatFileSize, formatFileTimestamp, normalizeDiagramFolderPath, sortFileTree, toggleFileTreeSortState, type DiagramFolderNode, type FileTreeSortState } from '../lib/ui-helpers'
+import type { AdminDeletedItem, Diagram, FileNode } from '../lib/types'
+import { aggregateFileNodeSize, ancestorDirectoryPaths, deriveDirectoryPath, diagramDisplayName, fileTypeLabel, filterDiagramFolderNode, filterFileNode, formatFileSize, formatFileTimestamp, normalizeDiagramFolderPath, sortFileTree, toggleFileTreeSortState, type DiagramFolderNode } from '../lib/ui-helpers'
+import { buildDeletedLibraryTreeNode } from '../lib/deleted-tree'
+import { getTreeRangeSelection, toggleMarkedTreePath, useLibraryTreeControls } from '../lib/library-tree-controls'
 
 type Props = {
   diagramFullscreen: boolean
@@ -20,6 +23,7 @@ type Props = {
   diagramTree: DiagramFolderNode[]
   diagramTreeNode?: FileNode | null
   diagrams: Diagram[]
+  deletedItems: AdminDeletedItem[]
   selectedDiagramId: string | null
   selectedDiagramPath?: string | null
   markedPaths: string[]
@@ -51,6 +55,7 @@ type Props = {
   onChangeDiagramDraft: (value: string) => void
   onDiagramDraftKeyDown: KeyboardEventHandler<HTMLTextAreaElement>
   onPersistDiagramXml: (xml: string) => void
+  onRestoreDeletedDiagram: (id: string) => void
 }
 
 export function DiagramsPage({
@@ -63,6 +68,7 @@ export function DiagramsPage({
   diagramTree,
   diagramTreeNode,
   diagrams,
+  deletedItems,
   selectedDiagramId,
   selectedDiagramPath,
   markedPaths,
@@ -94,19 +100,22 @@ export function DiagramsPage({
   onChangeDiagramDraft,
   onDiagramDraftKeyDown,
   onPersistDiagramXml,
+  onRestoreDeletedDiagram,
 }: Props) {
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [renameFolderOpen, setRenameFolderOpen] = useState(false)
-  const [sidebarSearchOpen, setSidebarSearchOpen] = useState(false)
-  const [sidebarSearchQuery, setSidebarSearchQuery] = useState('')
-  const [metaFilterOpen, setMetaFilterOpen] = useState(false)
-  const [sortState, setSortState] = useState<FileTreeSortState | null>(null)
-  const [rowMetaVisibility, setRowMetaVisibility] = useState<FileTreeRowMetaVisibility>({
-    type: true,
-    size: true,
-    modified: true,
-    created: true,
-  })
+  const {
+    sidebarSearchOpen,
+    setSidebarSearchOpen,
+    sidebarSearchQuery,
+    setSidebarSearchQuery,
+    metaFilterOpen,
+    setMetaFilterOpen,
+    sortState,
+    setSortState,
+    rowMetaVisibility,
+    setRowMetaVisibility,
+  } = useLibraryTreeControls()
   const [newFolderName, setNewFolderName] = useState('')
   const currentLibraryFolderPath = useMemo(
     () => (selectedDiagram ? normalizeDiagramFolderPath(selectedDiagram.title) : 'Diagrams'),
@@ -131,12 +140,7 @@ export function DiagramsPage({
     [diagramTreeNode, sidebarSearchQuery],
   )
   const visibleDiagramNodes = useMemo(
-    () =>
-      filteredDiagramTreeNode?.path === 'diagrams'
-        ? filteredDiagramTreeNode.children
-        : filteredDiagramTreeNode
-          ? [filteredDiagramTreeNode]
-          : [],
+    () => (filteredDiagramTreeNode ? [filteredDiagramTreeNode] : []),
     [filteredDiagramTreeNode],
   )
   const sortedVisibleDiagramNodes = useMemo(
@@ -147,6 +151,7 @@ export function DiagramsPage({
     () => filterDiagramFolderNode(diagramRootNode, sidebarSearchQuery),
     [diagramRootNode, sidebarSearchQuery],
   )
+  const deletedDiagramTreeNode = useMemo(() => buildDeletedLibraryTreeNode('diagram', deletedItems), [deletedItems])
   const highlightedPaths = useMemo(
     () =>
       selectedDiagramPath
@@ -166,15 +171,14 @@ export function DiagramsPage({
   }
 
   function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
-    if (options?.shiftKey && selectedDiagramPath && treeContainerRef.current) {
-      const orderedPaths = Array.from(treeContainerRef.current.querySelectorAll<HTMLElement>('[data-file-tree-path]'))
-        .map((element) => element.dataset.fileTreePath)
-        .filter((value): value is string => Boolean(value))
-      const anchorIndex = orderedPaths.indexOf(selectedDiagramPath)
-      const targetIndex = orderedPaths.indexOf(path)
-      if (anchorIndex >= 0 && targetIndex >= 0) {
-        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex]
-        const range = orderedPaths.slice(start, end + 1).filter((entry) => entry.startsWith('diagram:') || entry.startsWith('diagrams/'))
+    if (options?.shiftKey && selectedDiagramPath) {
+      const range = getTreeRangeSelection(
+        treeContainerRef.current,
+        selectedDiagramPath,
+        path,
+        (entry) => entry.startsWith('diagram:') || entry.startsWith('diagrams/'),
+      )
+      if (range) {
         onSetMarkedPaths(Array.from(new Set(range)))
         applySelection(path)
         return
@@ -182,9 +186,7 @@ export function DiagramsPage({
     }
 
     if (options?.metaKey || options?.ctrlKey) {
-      onSetMarkedPaths((current) =>
-        current.includes(path) ? current.filter((entry) => entry !== path) : Array.from(new Set([...current, path])),
-      )
+      onSetMarkedPaths((current) => toggleMarkedTreePath(current, path))
       applySelection(path)
       return
     }
@@ -198,6 +200,10 @@ export function DiagramsPage({
   }
 
   function handleTreeOpen(path: string) {
+    if (path.startsWith('deleted-diagram:')) {
+      void onRestoreDeletedDiagram(path.slice('deleted-diagram:'.length))
+      return
+    }
     applySelection(path)
   }
 
@@ -337,7 +343,6 @@ export function DiagramsPage({
                   selectedDiagramId={selectedDiagramId}
                   activeFolderPath={currentLibraryFolderPath}
                   markedPaths={markedPaths}
-                  hideRoot
                   draggingPath={draggingPath}
                   dropTargetPath={dropTargetPath}
                   onSelectPath={handleTreeSelection}
@@ -351,6 +356,25 @@ export function DiagramsPage({
               ) : (
                 <div className="empty-state">No matching diagrams.</div>
               )}
+              {deletedDiagramTreeNode ? (
+                <LibraryDeletedTreeNode
+                  kind="diagram"
+                  node={deletedDiagramTreeNode}
+                  deletedItems={deletedItems}
+                  selectedPath={selectedDiagramPath ?? ''}
+                  activePath={selectedDiagramPath ?? null}
+                  markedPaths={markedPaths}
+                  draggingPath={draggingPath}
+                  dropTargetPath={dropTargetPath}
+                  onSelect={handleTreeSelection}
+                  onOpen={handleTreeOpen}
+                  onDragStart={onDragStart}
+                  onDragEnd={onDragEnd}
+                  onDropTargetChange={onDropTargetChange}
+                  onDrop={onDrop}
+                  rowMetaVisibility={rowMetaVisibility}
+                />
+              ) : null}
             </div>
           </>
         }

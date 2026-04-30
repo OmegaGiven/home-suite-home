@@ -71,6 +71,19 @@ function headingItems(markdown: string) {
     }))
 }
 
+function formatLastSyncedAt(value: string | null) {
+  if (!value) return 'Not synced yet'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Not synced yet'
+  return `Last synced ${parsed.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+}
+
+function shareSummary(visibility: 'private' | 'org' | 'users', userCount: number) {
+  if (visibility === 'org') return 'Visible to everyone on this server'
+  if (visibility === 'users') return userCount > 0 ? `${userCount} invited` : 'Invite-only'
+  return 'Private on this server'
+}
+
 function mergeConcurrentMarkdown(baseMarkdown: string, localMarkdown: string, remoteMarkdown: string) {
   if (localMarkdown === remoteMarkdown) {
     return localMarkdown
@@ -170,6 +183,8 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     createNoteWithPreferences,
     updateNoteTitle,
     saveSelectedNoteVisibilitySettings,
+    listSelectedNoteBindings,
+    setSelectedNoteServerSync,
     loadSelectedNoteShare,
     listUsersForServerIdentity,
     updateMarkdown,
@@ -180,7 +195,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     remoteCursors,
     conflicts,
     saveStatus,
-    linkSelectedNoteToServer,
     serverAccounts,
     appearance,
   } = useNotesApp()
@@ -197,11 +211,24 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   const [openSearch, setOpenSearch] = useState('')
   const [selectedOpenNoteId, setSelectedOpenNoteId] = useState<string | null>(null)
   const [inviteDraft, setInviteDraft] = useState('')
-  const [visibilityServerIdentityId, setVisibilityServerIdentityId] = useState<string | null>(null)
+  const [inviteServerIdentityId, setInviteServerIdentityId] = useState<string | null>(null)
   const [visibilityDraft, setVisibilityDraft] = useState<'private' | 'org' | 'users'>('private')
   const [visibilityUserIds, setVisibilityUserIds] = useState<string[]>([])
   const [visibilityLoading, setVisibilityLoading] = useState(false)
   const [visibilitySaving, setVisibilitySaving] = useState(false)
+  const [serverRows, setServerRows] = useState<
+    Array<{
+      accountId: string
+      accountLabel: string
+      baseUrl: string
+      identityId: string
+      label: string
+      enabled: boolean
+      lastSyncedAt: string | null
+      visibility: 'private' | 'org' | 'users'
+      userIds: string[]
+    }>
+  >([])
   const [serverUsers, setServerUsers] = useState<Array<{
     id: string
     username: string
@@ -210,7 +237,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     avatar_path?: string | null
   }>>([])
   const [linkDraft, setLinkDraft] = useState('https://')
-  const [syncNewNotesByDefault, setSyncNewNotesByDefault] = useState(true)
   const [selection, setSelection] = useState<TextSelection | null>(null)
   const [markdownUndoStack, setMarkdownUndoStack] = useState<string[]>([])
   const [markdownRedoStack, setMarkdownRedoStack] = useState<string[]>([])
@@ -244,9 +270,9 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
       ),
     [serverAccounts],
   )
-  const selectedServerOption = useMemo(
-    () => serverOptions.find((option) => option.identityId === visibilityServerIdentityId) ?? null,
-    [serverOptions, visibilityServerIdentityId],
+  const inviteServerOption = useMemo(
+    () => serverOptions.find((option) => option.identityId === inviteServerIdentityId) ?? null,
+    [serverOptions, inviteServerIdentityId],
   )
   const inviteableUsers = useMemo(() => {
     const query = inviteDraft.trim().toLowerCase()
@@ -266,27 +292,39 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
 
   useEffect(() => {
     if (!showVisibility || !selectedNote) return
-    const defaultServerIdentityId = selectedNote.selected_server_identity_id ?? serverOptions[0]?.identityId ?? null
     let cancelled = false
-    setVisibilityDraft(selectedNote.visibility)
-    setVisibilityServerIdentityId(defaultServerIdentityId)
-    setVisibilityUserIds([])
-    setServerUsers([])
-    setInviteDraft('')
     setVisibilityLoading(true)
     void (async () => {
       try {
-        if (!defaultServerIdentityId) return
-        const [users, share] = await Promise.all([
-          listUsersForServerIdentity(defaultServerIdentityId),
-          loadSelectedNoteShare(defaultServerIdentityId),
-        ])
+        const bindings = await listSelectedNoteBindings()
+        const bindingByIdentity = new Map(bindings.map((binding) => [binding.server_identity_id ?? '', binding]))
+        const sharePairs = await Promise.all(
+          serverOptions.map(async (option) => {
+            if (!bindingByIdentity.has(option.identityId)) {
+              return [option.identityId, null] as const
+            }
+            return [option.identityId, await loadSelectedNoteShare(option.identityId)] as const
+          }),
+        )
         if (cancelled) return
-        setServerUsers(users)
-        if (share) {
-          setVisibilityDraft(share.visibility)
-          setVisibilityUserIds(share.user_ids)
-        }
+        const shareByIdentity = new Map(sharePairs)
+        setServerRows(
+          serverOptions.map((option) => {
+            const binding = bindingByIdentity.get(option.identityId)
+            const share = shareByIdentity.get(option.identityId)
+            return {
+              accountId: option.accountId,
+              accountLabel: option.accountLabel,
+              baseUrl: option.baseUrl,
+              identityId: option.identityId,
+              label: option.label,
+              enabled: Boolean(binding?.remote_note_id),
+              lastSyncedAt: binding?.last_pushed_at ?? binding?.last_pulled_at ?? null,
+              visibility: share?.visibility ?? selectedNote.visibility,
+              userIds: share?.user_ids ?? [],
+            }
+          }),
+        )
       } finally {
         if (!cancelled) setVisibilityLoading(false)
       }
@@ -297,7 +335,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   }, [
     showVisibility,
     selectedNote?.id,
-    selectedNote?.selected_server_identity_id,
     selectedNote?.visibility,
     serverOptions,
   ])
@@ -433,10 +470,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   function handleSelectionChange(event: NativeSyntheticEvent<TextInputSelectionChangeEventData>) {
     const nextSelection = event.nativeEvent.selection
     setSelection({ start: nextSelection.start, end: nextSelection.end })
-    if (!isMarkdownMode) {
-      sendCursor({ offset: null, blockId: null })
-      return
-    }
     sendCursor({ offset: nextSelection.end })
   }
 
@@ -455,11 +488,14 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   }
 
   async function applyHeaderLevel(level: '1' | '2' | '3') {
-    if (!isMarkdownMode) {
+    if (isMarkdownMode) {
+      setRichEditorCommand({ id: `heading-${Date.now()}`, type: 'heading', level })
       setShowHeaderPicker(false)
       return
     }
-    setRichEditorCommand({ id: `heading-${Date.now()}`, type: 'heading', level })
+    await runMarkdownTransform((text, currentSelection) =>
+      prefixCurrentLine(text, currentSelection, `${'#'.repeat(Number(level))} `),
+    )
     setShowHeaderPicker(false)
   }
 
@@ -511,33 +547,37 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
           setRichEditorCommand({ id: `bold-${Date.now()}`, type: 'bold' })
           return
         }
+        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '**'))
         return
       case 'italic':
         if (isMarkdownMode) {
           setRichEditorCommand({ id: `italic-${Date.now()}`, type: 'italic' })
           return
         }
+        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '*'))
         return
       case 'underline':
         if (isMarkdownMode) {
           setRichEditorCommand({ id: `underline-${Date.now()}`, type: 'underline' })
           return
         }
+        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '<u>', '</u>'))
         return
       case 'strike':
         if (isMarkdownMode) {
           setRichEditorCommand({ id: `strike-${Date.now()}`, type: 'strike' })
           return
         }
+        await runMarkdownTransform((text, currentSelection) => wrapSelection(text, currentSelection, '~~'))
         return
       case 'quote':
         if (isMarkdownMode) {
           setRichEditorCommand({ id: `quote-${Date.now()}`, type: 'quote' })
           return
         }
+        await runMarkdownTransform((text, currentSelection) => prefixCurrentLine(text, currentSelection, '> '))
         return
       case 'link':
-        if (!isMarkdownMode) return
         setShowLinkEditor(true)
         return
       case 'table':
@@ -545,35 +585,19 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
           setRichEditorCommand({ id: `table-${Date.now()}`, type: 'table' })
           return
         }
+        await runMarkdownTransform((text, currentSelection) => ({
+          text: `${text.slice(0, currentSelection.start)}| Column 1 | Column 2 |\n| --- | --- |\n| Value | Value |${text.slice(currentSelection.end)}`,
+        }))
         return
       case 'code':
         if (isMarkdownMode) {
           setRichEditorCommand({ id: `code-${Date.now()}`, type: 'code' })
           return
         }
+        await runMarkdownTransform((text, currentSelection) =>
+          surroundCurrentLine(text, currentSelection, '```', '```'),
+        )
         return
-    }
-  }
-
-  async function selectVisibilityServer(identityId: string | null) {
-    setVisibilityServerIdentityId(identityId)
-    setServerUsers([])
-    setVisibilityUserIds([])
-    setInviteDraft('')
-    if (!identityId) return
-    setVisibilityLoading(true)
-    try {
-      const [users, share] = await Promise.all([
-        listUsersForServerIdentity(identityId),
-        loadSelectedNoteShare(identityId),
-      ])
-      setServerUsers(users)
-      if (share) {
-        setVisibilityDraft(share.visibility)
-        setVisibilityUserIds(share.user_ids)
-      }
-    } finally {
-      setVisibilityLoading(false)
     }
   }
 
@@ -581,11 +605,6 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     setVisibilityDraft(value)
     if (value !== 'users') {
       setVisibilityUserIds([])
-      setShowInvitePicker(false)
-      return
-    }
-    if (visibilityServerIdentityId) {
-      setShowInvitePicker(true)
     }
   }
 
@@ -596,16 +615,66 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     )
   }
 
-  async function saveVisibilitySettings() {
+  async function toggleServerRow(identityId: string, enabled: boolean) {
+    setServerRows((current) => current.map((row) => (row.identityId === identityId ? { ...row, enabled } : row)))
+    await setSelectedNoteServerSync({ serverIdentityId: identityId, enabled })
+    const bindings = await listSelectedNoteBindings()
+    const bindingByIdentity = new Map(bindings.map((binding) => [binding.server_identity_id ?? '', binding]))
+    setServerRows((current) =>
+      current.map((row) => {
+        const binding = bindingByIdentity.get(row.identityId)
+        return {
+          ...row,
+          enabled: Boolean(binding?.remote_note_id),
+          lastSyncedAt: binding?.last_pushed_at ?? binding?.last_pulled_at ?? row.lastSyncedAt,
+        }
+      }),
+    )
+  }
+
+  async function openInviteEditor(identityId: string) {
+    setInviteServerIdentityId(identityId)
+    setShowInvitePicker(true)
+    setInviteDraft('')
+    setVisibilityLoading(true)
+    try {
+      const [users, share] = await Promise.all([
+        listUsersForServerIdentity(identityId),
+        loadSelectedNoteShare(identityId),
+      ])
+      setServerUsers(users)
+      setVisibilityDraft(share?.visibility ?? 'private')
+      setVisibilityUserIds(share?.user_ids ?? [])
+    } finally {
+      setVisibilityLoading(false)
+    }
+  }
+
+  async function saveInviteSettings() {
+    if (!inviteServerIdentityId) {
+      setShowInvitePicker(false)
+      return
+    }
     setVisibilitySaving(true)
     try {
       await saveSelectedNoteVisibilitySettings({
-        serverIdentityId: visibilityServerIdentityId,
+        serverIdentityId: inviteServerIdentityId,
         visibility: visibilityDraft,
         userIds: visibilityDraft === 'users' ? visibilityUserIds : [],
       })
+      const share = await loadSelectedNoteShare(inviteServerIdentityId)
+      setServerRows((current) =>
+        current.map((row) =>
+          row.identityId === inviteServerIdentityId
+            ? {
+                ...row,
+                visibility: share?.visibility ?? visibilityDraft,
+                userIds: share?.user_ids ?? (visibilityDraft === 'users' ? visibilityUserIds : []),
+              }
+            : row,
+        ),
+      )
       setShowInvitePicker(false)
-      setShowVisibility(false)
     } finally {
       setVisibilitySaving(false)
     }
@@ -627,7 +696,10 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
             <SaveStateIcon color={saveIconColor} size={20} />
           </TouchableOpacity>
           <View style={styles.modeToggle}>
-            {(['markdown', 'rich'] as const).map((mode) => (
+            {([
+              ['markdown', 'TXT'],
+              ['rich', 'MD'],
+            ] as const).map(([mode, label]) => (
               <TouchableOpacity
                 key={mode}
                 style={[styles.modeToggleButton, editorMode === mode ? styles.modeToggleButtonActive : null]}
@@ -639,7 +711,7 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
                   setEditorMode(mode)
                 }}
               >
-                <Text style={styles.modeToggleText}>{mode === 'rich' ? 'MD' : 'TXT'}</Text>
+                <Text style={styles.modeToggleText}>{label}</Text>
               </TouchableOpacity>
             ))}
           </View>
@@ -660,11 +732,7 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
           {TOOLBAR_ITEMS.map((item) => (
             <TouchableOpacity
               key={item.key}
-              style={[
-                styles.toolbarButton,
-                !isMarkdownMode ? styles.toolbarButtonDisabled : null,
-              ]}
-              disabled={!isMarkdownMode}
+              style={styles.toolbarButton}
               onPress={() => void applyToolbarAction(item.key)}
             >
               {typeof item.content === 'string' ? (
@@ -729,7 +797,7 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
               void flushEditorDraft()
             }}
             textAlignVertical="top"
-            placeholder="Edit plain text"
+            placeholder="Edit plain text markdown"
             placeholderTextColor={screenColors.muted}
           />
         )}
@@ -846,116 +914,52 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
       <Modal visible={showVisibility} transparent animationType={sheetAnimationType} onRequestClose={() => setShowVisibility(false)}>
         <Pressable style={styles.sheetWrap} onPress={() => setShowVisibility(false)}>
           <Pressable style={styles.sheet} onPress={(event) => event.stopPropagation()}>
-            <Text style={styles.sheetTitle}>Visibility</Text>
+            <Text style={styles.sheetTitle}>Storage & Sharing</Text>
             <View style={styles.sectionCard}>
-              <Text style={styles.preferenceTitle}>Backup server</Text>
-              <View style={styles.visibilityRow}>
-                <TouchableOpacity style={styles.serverSelectorButton} onPress={() => setShowInvitePicker(false)}>
-                  <Text style={styles.serverSelectorText} numberOfLines={1}>
-                    {selectedServerOption ? selectedServerOption.accountLabel : 'Local only'}
-                  </Text>
-                </TouchableOpacity>
-                <View style={styles.visibilityPillRow}>
-                  {([
-                    ['private', 'Private'],
-                    ['org', 'Public'],
-                    ['users', 'Invite'],
-                  ] as const).map(([value, label]) => (
-                    <TouchableOpacity
-                      key={value}
-                      style={[styles.pill, visibilityDraft === value ? styles.pillActive : null]}
-                      onPress={() => chooseVisibility(value)}
-                    >
-                      <Text style={styles.pillText}>{label}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.serverPickerRow}>
-                {note.storage_mode !== 'synced' ? (
-                  <TouchableOpacity
-                    style={[styles.serverChip, visibilityServerIdentityId === null ? styles.serverChipActive : null]}
-                    onPress={() => void selectVisibilityServer(null)}
-                  >
-                    <Text style={styles.serverChipText}>Local only</Text>
-                  </TouchableOpacity>
-                ) : null}
-                {serverOptions.map((option) => (
-                  <TouchableOpacity
-                    key={option.identityId}
-                    style={[styles.serverChip, visibilityServerIdentityId === option.identityId ? styles.serverChipActive : null]}
-                    onPress={() => void selectVisibilityServer(option.identityId)}
-                  >
-                    <Text style={styles.serverChipText}>{option.accountLabel}</Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-              <Text style={styles.preferenceText}>
-                {selectedServerOption
-                  ? `This note will back up to ${selectedServerOption.accountLabel}.`
-                  : 'Keep this note local only until you choose a server.'}
-              </Text>
-              {visibilityDraft === 'users' ? (
-                <TouchableOpacity
-                  style={[styles.sheetSecondaryAction, !visibilityServerIdentityId ? styles.disabledAction : null]}
-                  onPress={() => {
-                    if (!visibilityServerIdentityId) return
-                    setShowInvitePicker(true)
-                  }}
-                  disabled={!visibilityServerIdentityId}
-                >
-                  <Text style={styles.sheetSecondaryText}>
-                    {selectedInviteUsers.length > 0 ? `Manage invites (${selectedInviteUsers.length})` : 'Choose invited users'}
-                  </Text>
-                </TouchableOpacity>
-              ) : null}
-              {visibilityLoading ? <Text style={styles.preferenceText}>Loading server visibility details…</Text> : null}
+              <Text style={styles.preferenceTitle}>Connected servers</Text>
+              <Text style={styles.preferenceText}>Turn on the places where this note should auto-save and sync.</Text>
+              {visibilityLoading ? <Text style={styles.preferenceText}>Loading connected servers…</Text> : null}
+              {serverRows.length > 0 ? (
+                serverRows.map((row) => (
+                  <View key={row.identityId} style={styles.serverSyncRow}>
+                    <View style={styles.serverSyncCopy}>
+                      <Text style={styles.serverSyncTitle}>{row.accountLabel}</Text>
+                      <Text style={styles.serverSyncMeta}>{shareSummary(row.visibility, row.userIds.length)}</Text>
+                      <Text style={styles.serverSyncMeta}>{formatLastSyncedAt(row.lastSyncedAt)}</Text>
+                    </View>
+                    <View style={styles.serverSyncActions}>
+                      <TouchableOpacity
+                        style={[styles.inviteButton, !row.enabled ? styles.disabledAction : null]}
+                        disabled={!row.enabled}
+                        onPress={() => void openInviteEditor(row.identityId)}
+                      >
+                        <Text style={styles.inviteButtonText}>Invite</Text>
+                      </TouchableOpacity>
+                      <Switch
+                        value={row.enabled}
+                        onValueChange={(value) => void toggleServerRow(row.identityId, value)}
+                        trackColor={{ false: '#223649', true: screenColors.accent }}
+                        thumbColor="#f8fbff"
+                      />
+                    </View>
+                  </View>
+                ))
+              ) : (
+                <Text style={styles.preferenceText}>No connected servers yet.</Text>
+              )}
             </View>
             <View style={styles.sectionCard}>
-              <View style={styles.preferenceRow}>
+              <Text style={styles.preferenceTitle}>Local device</Text>
+              <View style={styles.localRow}>
+                <View style={styles.localIndicator} />
                 <View style={styles.preferenceCopy}>
-                  <Text style={styles.preferenceTitle}>Save to server by default</Text>
-                  <Text style={styles.preferenceText}>New notes can link to a server immediately when available.</Text>
-                </View>
-                <Switch
-                  value={syncNewNotesByDefault}
-                  onValueChange={setSyncNewNotesByDefault}
-                  trackColor={{ false: '#223649', true: screenColors.accent }}
-                  thumbColor="#f8fbff"
-                />
-              </View>
-              <View style={styles.preferenceRow}>
-                <View style={styles.preferenceCopy}>
-                  <Text style={styles.preferenceTitle}>Current note sync</Text>
-                  <Text style={styles.preferenceText}>
-                    {note.storage_mode === 'synced'
-                      ? 'This note is linked to a server.'
-                      : selectedServerOption
-                        ? `This note is local until you back it up to ${selectedServerOption.accountLabel}.`
-                        : 'This note is currently local only.'}
-                  </Text>
-                </View>
-                <TouchableOpacity
-                  style={[styles.sheetSecondaryAction, note.storage_mode === 'synced' ? styles.disabledAction : null]}
-                  onPress={() => void linkSelectedNoteToServer(visibilityServerIdentityId)}
-                  disabled={note.storage_mode === 'synced'}
-                >
-                  <Text style={styles.sheetSecondaryText}>{note.storage_mode === 'synced' ? 'Linked' : 'Back up'}</Text>
-                </TouchableOpacity>
-              </View>
-              <View style={styles.preferenceRow}>
-                <View style={styles.preferenceCopy}>
-                  <Text style={styles.preferenceTitle}>Registered servers</Text>
-                  <Text style={styles.preferenceText}>
-                    {serverAccounts.length > 0
-                      ? `${serverAccounts.length} server${serverAccounts.length > 1 ? 's' : ''} ready`
-                      : 'No servers configured yet'}
-                  </Text>
+                  <Text style={styles.serverSyncTitle}>Saved on this device</Text>
+                  <Text style={styles.preferenceText}>Local saving stays on automatically, even when you are offline.</Text>
                 </View>
               </View>
             </View>
-            <TouchableOpacity style={styles.sheetAction} onPress={() => void saveVisibilitySettings()} disabled={visibilitySaving}>
-              <Text style={styles.sheetActionText}>{visibilitySaving ? 'Saving…' : 'Done'}</Text>
+            <TouchableOpacity style={styles.sheetAction} onPress={() => setShowVisibility(false)}>
+              <Text style={styles.sheetActionText}>Close</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -964,7 +968,22 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
       <Modal visible={showInvitePicker} transparent animationType={animationType} onRequestClose={() => setShowInvitePicker(false)}>
         <Pressable style={styles.popoverWrap} onPress={() => setShowInvitePicker(false)}>
           <Pressable style={styles.popover} onPress={(event) => event.stopPropagation()}>
-            <Text style={styles.popoverTitle}>Invite people</Text>
+            <Text style={styles.popoverTitle}>{inviteServerOption ? `Share on ${inviteServerOption.accountLabel}` : 'Share note'}</Text>
+            <View style={styles.visibilityPillRow}>
+              {([
+                ['private', 'Private'],
+                ['org', 'Server'],
+                ['users', 'Invite'],
+              ] as const).map(([value, label]) => (
+                <TouchableOpacity
+                  key={value}
+                  style={[styles.pill, visibilityDraft === value ? styles.pillActive : null]}
+                  onPress={() => chooseVisibility(value)}
+                >
+                  <Text style={styles.pillText}>{label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
             <TextInput
               style={styles.popoverInput}
               value={inviteDraft}
@@ -1001,12 +1020,12 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
                 })
               ) : (
                 <Text style={styles.preferenceText}>
-                  {visibilityServerIdentityId ? 'No users found on this server.' : 'Choose a server first.'}
+                  {inviteServerIdentityId ? 'No users found on this server.' : 'Choose a server first.'}
                 </Text>
               )}
             </ScrollView>
-            <TouchableOpacity style={styles.popoverPrimary} onPress={() => setShowInvitePicker(false)}>
-              <Text style={styles.popoverPrimaryText}>Done</Text>
+            <TouchableOpacity style={styles.popoverPrimary} onPress={() => void saveInviteSettings()}>
+              <Text style={styles.popoverPrimaryText}>{visibilitySaving ? 'Saving…' : 'Save'}</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -1065,23 +1084,8 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
           </View>
 
           <View style={styles.managerDefaultsCard}>
-            <View style={styles.preferenceRow}>
-              <View style={styles.preferenceCopy}>
-                <Text style={styles.preferenceTitle}>New note default</Text>
-                <Text style={styles.preferenceText}>Create on device, or link immediately when a server exists.</Text>
-              </View>
-              <Switch
-                value={syncNewNotesByDefault}
-                onValueChange={setSyncNewNotesByDefault}
-                trackColor={{ false: '#223649', true: screenColors.accent }}
-                thumbColor="#f8fbff"
-              />
-            </View>
-            <TouchableOpacity
-              style={styles.createNoteButton}
-              onPress={() => void createNoteWithPreferences({ syncToServer: syncNewNotesByDefault })}
-            >
-              <Text style={styles.createNoteButtonText}>Create new note</Text>
+            <TouchableOpacity style={styles.createNoteButton} onPress={() => void createNoteWithPreferences()}>
+              <Text style={styles.createNoteButtonText}>Create new local note</Text>
             </TouchableOpacity>
           </View>
 
@@ -1422,6 +1426,59 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     backgroundColor: '#112338',
     padding: 16,
+  },
+  serverSyncRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    borderRadius: 18,
+    backgroundColor: '#182c43',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  serverSyncCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  serverSyncTitle: {
+    color: screenColors.text,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  serverSyncMeta: {
+    color: screenColors.muted,
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  serverSyncActions: {
+    alignItems: 'flex-end',
+    gap: 10,
+  },
+  inviteButton: {
+    borderRadius: 999,
+    backgroundColor: '#214160',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+  inviteButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  localRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 18,
+    backgroundColor: '#182c43',
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+  },
+  localIndicator: {
+    width: 12,
+    height: 12,
+    borderRadius: 999,
+    backgroundColor: screenColors.success,
   },
   visibilityRow: {
     gap: 12,
