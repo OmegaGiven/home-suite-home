@@ -8,16 +8,16 @@ This plan extends the current shared mobile direction in [docs/unified-mobile-sy
 ## Stack decision
 
 ### Recommended phase 1
-Keep the current shared-client path:
-- React web app
-- Capacitor shell for iOS and Android
-- shared sync engine
-- shared note domain logic
+Use the native mobile app in `mobile/`:
+- Expo / React Native shell
+- shared server contracts
+- mobile-owned local persistence and sync orchestration
+- shared note domain concepts where they make sense
 
 Reason:
-- the repo already has Capacitor, offline cache, sync bootstrap/pull/push, and a notes editor foundation
-- shipping a note-only mobile app this way is materially faster than starting a separate Swift + Kotlin codebase
-- the offline and sync problems are the real hard part here, not the shell technology
+- the repo now has a dedicated native mobile app target
+- the old web-owned Android shell has been removed
+- the offline and sync problems are the real hard part here, so mobile should reuse the server contracts without keeping a second web-wrapper app path alive
 
 ### What “native app” should mean here
 For this repo, the practical interpretation should be:
@@ -34,7 +34,7 @@ If strict native UI becomes mandatory later, keep the sync/domain contracts in s
 ## Current baseline in this repo
 - Offline workspace caching already exists in `web/src/lib/offline-db.ts`.
 - Sync bootstrap/pull/push already exists in `web/src/lib/sync-engine.ts` and server sync routes.
-- Capacitor wrapping already exists for Android and iOS builds.
+- Native mobile work now lives under `mobile/`.
 - Notes already have lightweight realtime behavior through websocket events for draft, patch, presence, and cursor activity.
 - Current note conflict handling is still lightweight. The repo status explicitly says note collaboration uses websocket broadcast plus client reconciliation rather than a full CRDT engine.
 
@@ -229,10 +229,10 @@ Treat the system as two channels:
 
 ### Storage technology
 Near term:
-- keep IndexedDB for Capacitor web runtime
+- keep SQLite/local mobile storage in the native mobile runtime
 
 Follow-up hardening:
-- move sensitive auth/session material into secure storage plugin
+- move sensitive auth/session material into native secure storage
 - consider filesystem-backed document blobs for large notes and attachments
 
 ## Server changes required
@@ -323,7 +323,7 @@ Build it as a note-focused mobile target within this repo so it can reuse:
 - current auth
 - current sync transport
 - current note editor logic
-- current Capacitor packaging
+- native mobile packaging in `mobile/`
 
 ### Decision 2
 Do not market the current merge behavior as full concurrent editing.

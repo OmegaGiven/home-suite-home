@@ -5,7 +5,6 @@ import { OverflowCategoryNav } from '../components/OverflowCategoryNav'
 import { UploadIcon } from '../components/LibraryActionIcons'
 import type { SessionResponse } from '../lib/types'
 import { normalizeShortcutBinding } from '../lib/shortcuts'
-import { getNativePlatform, isNativePlatform, openExternalUrl } from '../lib/platform'
 
 function isGeneratedLocalEmail(email: string | null | undefined) {
   if (!email) return false
@@ -15,14 +14,6 @@ function isGeneratedLocalEmail(email: string | null | undefined) {
 type NavItem = {
   path: NavItemPath
   label: string
-}
-
-type ApkReleaseInfo = {
-  title: string
-  publishedAt: string
-  downloadUrl: string
-  releaseUrl: string
-  assetName: string
 }
 
 type SettingsCategory = 'appearance' | 'shortcuts' | 'account'
@@ -82,12 +73,8 @@ export function SettingsPage({
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordError, setPasswordError] = useState<string | null>(null)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
-  const [apkReleaseInfo, setApkReleaseInfo] = useState<ApkReleaseInfo | null>(null)
-  const [apkReleaseLoading, setApkReleaseLoading] = useState(false)
-  const [apkReleaseError, setApkReleaseError] = useState<string | null>(null)
   const avatarInputRef = useRef<HTMLInputElement | null>(null)
   const backgroundImageInputRef = useRef<HTMLInputElement | null>(null)
-  const isAndroidNative = isNativePlatform() && getNativePlatform() === 'android'
 
   useEffect(() => {
     setUsernameDraft(session?.user.username ?? '')
@@ -102,44 +89,6 @@ export function SettingsPage({
       reader.readAsDataURL(file)
     })
   }
-
-  async function loadApkReleaseInfo() {
-    setApkReleaseLoading(true)
-    setApkReleaseError(null)
-    try {
-      const response = await fetch('https://api.github.com/repos/OmegaGiven/home-suite-home/releases/tags/android-latest')
-      if (!response.ok) {
-        throw new Error(`GitHub release lookup failed (${response.status})`)
-      }
-      const payload = (await response.json()) as {
-        name?: string
-        html_url?: string
-        published_at?: string
-        assets?: Array<{ name?: string; browser_download_url?: string }>
-      }
-      const apkAsset = payload.assets?.find((asset) => asset.name?.toLowerCase().endsWith('.apk') && asset.browser_download_url)
-      if (!apkAsset?.browser_download_url) {
-        throw new Error('No APK asset is published yet.')
-      }
-      setApkReleaseInfo({
-        title: payload.name?.trim() || 'Latest Android build',
-        publishedAt: payload.published_at || '',
-        downloadUrl: apkAsset.browser_download_url,
-        releaseUrl: payload.html_url || apkAsset.browser_download_url,
-        assetName: apkAsset.name || 'app-debug.apk',
-      })
-    } catch (error) {
-      setApkReleaseInfo(null)
-      setApkReleaseError(error instanceof Error ? error.message : 'Could not check for Android updates')
-    } finally {
-      setApkReleaseLoading(false)
-    }
-  }
-
-  useEffect(() => {
-    if (!isAndroidNative || activeCategory !== 'account') return
-    void loadApkReleaseInfo()
-  }, [activeCategory, isAndroidNative])
 
   return (
     <section className="panel settings-panel">
@@ -735,58 +684,6 @@ export function SettingsPage({
                 </div>
                 {credentialsMessage ? <div className="muted">{credentialsMessage}</div> : null}
               </div>
-              {isAndroidNative ? (
-                <div className="settings-card" style={{ marginTop: 12 }}>
-                  <h3>Android app updates</h3>
-                  <p className="muted">
-                    Download the latest APK directly from GitHub Releases. Android will prompt you to install the update.
-                  </p>
-                  {apkReleaseInfo ? (
-                    <div className="settings-list" style={{ marginBottom: 12 }}>
-                      <div className="settings-list-row">
-                        <span>Release</span>
-                        <strong>{apkReleaseInfo.title}</strong>
-                      </div>
-                      <div className="settings-list-row">
-                        <span>Package</span>
-                        <strong>{apkReleaseInfo.assetName}</strong>
-                      </div>
-                      <div className="settings-list-row">
-                        <span>Published</span>
-                        <strong>{apkReleaseInfo.publishedAt ? new Date(apkReleaseInfo.publishedAt).toLocaleString() : 'Unknown'}</strong>
-                      </div>
-                    </div>
-                  ) : null}
-                  {apkReleaseError ? <div className="muted" style={{ color: '#ff8b8b', marginBottom: 12 }}>{apkReleaseError}</div> : null}
-                  <div className="button-row">
-                    <button className="button-secondary" type="button" disabled={apkReleaseLoading} onClick={() => void loadApkReleaseInfo()}>
-                      {apkReleaseLoading ? 'Checking…' : 'Check now'}
-                    </button>
-                    <button
-                      className="button"
-                      type="button"
-                      disabled={!apkReleaseInfo}
-                      onClick={() => {
-                        if (!apkReleaseInfo) return
-                        void openExternalUrl(apkReleaseInfo.downloadUrl)
-                      }}
-                    >
-                      Download latest APK
-                    </button>
-                    <button
-                      className="button-secondary"
-                      type="button"
-                      disabled={!apkReleaseInfo}
-                      onClick={() => {
-                        if (!apkReleaseInfo) return
-                        void openExternalUrl(apkReleaseInfo.releaseUrl)
-                      }}
-                    >
-                      View release
-                    </button>
-                  </div>
-                </div>
-              ) : null}
               {usernameModalOpen ? (
                 <div className="modal-backdrop" onClick={() => !usernameSaving && setUsernameModalOpen(false)}>
                   <form

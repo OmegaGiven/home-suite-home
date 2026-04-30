@@ -92,6 +92,7 @@ type Props = {
   onCreateFolder: (name: string, parentPath: string | null) => void
   onUploadFile: (file: File) => void
   onRenameFolder: (name: string, path: string) => void
+  onSelectFolderPath: (path: string) => void
   onSetActiveNoteSplitter: (active: boolean) => void
   onToggleNoteDrawer: () => void
   onSelectNote: (note: Note) => void
@@ -157,6 +158,7 @@ export function NotesPage({
   onCreateFolder,
   onUploadFile,
   onRenameFolder,
+  onSelectFolderPath,
   onSetActiveNoteSplitter,
   onToggleNoteDrawer,
   onSelectNote,
@@ -202,6 +204,7 @@ export function NotesPage({
   } = useLibraryTreeControls()
   const [showToc, setShowToc] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
+  const [selectedFolderTargetPath, setSelectedFolderTargetPath] = useState<string | null>(null)
   const [renameFolderName, setRenameFolderName] = useState(currentLibraryFolderPath.split('/').pop() ?? '')
   const noteRootNode = useMemo(
     () => ({
@@ -473,7 +476,13 @@ export function NotesPage({
     onSetMarkedPaths(path.startsWith('note:') ? [path] : [])
     const noteId = path.startsWith('note:') ? path.slice('note:'.length) : null
     const note = noteId ? notes.find((entry) => entry.id === noteId) : null
-    if (note) onSelectNote(note)
+    if (note) {
+      setSelectedFolderTargetPath(null)
+      onSelectNote(note)
+    } else {
+      setSelectedFolderTargetPath(path)
+      onSelectFolderPath(path)
+    }
   }
 
   function handleTreeOpen(path: string) {
@@ -606,11 +615,15 @@ export function NotesPage({
                 { key: 'folder', label: 'New folder', icon: <NewFolderIcon />, onClick: () => setCreateFolderOpen(true) },
                 {
                   key: 'rename',
-                  label: 'Rename folder',
+                  label: selectedFolderTargetPath ? 'Rename folder' : 'Rename note',
                   icon: <RenameIcon />,
-                  disabled: currentLibraryFolderPath === 'Inbox',
+                  disabled: selectedFolderTargetPath ? selectedFolderTargetPath === 'Inbox' : !selectedNote,
                   onClick: () => {
-                    setRenameFolderName(currentLibraryFolderPath.split('/').pop() ?? '')
+                    if (!selectedFolderTargetPath) {
+                      onOpenTitleModal()
+                      return
+                    }
+                    setRenameFolderName(selectedFolderTargetPath.split('/').pop() ?? '')
                     setRenameFolderOpen(true)
                   },
                 },

@@ -97,6 +97,7 @@ export function VoicePage({
   const [newFolderName, setNewFolderName] = useState('')
   const [renameFolderName, setRenameFolderName] = useState(currentVoiceFolderPath.split('/').pop() ?? '')
   const treeContainerRef = useRef<HTMLDivElement | null>(null)
+  const titleInputRef = useRef<HTMLInputElement | null>(null)
   const [selectedMemoDurationSeconds, setSelectedMemoDurationSeconds] = useState<number | null>(null)
   const [memoTitleDraft, setMemoTitleDraft] = useState('')
   const memoLabelByPath = useMemo(
@@ -246,10 +247,15 @@ export function VoicePage({
                 { key: 'folder', label: 'New folder', icon: <NewFolderIcon />, onClick: () => setCreateFolderOpen(true) },
                 {
                   key: 'rename',
-                  label: 'Rename folder',
+                  label: selectedVoiceMemo ? 'Rename memo' : 'Rename folder',
                   icon: <RenameIcon />,
-                  disabled: currentVoiceFolderPath === 'voice',
+                  disabled: !selectedVoiceMemo && currentVoiceFolderPath === 'voice',
                   onClick: () => {
+                    if (selectedVoiceMemo) {
+                      titleInputRef.current?.focus()
+                      titleInputRef.current?.select()
+                      return
+                    }
                     setRenameFolderName(currentVoiceFolderPath.split('/').pop() ?? '')
                     setRenameFolderOpen(true)
                   },
@@ -337,6 +343,7 @@ export function VoicePage({
               <div className="memo-card">
                 <div className="voice-memo-card-header">
                   <input
+                    ref={titleInputRef}
                     className="input note-title-input notes-title-input"
                     value={memoTitleDraft}
                     placeholder={voiceMemoDisplayTitle(selectedVoiceMemo.created_at, 'Memo')}

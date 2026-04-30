@@ -3,10 +3,9 @@
 ## Goal
 Home Suite Home runs as:
 - a server-backed web app
-- a Capacitor-wrapped iOS app
-- a Capacitor-wrapped Android app
+- a native mobile app in `mobile/`
 
-All three share the same React UI codebase and the same sync model.
+The web and mobile clients share server contracts and sync concepts, while the mobile app owns the native runtime.
 
 ## Related plan docs
 - Mobile notes app detail: [docs/mobile-notes-app-plan.md](/Users/nathanjohnson/Documents/Projects/sweet/docs/mobile-notes-app-plan.md)
@@ -52,13 +51,9 @@ All three share the same React UI codebase and the same sync model.
   - persist the workspace locally as a backup
 - Added a connection/sync banner to the app shell.
 
-### Mobile shell
-- Added Capacitor configuration:
-  - `web/capacitor.config.json`
-- Added mobile helper scripts:
-  - `npm run mobile:sync --prefix web`
-  - `npm run mobile:ios --prefix web`
-  - `npm run mobile:android --prefix web`
+### Mobile app
+- Added the native mobile app under `mobile/`.
+- Removed the old web-owned Android shell.
 
 ## Current behavior
 - Web remains the primary runtime.
@@ -100,7 +95,7 @@ All three share the same React UI codebase and the same sync model.
   - file rename/move conflicts
 
 ### 4. Native device integrations
-- Add Capacitor plugins for:
+- Add native mobile integrations for:
   - secure storage
   - filesystem/blob caching
   - camera/photo/file picking

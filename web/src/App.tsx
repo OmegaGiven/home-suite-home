@@ -569,6 +569,7 @@ function App() {
     currentNoteIsDirty,
     saveNote,
     selectedRoomId,
+    chooseRoom,
     actionNotice,
     pendingDeletePaths,
     displayedFileNodes,

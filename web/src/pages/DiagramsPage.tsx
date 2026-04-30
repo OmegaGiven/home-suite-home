@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEventHandler, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEventHandler, type RefObject } from 'react'
 import { DrawioDiagramEditor, type DrawioDiagramEditorHandle } from '../components/DrawioDiagramEditor'
 import { FolderPromptModal } from '../components/FolderPromptModal'
 import { DiagramLibraryTreeNode } from '../components/DiagramLibraryTreeNode'
@@ -104,6 +104,7 @@ export function DiagramsPage({
 }: Props) {
   const [createFolderOpen, setCreateFolderOpen] = useState(false)
   const [renameFolderOpen, setRenameFolderOpen] = useState(false)
+  const [selectedLibraryFolderPath, setSelectedLibraryFolderPath] = useState<string | null>(null)
   const {
     sidebarSearchOpen,
     setSidebarSearchOpen,
@@ -117,12 +118,14 @@ export function DiagramsPage({
     setRowMetaVisibility,
   } = useLibraryTreeControls()
   const [newFolderName, setNewFolderName] = useState('')
-  const currentLibraryFolderPath = useMemo(
+  const selectedDiagramFolderPath = useMemo(
     () => (selectedDiagram ? normalizeDiagramFolderPath(selectedDiagram.title) : 'Diagrams'),
     [selectedDiagram],
   )
+  const currentLibraryFolderPath = selectedLibraryFolderPath ?? selectedDiagramFolderPath
   const [renameFolderName, setRenameFolderName] = useState('') 
   const treeContainerRef = useRef<HTMLDivElement | null>(null)
+  const titleInputRef = useRef<HTMLInputElement | null>(null)
   const diagramRootNode = useMemo(() => {
     const existingRoot = diagramTree.find((node) => node.path === 'Diagrams')
     if (existingRoot) return existingRoot
@@ -161,6 +164,14 @@ export function DiagramsPage({
   )
 
   function applySelection(targetPath: string) {
+    if ((targetPath === 'diagrams' || targetPath.startsWith('diagrams/')) && !targetPath.toLowerCase().endsWith('.drawio')) {
+      const nextFolderPath = targetPath.replace(/^diagrams\/?/, 'Diagrams/')
+      setSelectedLibraryFolderPath(nextFolderPath.replace(/\/$/, '') || 'Diagrams')
+    } else if (targetPath === 'Diagrams' || targetPath.startsWith('Diagrams/')) {
+      setSelectedLibraryFolderPath(targetPath)
+    } else {
+      setSelectedLibraryFolderPath(null)
+    }
     if (onSelectDiagramPath) {
       onSelectDiagramPath(targetPath)
       return
@@ -169,6 +180,10 @@ export function DiagramsPage({
       onSelectDiagram(targetPath.slice('diagram:'.length))
     }
   }
+
+  useEffect(() => {
+    setSelectedLibraryFolderPath(null)
+  }, [selectedDiagramId])
 
   function handleTreeSelection(path: string, options?: { shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean }) {
     if (options?.shiftKey && selectedDiagramPath) {
@@ -283,10 +298,15 @@ export function DiagramsPage({
                 { key: 'folder', label: 'New folder', icon: <NewFolderIcon />, onClick: () => setCreateFolderOpen(true) },
                 {
                   key: 'rename',
-                  label: 'Rename folder',
+                  label: selectedLibraryFolderPath ? 'Rename folder' : 'Rename diagram',
                   icon: <RenameIcon />,
-                  disabled: currentLibraryFolderPath === 'Diagrams',
+                  disabled: selectedLibraryFolderPath ? currentLibraryFolderPath === 'Diagrams' : !selectedDiagram,
                   onClick: () => {
+                    if (!selectedLibraryFolderPath) {
+                      titleInputRef.current?.focus()
+                      titleInputRef.current?.select()
+                      return
+                    }
                     setRenameFolderName(currentLibraryFolderPath.split('/').pop() ?? '')
                     setRenameFolderOpen(true)
                   },
@@ -382,6 +402,7 @@ export function DiagramsPage({
         <div className="notes-editor-shell diagrams-editor-shell">
           <div className="notes-editor-header">
             <input
+              ref={titleInputRef}
               className="input note-title-input notes-title-input"
               value={selectedDiagram?.title ?? ''}
               placeholder="Select or create a diagram"

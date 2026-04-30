@@ -102,6 +102,7 @@ export function createNotesPageActions(context: CreateNotesPageActionsContext) {
         context.showActionNotice(`Renamed folder to ${trimmed}`)
       })()
     },
+    onSelectFolderPath: context.setSelectedFolderPath,
     onSetActiveNoteSplitter: context.setActiveNoteSplitter,
     onToggleNoteDrawer: () => context.setNoteDrawerOpen((current) => !current),
     onSelectNote: (note: import('./types').Note) => {

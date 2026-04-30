@@ -57,6 +57,7 @@ type BuildNotesPagePropsArgs = {
   onCreateFolder: (name: string, parentPath: string | null) => void
   onUploadFile: (file: File) => void
   onRenameFolder: (name: string, path: string) => void
+  onSelectFolderPath: (path: string) => void
   onSetActiveNoteSplitter: (active: boolean) => void
   onToggleNoteDrawer: () => void
   onSelectNote: (note: Note) => void
