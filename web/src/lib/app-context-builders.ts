@@ -1,3 +1,5 @@
+import { api } from './api'
+
 export function buildSelectedEntityRuntimeContext({ appState, route, locationSearch, rooms, activeCallRoomId, session }: any) {
   return {
     notes: appState.notes,
@@ -116,7 +118,7 @@ export function buildAppActionBundleContext({
     setVoiceInputLevel: appState.setVoiceInputLevel,
     setActionNotice: appState.setActionNotice,
     setStatus: appState.setStatus,
-    api: appState.api,
+    api,
     selectedNoteId: appState.selectedNoteId,
     notePresence: appState.notePresence,
     noteCursors: appState.noteCursors,

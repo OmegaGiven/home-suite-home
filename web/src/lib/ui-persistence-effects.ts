@@ -81,7 +81,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         context.setCustomFolders(parsed.filter((value) => typeof value === 'string' && value.trim() !== ''))
       }
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.noteFolders', JSON.stringify(context.customFolders))
@@ -96,7 +96,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         context.setCustomDiagramFolders(parsed.filter((value) => typeof value === 'string' && value.trim() !== ''))
       }
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.diagramFolders', JSON.stringify(context.customDiagramFolders))
@@ -111,7 +111,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         context.setFilePaneWidths({ left: parsed.left, right: parsed.right })
       }
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.filePaneWidths', JSON.stringify(context.filePaneWidths))
@@ -126,7 +126,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         context.setFilePreviewOpen(parsed)
       }
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.filePreviewOpen', JSON.stringify(context.filePreviewOpen))
@@ -141,7 +141,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         context.setFilePaneHeights({ top: parsed.top, middle: parsed.middle })
       }
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.filePaneHeights', JSON.stringify(context.filePaneHeights))
@@ -161,7 +161,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         created: typeof parsed.created === 'number' ? parsed.created : 150,
       })
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.fileColumnWidths', JSON.stringify(context.fileColumnWidths))
@@ -181,7 +181,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         created: typeof parsed.created === 'boolean' ? parsed.created : current.created,
       }))
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.fileColumnVisibility', JSON.stringify(context.fileColumnVisibility))
@@ -264,7 +264,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
             : context.defaultAppearance.gradientStrength,
       })
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.appearance', JSON.stringify(context.appearance))
@@ -308,7 +308,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
           context.normalizeShortcutBinding(parsed.chatCreateRoom ?? context.defaultShortcuts.chatCreateRoom),
       })
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.shortcuts', JSON.stringify(context.shortcuts))
@@ -329,7 +329,7 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
         ])
       }
     } catch {}
-  }, [context])
+  }, [])
 
   useEffect(() => {
     window.localStorage.setItem('sweet.navOrder', JSON.stringify(context.navOrder))
@@ -341,5 +341,5 @@ export function useUiPersistenceEffects(context: UseUiPersistenceEffectsContext)
     apply()
     mediaQuery.addEventListener('change', apply)
     return () => mediaQuery.removeEventListener('change', apply)
-  }, [context])
+  }, [context.setIsCompactViewport])
 }

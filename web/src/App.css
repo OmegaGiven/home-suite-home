@@ -2825,9 +2825,30 @@
   border: 1px solid var(--border);
   background: var(--surface-strong);
   color: inherit;
+  caret-color: var(--text);
   outline: none;
   white-space: pre-wrap;
   tab-size: 2;
+}
+
+.note-tiptap-shell {
+  position: relative;
+}
+
+.note-tiptap-editor {
+  min-height: inherit;
+  color: inherit;
+  caret-color: var(--text);
+  outline: none;
+  white-space: pre-wrap;
+}
+
+.note-tiptap-editor p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+  float: left;
+  height: 0;
 }
 
 .markdown-editor:empty::before {

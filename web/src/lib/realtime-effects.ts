@@ -181,7 +181,7 @@ export function useRealtimeEffects(context: UseRealtimeEffectsContext) {
         context.socketRef.current = null
       }
     }
-  }, [context])
+  }, [context.authMode, context.session?.token])
 
   useEffect(() => {
     if (!context.selectedNoteId || !context.session) {
@@ -194,7 +194,7 @@ export function useRealtimeEffects(context: UseRealtimeEffectsContext) {
       context.setNoteCursors((current) => pruneRemoteNoteCursors(current))
     }, 10_000)
     return () => window.clearInterval(interval)
-  }, [context])
+  }, [context.selectedNoteId, context.session?.token])
 
   useEffect(() => {
     if (context.authMode !== 'ready' || !context.session || !context.selectedNoteId) {
@@ -243,7 +243,7 @@ export function useRealtimeEffects(context: UseRealtimeEffectsContext) {
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [context])
+  }, [context.authMode, context.session?.token, context.selectedNoteId])
 
   useEffect(() => {
     if (context.route !== '/notes' || context.noteEditorMode !== 'rich' || !context.selectedNoteId) return
@@ -280,5 +280,5 @@ export function useRealtimeEffects(context: UseRealtimeEffectsContext) {
       context.noteEditorRef.current?.removeEventListener('blur', handleBlur, true)
       context.broadcastNoteCursor({ offset: null, cursorB64: null })
     }
-  }, [context])
+  }, [context.route, context.noteEditorMode, context.selectedNoteId])
 }

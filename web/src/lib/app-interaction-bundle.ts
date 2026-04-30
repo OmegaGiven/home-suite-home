@@ -27,16 +27,47 @@ export function useAppInteractionBundle(context: any) {
     setValue: React.Dispatch<React.SetStateAction<string>>,
     onNextValue?: (value: string) => void,
   ) {
-    if (event.key !== 'Tab') return
-    event.preventDefault()
     const target = event.currentTarget
     const start = target.selectionStart
     const end = target.selectionEnd
-    const nextValue = `${target.value.slice(0, start)}\t${target.value.slice(end)}`
+
+    if (event.key === 'Tab') {
+      event.preventDefault()
+      const nextValue = `${target.value.slice(0, start)}\t${target.value.slice(end)}`
+      setValue(nextValue)
+      onNextValue?.(nextValue)
+      window.requestAnimationFrame(() => {
+        target.selectionStart = target.selectionEnd = start + 1
+      })
+      return
+    }
+
+    if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return
+    event.preventDefault()
+    const beforeCursor = target.value.slice(0, start)
+    const currentLine = beforeCursor.slice(beforeCursor.lastIndexOf('\n') + 1)
+    const indent = currentLine.match(/^\s*/)?.[0] ?? ''
+    const taskMatch = currentLine.match(/^(\s*[-*]\s\[(?: |x)\]\s)(.*)$/i)
+    const bulletMatch = currentLine.match(/^(\s*[-*]\s)(.*)$/)
+    const orderedMatch = currentLine.match(/^(\s*)(\d+)\.\s(.*)$/)
+
+    let insertText = '\n'
+    if (taskMatch) {
+      insertText += taskMatch[2].trim().length === 0 ? indent : taskMatch[1]
+    } else if (bulletMatch) {
+      insertText += bulletMatch[2].trim().length === 0 ? indent : bulletMatch[1]
+    } else if (orderedMatch) {
+      insertText += orderedMatch[3].trim().length === 0 ? orderedMatch[1] : `${orderedMatch[1]}${Number(orderedMatch[2]) + 1}. `
+    } else {
+      insertText += indent
+    }
+
+    const nextValue = `${target.value.slice(0, start)}${insertText}${target.value.slice(end)}`
     setValue(nextValue)
     onNextValue?.(nextValue)
     window.requestAnimationFrame(() => {
-      target.selectionStart = target.selectionEnd = start + 1
+      const nextCursor = start + insertText.length
+      target.selectionStart = target.selectionEnd = nextCursor
     })
   }
 

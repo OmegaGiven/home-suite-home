@@ -14,6 +14,23 @@ import type {
   WorkspaceSnapshot,
 } from './types'
 
+function normalizeEnvelope(envelope: Partial<SyncEnvelope>): SyncEnvelope {
+  return {
+    cursors: envelope.cursors ?? { generated_at: new Date(0).toISOString() },
+    notes: envelope.notes ?? [],
+    diagrams: envelope.diagrams ?? [],
+    voice_memos: envelope.voice_memos ?? [],
+    rooms: envelope.rooms ?? [],
+    messages: envelope.messages ?? [],
+    calendar_connections: envelope.calendar_connections ?? [],
+    calendar_events: envelope.calendar_events ?? [],
+    tasks: envelope.tasks ?? [],
+    file_tree: envelope.file_tree ?? [],
+    resource_shares: envelope.resource_shares ?? [],
+    tombstones: envelope.tombstones ?? [],
+  }
+}
+
 function createOperationId() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID()
@@ -94,18 +111,20 @@ function mergeFileTree(current: SyncEnvelope['file_tree'], incoming: SyncEnvelop
 }
 
 function mergeEnvelope(current: SyncEnvelope | null, incoming: SyncEnvelope): SyncEnvelope {
+  const normalizedIncoming = normalizeEnvelope(incoming)
   if (!current) {
-    return incoming
+    return normalizedIncoming
   }
+  const normalizedCurrent = normalizeEnvelope(current)
 
   const restoredKeys = new Set<string>()
-  for (const note of incoming.notes) restoredKeys.add(`notes:${note.id}`)
-  for (const diagram of incoming.diagrams) restoredKeys.add(`diagrams:${diagram.id}`)
-  for (const memo of incoming.voice_memos) restoredKeys.add(`voice_memos:${memo.id}`)
+  for (const note of normalizedIncoming.notes) restoredKeys.add(`notes:${note.id}`)
+  for (const diagram of normalizedIncoming.diagrams) restoredKeys.add(`diagrams:${diagram.id}`)
+  for (const memo of normalizedIncoming.voice_memos) restoredKeys.add(`voice_memos:${memo.id}`)
 
-  const tombstones = current.tombstones.filter((entry) => !restoredKeys.has(`${entry.entity}:${entry.id}`))
+  const tombstones = normalizedCurrent.tombstones.filter((entry) => !restoredKeys.has(`${entry.entity}:${entry.id}`))
   const seenTombstoneKeys = new Set(tombstones.map((entry) => `${entry.entity}:${entry.id}`))
-  for (const tombstone of incoming.tombstones) {
+  for (const tombstone of normalizedIncoming.tombstones) {
     const key = `${tombstone.entity}:${tombstone.id}`
     if (seenTombstoneKeys.has(key)) continue
     seenTombstoneKeys.add(key)
@@ -124,41 +143,42 @@ function mergeEnvelope(current: SyncEnvelope | null, incoming: SyncEnvelope): Sy
   )
 
   return {
-    cursors: incoming.cursors,
-    notes: mergeEntityCollection(current.notes, incoming.notes, noteDeletes),
-    diagrams: mergeEntityCollection(current.diagrams, incoming.diagrams, diagramDeletes),
-    voice_memos: mergeEntityCollection(current.voice_memos, incoming.voice_memos, voiceMemoDeletes),
-    rooms: mergeEntityCollection(current.rooms, incoming.rooms, new Set()),
-    messages: mergeEntityCollection(current.messages, incoming.messages, new Set()),
+    cursors: normalizedIncoming.cursors,
+    notes: mergeEntityCollection(normalizedCurrent.notes, normalizedIncoming.notes, noteDeletes),
+    diagrams: mergeEntityCollection(normalizedCurrent.diagrams, normalizedIncoming.diagrams, diagramDeletes),
+    voice_memos: mergeEntityCollection(normalizedCurrent.voice_memos, normalizedIncoming.voice_memos, voiceMemoDeletes),
+    rooms: mergeEntityCollection(normalizedCurrent.rooms, normalizedIncoming.rooms, new Set()),
+    messages: mergeEntityCollection(normalizedCurrent.messages, normalizedIncoming.messages, new Set()),
     calendar_connections: mergeEntityCollection(
-      current.calendar_connections,
-      incoming.calendar_connections,
+      normalizedCurrent.calendar_connections,
+      normalizedIncoming.calendar_connections,
       calendarConnectionDeletes,
     ),
-    calendar_events: mergeEntityCollection(current.calendar_events, incoming.calendar_events, calendarEventDeletes),
-    tasks: mergeEntityCollection(current.tasks, incoming.tasks, taskDeletes),
-    file_tree: mergeFileTree(current.file_tree, incoming.file_tree),
-    resource_shares: mergeResourceShares(current.resource_shares, incoming.resource_shares),
+    calendar_events: mergeEntityCollection(normalizedCurrent.calendar_events, normalizedIncoming.calendar_events, calendarEventDeletes),
+    tasks: mergeEntityCollection(normalizedCurrent.tasks, normalizedIncoming.tasks, taskDeletes),
+    file_tree: mergeFileTree(normalizedCurrent.file_tree, normalizedIncoming.file_tree),
+    resource_shares: mergeResourceShares(normalizedCurrent.resource_shares, normalizedIncoming.resource_shares),
     tombstones,
   }
 }
 
 function toWorkspaceSnapshot(envelope: SyncEnvelope, source: WorkspaceSnapshot['source']): WorkspaceSnapshot {
+  const normalizedEnvelope = normalizeEnvelope(envelope)
   return {
     source,
     synced_at: new Date().toISOString(),
-    cursors: envelope.cursors,
-    notes: envelope.notes,
-    diagrams: envelope.diagrams,
-    voice_memos: envelope.voice_memos,
-    rooms: envelope.rooms,
-    messages: envelope.messages,
-    calendar_connections: envelope.calendar_connections,
-    calendar_events: envelope.calendar_events,
-    tasks: envelope.tasks,
-    file_tree: envelope.file_tree,
-    resource_shares: envelope.resource_shares,
-    tombstones: envelope.tombstones,
+    cursors: normalizedEnvelope.cursors,
+    notes: normalizedEnvelope.notes,
+    diagrams: normalizedEnvelope.diagrams,
+    voice_memos: normalizedEnvelope.voice_memos,
+    rooms: normalizedEnvelope.rooms,
+    messages: normalizedEnvelope.messages,
+    calendar_connections: normalizedEnvelope.calendar_connections,
+    calendar_events: normalizedEnvelope.calendar_events,
+    tasks: normalizedEnvelope.tasks,
+    file_tree: normalizedEnvelope.file_tree,
+    resource_shares: normalizedEnvelope.resource_shares,
+    tombstones: normalizedEnvelope.tombstones,
   }
 }
 
@@ -187,7 +207,7 @@ async function withPendingManagedUploads(snapshot: WorkspaceSnapshot): Promise<W
 
 async function cacheMergedEnvelope(incoming: SyncEnvelope) {
   const current = await offlineDb.loadWorkspace()
-  const merged = mergeEnvelope(current, incoming)
+  const merged = mergeEnvelope(current ? normalizeEnvelope(current) : null, normalizeEnvelope(incoming))
   await offlineDb.saveWorkspace(merged)
   return merged
 }
@@ -195,7 +215,7 @@ async function cacheMergedEnvelope(incoming: SyncEnvelope) {
 export async function loadCachedWorkspaceSnapshot(): Promise<WorkspaceSnapshot | null> {
   const envelope = await offlineDb.loadWorkspace()
   return envelope
-    ? withPendingManagedUploads(await withPendingVoiceUploads(toWorkspaceSnapshot(envelope, 'cache')))
+    ? withPendingManagedUploads(await withPendingVoiceUploads(toWorkspaceSnapshot(normalizeEnvelope(envelope), 'cache')))
     : null
 }
 

@@ -250,8 +250,11 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   const previousServerMarkdownRef = useRef('')
   const pendingDraftRef = useRef(false)
   const lastSubmittedDraftRef = useRef<string | null>(null)
+  const hydratedDraftNoteIdRef = useRef<string | null>(null)
+  const activeEditorValue =
+    hydratedDraftNoteIdRef.current === selectedNote?.id ? editorDraft : (selectedNote?.markdown ?? '')
 
-  const toc = useMemo(() => headingItems(editorDraft), [editorDraft])
+  const toc = useMemo(() => headingItems(activeEditorValue), [activeEditorValue])
   const filteredNotes = useMemo(() => {
     const query = openSearch.trim().toLowerCase()
     if (!query) return notes
@@ -287,8 +290,8 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   )
 
   useEffect(() => {
-    latestDraftRef.current = editorDraft
-  }, [editorDraft])
+    latestDraftRef.current = activeEditorValue
+  }, [activeEditorValue])
 
   useEffect(() => {
     if (!showVisibility || !selectedNote) return
@@ -362,6 +365,7 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
     pendingDraftRef.current = false
     lastSubmittedDraftRef.current = nextMarkdown
     setEditorDraft(nextMarkdown)
+    hydratedDraftNoteIdRef.current = selectedNote?.id ?? null
     setTitleDraft(selectedNote?.title ?? '')
     setSelection(null)
     setMarkdownUndoStack([])
@@ -482,8 +486,8 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
   }
 
   async function runMarkdownTransform(transform: (text: string, nextSelection: TextSelection) => { text: string; selection?: TextSelection }) {
-    const currentSelection = normalizeSelection(selection, editorDraft)
-    const result = transform(editorDraft, currentSelection)
+    const currentSelection = normalizeSelection(selection, activeEditorValue)
+    const result = transform(activeEditorValue, currentSelection)
     commitEditorText(result.text, result.selection)
   }
 
@@ -704,8 +708,13 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
                 key={mode}
                 style={[styles.modeToggleButton, editorMode === mode ? styles.modeToggleButtonActive : null]}
                 onPress={() => {
-                  if (mode === 'rich') {
+                  if (mode === editorMode) {
+                    return
+                  }
+                  if (editorMode === 'rich') {
                     sendCursor({ offset: null, blockId: null })
+                  }
+                  if (editorMode === 'rich' || mode === 'rich') {
                     void flushEditorDraft()
                   }
                   setEditorMode(mode)
@@ -778,7 +787,8 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
       <View style={styles.editorStage}>
         {isMarkdownMode ? (
           <NotesRichEditor
-            markdown={editorDraft}
+            key={`rich-${selectedNote.id}`}
+            markdown={activeEditorValue}
             onMarkdownChange={handleRichEditorChange}
             onCursorChange={handleRichCursorChange}
             command={richEditorCommand}
@@ -786,10 +796,11 @@ export function NotesShell({ onOpenServers, onOpenAppearance }: NotesShellProps)
           />
         ) : (
           <TextInput
+            key={`markdown-${selectedNote.id}`}
             multiline
             autoFocus
             style={[styles.editor, styles.txtEditor]}
-            value={editorDraft}
+            value={activeEditorValue}
             onChangeText={commitEditorText}
             onSelectionChange={handleSelectionChange}
             onBlur={() => {

@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEventHandler, type MouseEventHandler, type RefObject } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
+import Link from '@tiptap/extension-link'
+import Placeholder from '@tiptap/extension-placeholder'
 import StarterKit from '@tiptap/starter-kit'
 import { Table } from '@tiptap/extension-table'
 import TableCell from '@tiptap/extension-table-cell'
@@ -7,6 +9,7 @@ import TableHeader from '@tiptap/extension-table-header'
 import TableRow from '@tiptap/extension-table-row'
 import TaskItem from '@tiptap/extension-task-item'
 import TaskList from '@tiptap/extension-task-list'
+import Underline from '@tiptap/extension-underline'
 import { marked } from 'marked'
 import TurndownService from 'turndown'
 import { ConfirmModal } from '../components/ConfirmModal'
@@ -220,6 +223,7 @@ export function NotesPage({
   const treeContainerRef = useRef<HTMLDivElement | null>(null)
   const loroBindingRef = useRef<LoroMarkdownBinding | null>(null)
   const loroPushTimeoutRef = useRef<number | null>(null)
+  const lastEditorMarkdownRef = useRef(noteDraft)
   const turndown = useMemo(() => new TurndownService(), [])
   void isCompactViewport
 
@@ -249,7 +253,7 @@ export function NotesPage({
         if (cancelled) return
         loroBindingRef.current = createMarkdownBinding(
           response.document.snapshot_b64 || selectedNote.loro_snapshot_b64,
-          response.document.legacy_markdown || noteDraft,
+          response.document.legacy_markdown || selectedNote.markdown || noteDraft,
           response.document.updates_b64?.length ? response.document.updates_b64 : selectedNote.loro_updates_b64,
         )
       })
@@ -257,7 +261,7 @@ export function NotesPage({
         if (!cancelled) {
           loroBindingRef.current = createMarkdownBinding(
             selectedNote.loro_snapshot_b64,
-            noteDraft,
+            selectedNote.markdown || noteDraft,
             selectedNote.loro_updates_b64,
           )
         }
@@ -265,12 +269,21 @@ export function NotesPage({
     return () => {
       cancelled = true
     }
-  }, [selectedNote?.id, selectedNote?.loro_snapshot_b64, selectedNote?.loro_updates_b64, noteDraft])
+  }, [selectedNote?.id, selectedNote?.loro_snapshot_b64, selectedNote?.loro_updates_b64, selectedNote?.markdown])
 
   const tiptapEditor = useEditor({
     extensions: [
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
+      }),
+      Link.configure({
+        openOnClick: false,
+        autolink: true,
+        defaultProtocol: 'https',
+      }),
+      Underline,
+      Placeholder.configure({
+        placeholder: 'Start writing',
       }),
       Table.configure({ resizable: false }),
       TableRow,
@@ -281,8 +294,14 @@ export function NotesPage({
     ],
     content: typeof marked.parse(noteDraft) === 'string' ? marked.parse(noteDraft) : '',
     immediatelyRender: false,
+    editorProps: {
+      attributes: {
+        class: 'note-tiptap-editor',
+      },
+    },
     onUpdate: ({ editor }) => {
       const markdown = turndown.turndown(editor.getHTML())
+      lastEditorMarkdownRef.current = markdown
       if (markdown !== noteDraft) {
         onRawDraftChange(markdown)
       }
@@ -308,10 +327,12 @@ export function NotesPage({
 
   useEffect(() => {
     if (!tiptapEditor) return
+    if (noteDraft === lastEditorMarkdownRef.current) return
     const nextHtml = typeof marked.parse(noteDraft) === 'string' ? marked.parse(noteDraft) : ''
     if (tiptapEditor.getHTML() !== nextHtml) {
       tiptapEditor.commands.setContent(nextHtml, { emitUpdate: false })
     }
+    lastEditorMarkdownRef.current = noteDraft
   }, [noteDraft, tiptapEditor])
 
   useEffect(() => {
@@ -372,7 +393,7 @@ export function NotesPage({
       case 'link': {
         const url = window.prompt('Enter link URL', 'https://')
         if (!url?.trim()) return
-        chain.setLink({ href: url.trim() }).run()
+        chain.extendMarkRange('link').setLink({ href: url.trim() }).run()
         return
       }
     }

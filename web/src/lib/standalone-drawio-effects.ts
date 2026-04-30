@@ -85,5 +85,13 @@ export function useStandaloneDrawioEffects(context: UseStandaloneDrawioEffectsCo
 
     window.addEventListener('message', onStandaloneDrawioMessage)
     return () => window.removeEventListener('message', onStandaloneDrawioMessage)
-  }, [context])
+  }, [
+    context.diagramsRef,
+    context.standaloneDrawioWindowRef,
+    context.standaloneDrawioEditingIdRef,
+    context.updateDiagramLocalFirst,
+    context.setDiagrams,
+    context.showActionNotice,
+    context.diagramDisplayName,
+  ])
 }

@@ -67,11 +67,33 @@ function filterVisibleNotes(notes: Note[]) {
   return notes.filter((note) => !isConflictForkNote(note))
 }
 
+function normalizeWorkspaceCollections(workspace: Pick<
+  import('./types').WorkspaceSnapshot,
+  'notes' | 'diagrams' | 'voice_memos' | 'rooms' | 'calendar_connections' | 'tasks' | 'file_tree'
+>) {
+  return {
+    notes: workspace.notes ?? [],
+    diagrams: workspace.diagrams ?? [],
+    voiceMemos: workspace.voice_memos ?? [],
+    rooms: workspace.rooms ?? [],
+    calendarConnections: workspace.calendar_connections ?? [],
+    tasks: workspace.tasks ?? [],
+    fileTree: workspace.file_tree ?? [],
+  }
+}
+
+function isUnauthorizedError(error: unknown) {
+  if (!(error instanceof Error)) return false
+  const message = error.message.toLowerCase()
+  return message.includes('unauthorized') || message.includes('401')
+}
+
 export function createAuthActions(context: CreateAuthActionsContext) {
   async function hydrateWorkspace(sessionData: SessionResponse) {
     await sessionStore.set(sessionData)
     context.setSession(sessionData)
     const workspace = await bootstrapWorkspace(true)
+    const normalized = normalizeWorkspaceCollections(workspace)
     const [nextComsParticipants, nextRtc, nextAdminSettings, nextUsers, nextAdminStorageOverview] = await Promise.all([
       api.listComsParticipants(),
       api.callConfig(),
@@ -85,26 +107,26 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     context.setAdminStorageOverview(nextAdminStorageOverview)
     context.setAdminDatabaseOverview(null)
     context.setSyncCursors(workspace.cursors)
-    const visibleNotes = filterVisibleNotes(workspace.notes)
+    const visibleNotes = filterVisibleNotes(normalized.notes)
     context.rememberPersistedNotes(visibleNotes)
     context.setNotes(visibleNotes)
-    context.setFilesTree(filterHiddenConflictNoteNodes(workspace.file_tree))
+    context.setFilesTree(filterHiddenConflictNoteNodes(normalized.fileTree))
     context.setSelectedFilePath('')
     context.setSelectedNoteId(visibleNotes[0]?.id ?? null)
     context.setSelectedFolderPath(context.normalizeFolderPath(visibleNotes[0]?.folder ?? 'Inbox'))
     context.setCustomFolders((current) =>
       context.mergeFolderPaths(current, visibleNotes.map((note) => note.folder || 'Inbox')),
     )
-    context.setDiagrams(workspace.diagrams)
-    context.setSelectedDiagramId(workspace.diagrams[0]?.id ?? null)
-    context.setMemos(workspace.voice_memos)
-    context.setSelectedVoiceMemoId(workspace.voice_memos[0]?.id ?? null)
-    context.setCalendarConnections(workspace.calendar_connections)
-    context.setTasks(workspace.tasks)
-    context.setRooms(workspace.rooms)
+    context.setDiagrams(normalized.diagrams)
+    context.setSelectedDiagramId(normalized.diagrams[0]?.id ?? null)
+    context.setMemos(normalized.voiceMemos)
+    context.setSelectedVoiceMemoId(normalized.voiceMemos[0]?.id ?? null)
+    context.setCalendarConnections(normalized.calendarConnections)
+    context.setTasks(normalized.tasks)
+    context.setRooms(normalized.rooms)
     context.setRoomUnreadCounts({})
     context.setComsParticipants(nextComsParticipants)
-    context.setSelectedRoomId(workspace.rooms[0]?.id ?? null)
+    context.setSelectedRoomId(normalized.rooms[0]?.id ?? null)
     context.setMessages([])
     context.setRtcConfig(nextRtc)
     context.setAuthMode(sessionData.user.must_change_password ? 'change-password' : 'ready')
@@ -154,28 +176,36 @@ export function createAuthActions(context: CreateAuthActionsContext) {
         context.setRoute('/notes')
       }
     } catch (error) {
+      if (isUnauthorizedError(error)) {
+        await sessionStore.clear()
+        context.setSession(null)
+        context.setAuthMode('login')
+        context.setStatus('Sign in to continue')
+        return
+      }
       const cachedSession = await sessionStore.get()
       const cachedWorkspace = await loadCachedWorkspaceSnapshot()
       if (cachedSession && cachedWorkspace) {
+        const normalized = normalizeWorkspaceCollections(cachedWorkspace)
         context.setSession(cachedSession)
         context.setSyncCursors(cachedWorkspace.cursors)
-        const visibleNotes = filterVisibleNotes(cachedWorkspace.notes)
+        const visibleNotes = filterVisibleNotes(normalized.notes)
         context.rememberPersistedNotes(visibleNotes)
         context.setNotes(visibleNotes)
-        context.setFilesTree(filterHiddenConflictNoteNodes(cachedWorkspace.file_tree))
+        context.setFilesTree(filterHiddenConflictNoteNodes(normalized.fileTree))
         context.setSelectedNoteId(visibleNotes[0]?.id ?? null)
         context.setSelectedFolderPath(context.normalizeFolderPath(visibleNotes[0]?.folder ?? 'Inbox'))
         context.setCustomFolders((current) =>
           context.mergeFolderPaths(current, visibleNotes.map((note) => note.folder || 'Inbox')),
         )
-        context.setDiagrams(cachedWorkspace.diagrams)
-        context.setSelectedDiagramId(cachedWorkspace.diagrams[0]?.id ?? null)
-        context.setMemos(cachedWorkspace.voice_memos)
-        context.setSelectedVoiceMemoId(cachedWorkspace.voice_memos[0]?.id ?? null)
-        context.setCalendarConnections(cachedWorkspace.calendar_connections)
-        context.setTasks(cachedWorkspace.tasks)
-        context.setRooms(cachedWorkspace.rooms)
-        context.setSelectedRoomId(cachedWorkspace.rooms[0]?.id ?? null)
+        context.setDiagrams(normalized.diagrams)
+        context.setSelectedDiagramId(normalized.diagrams[0]?.id ?? null)
+        context.setMemos(normalized.voiceMemos)
+        context.setSelectedVoiceMemoId(normalized.voiceMemos[0]?.id ?? null)
+        context.setCalendarConnections(normalized.calendarConnections)
+        context.setTasks(normalized.tasks)
+        context.setRooms(normalized.rooms)
+        context.setSelectedRoomId(normalized.rooms[0]?.id ?? null)
         context.setMessages([])
         context.setAuthMode(cachedSession.user.must_change_password ? 'change-password' : 'ready')
         context.setStatus('Offline mode using cached workspace')

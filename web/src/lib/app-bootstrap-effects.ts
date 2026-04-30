@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { isNativePlatform, serverBaseStore, subscribeToConnectivity } from './platform'
 
@@ -14,6 +14,9 @@ type UseAppBootstrapEffectsContext = {
 }
 
 export function useAppBootstrapEffects(context: UseAppBootstrapEffectsContext) {
+  const bootstrappedRef = useRef(false)
+  const refreshedConflictsRef = useRef(false)
+
   useEffect(() => {
     const handlePopState = () => {
       setTimeout(() => {
@@ -23,15 +26,19 @@ export function useAppBootstrapEffects(context: UseAppBootstrapEffectsContext) {
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
-  }, [context])
+  }, [context.normalizeRoute, context.setLocationSearch, context.setRoute])
 
   useEffect(() => {
+    if (refreshedConflictsRef.current) return
+    refreshedConflictsRef.current = true
     void context.refreshQueuedSyncConflicts()
-  }, [context])
+  }, [context.refreshQueuedSyncConflicts])
 
   useEffect(() => {
+    if (bootstrappedRef.current) return
+    bootstrappedRef.current = true
     void context.bootstrap()
-  }, [context])
+  }, [context.bootstrap])
 
   useEffect(() => {
     if (!isNativePlatform()) return
@@ -40,7 +47,7 @@ export function useAppBootstrapEffects(context: UseAppBootstrapEffectsContext) {
         context.setServerUrl(storedUrl)
       }
     })
-  }, [context])
+  }, [context.setServerUrl])
 
   useEffect(
     () =>
@@ -49,7 +56,7 @@ export function useAppBootstrapEffects(context: UseAppBootstrapEffectsContext) {
           context.showSyncNotice('offline', 'Offline mode. Changes will sync when your connection returns.')
         }
       }),
-    [context],
+    [context.showSyncNotice],
   )
 
   useEffect(
@@ -58,6 +65,6 @@ export function useAppBootstrapEffects(context: UseAppBootstrapEffectsContext) {
         window.clearTimeout(context.syncNoticeTimeoutRef.current)
       }
     },
-    [context],
+    [context.syncNoticeTimeoutRef],
   )
 }

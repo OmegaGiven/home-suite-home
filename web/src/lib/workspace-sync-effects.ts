@@ -119,7 +119,7 @@ export function useWorkspaceSyncEffects(context: UseWorkspaceSyncEffectsContext)
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [context])
+  }, [context.authMode, context.session?.token, context.selectedRoomId])
 
   useEffect(() => {
     if (context.authMode !== 'ready' || !context.session) return
@@ -139,5 +139,18 @@ export function useWorkspaceSyncEffects(context: UseWorkspaceSyncEffectsContext)
       resource_shares: [],
       tombstones: [],
     })
-  }, [context])
+  }, [
+    context.authMode,
+    context.session?.token,
+    context.syncCursors,
+    context.notes,
+    context.diagrams,
+    context.memos,
+    context.rooms,
+    context.messages,
+    context.calendarConnections,
+    context.calendarEvents,
+    context.tasks,
+    context.filesTree,
+  ])
 }
