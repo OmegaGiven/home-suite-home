@@ -1,5 +1,5 @@
 import type { ChangeEvent, DragEvent, ReactNode, RefObject } from 'react'
-import type { FileNode } from './types'
+import type { AdminDeletedItem, FileNode } from './types'
 import type { ShareTarget } from './share-actions'
 
 type FileColumnKey = 'name' | 'directory' | 'type' | 'size' | 'modified' | 'created'
@@ -31,6 +31,7 @@ type BuildFilesPagePropsArgs = {
   filePaneWidths: { left: number; right: number }
   filePaneHeights: { top: number; middle: number }
   filesTree: FileNode[]
+  deletedItems: AdminDeletedItem[]
   displayNameForFileNode: (node: FileNode) => string
   selectedFilePath: string
   activeFileNode: FileNode | null
@@ -86,6 +87,7 @@ type BuildFilesPagePropsArgs = {
   resourceKeyForFilePath: (path: string) => string
   onDownloadManagedPath: (path: string) => void
   onBeginRenameCurrentFile: () => void
+  onRestoreDeletedItem: (item: AdminDeletedItem | null) => void
 }
 
 export function buildFilesPageProps(args: BuildFilesPagePropsArgs) {

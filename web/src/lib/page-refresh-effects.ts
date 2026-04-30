@@ -190,7 +190,7 @@ export function usePageRefreshEffects(context: UsePageRefreshEffectsContext) {
       context.setDeletedItems([])
       return
     }
-    if (context.route !== '/notes' && context.route !== '/diagrams' && context.route !== '/voice') return
+    if (context.route !== '/notes' && context.route !== '/diagrams' && context.route !== '/voice' && context.route !== '/files') return
     void context.refreshUserDeletedItems()
   }, [context.authMode, context.session, context.route])
 

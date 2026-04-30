@@ -17,6 +17,12 @@ type CreateDeletedItemActionsContext = {
 }
 
 export function createDeletedItemActions(context: CreateDeletedItemActionsContext) {
+  function isMissingDeletedItemsEndpoint(error: unknown) {
+    if (!(error instanceof Error)) return false
+    const message = error.message.toLowerCase()
+    return message.includes('404') || message.includes('not found')
+  }
+
   async function refreshUserDeletedItems() {
     if (context.authMode !== 'ready' || !context.session) {
       context.setDeletedItems([])
@@ -25,6 +31,10 @@ export function createDeletedItemActions(context: CreateDeletedItemActionsContex
     try {
       context.setDeletedItems(await api.getDeletedItems())
     } catch (error) {
+      if (isMissingDeletedItemsEndpoint(error)) {
+        context.setDeletedItems([])
+        return
+      }
       console.error(error)
     }
   }
@@ -56,4 +66,3 @@ export function createDeletedItemActions(context: CreateDeletedItemActionsContex
     restoreUserDeletedItem,
   }
 }
-

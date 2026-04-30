@@ -4,9 +4,10 @@ import { NewFolderIcon, RenameIcon, UploadIcon } from '../components/LibraryActi
 import { FileTreeHeader, FileTreeNode } from '../components/FileTreeNode'
 import { LibraryShell } from '../components/LibraryShell'
 import { PaneSplitter } from '../components/PaneSplitter'
-import type { FileNode, ResourceVisibility } from '../lib/types'
+import type { AdminDeletedItem, FileNode, ResourceVisibility } from '../lib/types'
+import { buildDeletedFilesTreeNode, deletedItemFromAnyTreePath } from '../lib/deleted-tree'
 import { getTreeRangeSelection, toggleMarkedTreePath, useLibraryTreeControls } from '../lib/library-tree-controls'
-import { aggregateFileNodeSize, ancestorDirectoryPaths, fileTypeLabel, filterFileTree, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState } from '../lib/ui-helpers'
+import { aggregateFileNodeSize, ancestorDirectoryPaths, fileTypeLabel, filterFileNode, filterFileTree, formatFileSize, formatFileTimestamp, sortFileTree, toggleFileTreeSortState } from '../lib/ui-helpers'
 import { FilesModals } from './files/FilesModals'
 import { FilesPreviewPane } from './files/FilesPreviewPane'
 
@@ -39,6 +40,7 @@ type Props = {
   filePaneWidths: { left: number; right: number }
   filePaneHeights: { top: number; middle: number }
   filesTree: FileNode[]
+  deletedItems: AdminDeletedItem[]
   displayNameForFileNode: (node: FileNode) => string
   selectedFilePath: string
   activeFileNode: FileNode | null
@@ -94,6 +96,7 @@ type Props = {
   resourceKeyForFilePath: (path: string) => string
   onDownloadManagedPath: (path: string) => void
   onBeginRenameCurrentFile: () => void
+  onRestoreDeletedItem: (item: AdminDeletedItem | null) => void
 }
 
 export function FilesPage({
@@ -113,6 +116,7 @@ export function FilesPage({
   filePreviewOpen,
   filePaneWidths,
   filesTree,
+  deletedItems,
   displayNameForFileNode,
   selectedFilePath,
   activeFileNode,
@@ -150,6 +154,7 @@ export function FilesPage({
   resourceKeyForFilePath,
   onDownloadManagedPath,
   onBeginRenameCurrentFile,
+  onRestoreDeletedItem,
 }: Props) {
   const treeContainerRef = useRef<HTMLDivElement | null>(null)
   const {
@@ -171,6 +176,15 @@ export function FilesPage({
   const sortedFilesTree = useMemo(
     () => sortFileTree(filteredFilesTree, sortState, displayNameForFileNode),
     [filteredFilesTree, sortState, displayNameForFileNode],
+  )
+  const deletedFilesTreeNode = useMemo(() => buildDeletedFilesTreeNode(deletedItems), [deletedItems])
+  const filteredDeletedFilesTreeNode = useMemo(
+    () => filterFileNode(deletedFilesTreeNode, sidebarSearchQuery, (node) => node.name),
+    [deletedFilesTreeNode, sidebarSearchQuery],
+  )
+  const sortedDeletedFilesTreeNode = useMemo(
+    () => (filteredDeletedFilesTreeNode ? sortFileTree([filteredDeletedFilesTreeNode], sortState, (node) => node.name)[0] ?? null : null),
+    [filteredDeletedFilesTreeNode, sortState],
   )
   const highlightedPaths = useMemo(
     () => ancestorDirectoryPaths(selectedFilePath),
@@ -198,6 +212,10 @@ export function FilesPage({
   }
 
   function handleTreeOpen(path: string) {
+    if (path.startsWith('deleted-')) {
+      onRestoreDeletedItem(deletedItemFromAnyTreePath(path, deletedItems))
+      return
+    }
     const node = path === '' ? null : filesTree.length > 0 ? findNodeByPath(filesTree, path) : null
     if (!node || node.kind === 'directory') return
     void onOpenFileNode(node)
@@ -320,6 +338,39 @@ export function FilesPage({
             )) : (
               <div className="empty-state">{sidebarSearchQuery.trim() ? 'No matching files.' : 'No files yet.'}</div>
             )}
+            {sortedDeletedFilesTreeNode ? (
+              <FileTreeNode
+                node={sortedDeletedFilesTreeNode}
+                getDisplayName={(node) => node.name}
+                selectedPath={selectedFilePath}
+                activePath={activeFileNode?.path ?? null}
+                markedPaths={markedFilePaths}
+                draggingPath={draggingFilePath}
+                dropTargetPath={dropTargetPath}
+                onSelect={handleTreeSelection}
+                onOpen={handleTreeOpen}
+                onDragStart={beginFileDrag}
+                onDragEnd={onFileDragEnd}
+                onDropTargetChange={onDropTargetChange}
+                onDrop={handleDirectoryDrop}
+                canDragNode={() => false}
+                getRowMeta={(node) => {
+                  const deletedItem = deletedItemFromAnyTreePath(node.path, deletedItems)
+                  if (deletedItem) {
+                    return {
+                      type: 'Deleted',
+                      modified: formatFileTimestamp(deletedItem.deleted_at),
+                      created: formatFileTimestamp(deletedItem.purge_at),
+                    }
+                  }
+                  return {
+                    type: 'Folder',
+                    modified: formatFileTimestamp(node.updated_at),
+                  }
+                }}
+                rowMetaVisibility={rowMetaVisibility}
+              />
+            ) : null}
           </div>
           </>
         }

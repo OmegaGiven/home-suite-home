@@ -30,9 +30,6 @@ function filterVisibleManagedNodes(
 ): import('./types').FileNode[] {
   return nodes
     .flatMap((node) => {
-      if (node.path === 'notes' || node.path.startsWith('notes/')) {
-        return []
-      }
       if (node.kind === 'file' && node.path.startsWith('notes/')) {
         const noteId = noteIdFromPath(node.path)
         if (noteId && hiddenNoteIds.has(noteId)) {

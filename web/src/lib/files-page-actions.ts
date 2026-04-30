@@ -1,7 +1,7 @@
 import type { ChangeEvent, Dispatch, SetStateAction } from 'react'
 import type { ShareTarget } from './share-actions'
 import type { FileColumnKey } from './file-browser'
-import type { FileNode } from './types'
+import type { AdminDeletedItem, FileNode } from './types'
 
 type CreateFilesPageActionsContext = {
   setCreatingDriveFolder: Dispatch<SetStateAction<boolean>>
@@ -41,6 +41,7 @@ type CreateFilesPageActionsContext = {
   resourceKeyForFilePath: (path: string) => string
   downloadManagedPath: (path: string) => void
   beginRenameCurrentFile: () => void
+  restoreUserDeletedItem: (id: string) => Promise<void>
 }
 
 export function createFilesPageActions(context: CreateFilesPageActionsContext) {
@@ -99,5 +100,9 @@ export function createFilesPageActions(context: CreateFilesPageActionsContext) {
     resourceKeyForFilePath: context.resourceKeyForFilePath,
     onDownloadManagedPath: context.downloadManagedPath,
     onBeginRenameCurrentFile: context.beginRenameCurrentFile,
+    onRestoreDeletedItem: (item: AdminDeletedItem | null) => {
+      if (!item) return
+      void context.restoreUserDeletedItem(item.id)
+    },
   }
 }

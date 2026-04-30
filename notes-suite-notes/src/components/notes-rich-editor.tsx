@@ -34,7 +34,7 @@ function escapeHtml(value: string) {
 }
 
 function normalizeMarkdown(markdown: string) {
-  return markdown.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trimEnd()
+  return markdown.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n')
 }
 
 function normalizedSourceLine(line: string) {
@@ -327,7 +327,6 @@ function buildEditorHtml(initialMarkdown: string) {
         markdown
           .replace(/\\r\\n/g, '\\n')
           .replace(/\\n{3,}/g, '\\n\\n')
-          .trimEnd()
 
       const normalizeSourceLine = (line) =>
         (line || '')
@@ -484,7 +483,7 @@ function buildEditorHtml(initialMarkdown: string) {
         const inlineText = (node) => {
           if (!node) return ''
           if (node.nodeType === Node.TEXT_NODE) {
-            return node.textContent || ''
+            return (node.textContent || '').replace(/\u00a0/g, ' ')
           }
           if (node.nodeType !== Node.ELEMENT_NODE) return ''
           const tag = node.tagName.toLowerCase()
@@ -503,34 +502,35 @@ function buildEditorHtml(initialMarkdown: string) {
         const blocks = []
         Array.from(container.childNodes).forEach((node) => {
           if (node.nodeType === Node.TEXT_NODE) {
-            const text = (node.textContent || '').trim()
-            if (text) blocks.push(text)
+            const text = node.textContent || ''
+            if (!text.trim()) return
+            blocks.push(text)
             return
           }
           if (node.nodeType !== Node.ELEMENT_NODE) return
           const tag = node.tagName.toLowerCase()
           if (tag === 'h1') {
-            blocks.push('# ' + inlineText(node).trim())
+            blocks.push('# ' + inlineText(node))
             return
           }
           if (tag === 'h2') {
-            blocks.push('## ' + inlineText(node).trim())
+            blocks.push('## ' + inlineText(node))
             return
           }
           if (tag === 'h3') {
-            blocks.push('### ' + inlineText(node).trim())
+            blocks.push('### ' + inlineText(node))
             return
           }
           if (tag === 'h4') {
-            blocks.push('#### ' + inlineText(node).trim())
+            blocks.push('#### ' + inlineText(node))
             return
           }
           if (tag === 'h5') {
-            blocks.push('##### ' + inlineText(node).trim())
+            blocks.push('##### ' + inlineText(node))
             return
           }
           if (tag === 'h6') {
-            blocks.push('###### ' + inlineText(node).trim())
+            blocks.push('###### ' + inlineText(node))
             return
           }
           if (tag === 'blockquote') {
@@ -555,7 +555,7 @@ function buildEditorHtml(initialMarkdown: string) {
             const items = Array.from(node.children)
               .map((child) => {
                 const checked = child.querySelector('input[type="checkbox"]')?.checked
-                const text = inlineText(child.querySelector('div') || child).trim()
+                const text = inlineText(child.querySelector('div') || child)
                 return text ? '- [' + (checked ? 'x' : ' ') + '] ' + text : ''
               })
               .filter(Boolean)
@@ -565,7 +565,7 @@ function buildEditorHtml(initialMarkdown: string) {
           if (tag === 'ul') {
             const items = Array.from(node.children)
               .map((child) => {
-                const text = inlineText(child).trim()
+                const text = inlineText(child)
                 return text ? '- ' + text : ''
               })
               .filter(Boolean)
@@ -575,7 +575,7 @@ function buildEditorHtml(initialMarkdown: string) {
           if (tag === 'ol') {
             const items = Array.from(node.children)
               .map((child, index) => {
-                const text = inlineText(child).trim()
+                const text = inlineText(child)
                 return text ? String(index + 1) + '. ' + text : ''
               })
               .filter(Boolean)
@@ -586,7 +586,7 @@ function buildEditorHtml(initialMarkdown: string) {
             const rows = Array.from(node.querySelectorAll('tr'))
             const tableMarkdown = rows
               .map((row, rowIndex) => {
-                const cells = Array.from(row.children).map((cell) => inlineText(cell).trim())
+                const cells = Array.from(row.children).map((cell) => inlineText(cell))
                 const line = '| ' + cells.join(' | ') + ' |'
                 if (rowIndex === 0 && row.querySelector('th')) {
                   return line + '\\n| ' + cells.map(() => '---').join(' | ') + ' |'
@@ -597,7 +597,10 @@ function buildEditorHtml(initialMarkdown: string) {
             if (tableMarkdown) blocks.push(tableMarkdown)
             return
           }
-          const text = inlineText(node).trim()
+          let text = inlineText(node)
+          if (!text.trim() && tag === 'p') {
+            text = '&nbsp;'
+          }
           if (text) blocks.push(text)
         })
         return normalizeMarkdown(blocks.join('\\n\\n'))
@@ -901,19 +904,47 @@ function buildEditorHtml(initialMarkdown: string) {
       }
 
       let renderTimeout = null
+      let isComposing = false
       const scheduleRenderedRefresh = () => {
         if (renderTimeout !== null) {
           clearTimeout(renderTimeout)
         }
         renderTimeout = setTimeout(() => {
           renderTimeout = null
+          if (isComposing) return
           const offset = selectionMarkdownOffset()
           const nextMarkdown = htmlToMarkdown(editor.innerHTML)
           const nextHtml = markdownToHtml(nextMarkdown)
           if (editor.innerHTML !== nextHtml) {
-            renderedMarkdown = nextMarkdown
-            editor.innerHTML = nextHtml
-            applySelectionOffset(offset)
+            const temp = document.createElement('div')
+            temp.innerHTML = nextHtml
+            
+            const editorNodes = Array.from(editor.childNodes)
+            const tempNodes = Array.from(temp.childNodes)
+            let changed = false
+            
+            for (let i = 0; i < Math.max(editorNodes.length, tempNodes.length); i++) {
+              const oldNode = editorNodes[i]
+              const newNode = tempNodes[i]
+              if (!oldNode && newNode) {
+                editor.appendChild(newNode.cloneNode(true))
+                changed = true
+              } else if (oldNode && !newNode) {
+                editor.removeChild(oldNode)
+                changed = true
+              } else if (oldNode && newNode) {
+                const oldHTML = (oldNode.outerHTML || oldNode.textContent || '').replace(/&nbsp;/g, ' ').replace(/\u00a0/g, ' ')
+                const newHTML = (newNode.outerHTML || newNode.textContent || '').replace(/&nbsp;/g, ' ').replace(/\u00a0/g, ' ')
+                if (oldHTML !== newHTML) {
+                  editor.replaceChild(newNode.cloneNode(true), oldNode)
+                  changed = true
+                }
+              }
+            }
+            if (changed) {
+              renderedMarkdown = nextMarkdown
+              applySelectionOffset(offset)
+            }
           }
         }, 80)
       }
@@ -950,6 +981,8 @@ function buildEditorHtml(initialMarkdown: string) {
         return true
       }
 
+      editor.addEventListener('compositionstart', () => { isComposing = true })
+      editor.addEventListener('compositionend', () => { isComposing = false; scheduleEmitChange() })
       editor.addEventListener('input', emitChange)
       editor.addEventListener('beforeinput', (event) => {
         if (event.inputType === 'insertParagraph') {

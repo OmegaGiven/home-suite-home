@@ -15,7 +15,7 @@ type CreateSyncConflictActionsContext = {
   setSelectedDiagramId: Dispatch<SetStateAction<string | null>>
   setSelectedTaskId: Dispatch<SetStateAction<string | null>>
   setSelectedCalendarConnectionIds: Dispatch<SetStateAction<string[]>>
-  setSelectedRoomId: Dispatch<SetStateAction<string | null>>
+  setSelectedComsRoomId: Dispatch<SetStateAction<string | null>>
   setSelectedFilePath: Dispatch<SetStateAction<string>>
   setActiveFilePath: Dispatch<SetStateAction<string | null>>
   navigate: (nextRoute: RoutePath) => Promise<void>
@@ -119,7 +119,7 @@ export function createSyncConflictActions(context: CreateSyncConflictActionsCont
         return
       case 'create_message':
       case 'toggle_message_reaction':
-        context.setSelectedRoomId(operation.room_id)
+        context.setSelectedComsRoomId(operation.room_id)
         await context.navigate('/coms')
         return
       case 'create_managed_folder':

@@ -200,6 +200,7 @@ export function useAppPagePropsBundle(context: any) {
     resourceKeyForFilePath: context.resourceKeyForFilePath,
     downloadManagedPath: context.downloadManagedPath,
     beginRenameCurrentFile: context.beginRenameCurrentFile,
+    restoreUserDeletedItem: context.restoreUserDeletedItem,
   })
 
   const filesPageProps = buildFilesPageProps({
@@ -222,6 +223,7 @@ export function useAppPagePropsBundle(context: any) {
     filePaneWidths: context.filePaneWidths,
     filePaneHeights: context.filePaneHeights,
     filesTree: context.filesTree,
+    deletedItems: context.deletedItems,
     displayNameForFileNode: context.displayNameForFileNode,
     selectedFilePath: context.selectedFilePath,
     activeFileNode: context.activeFileNode,
@@ -362,7 +364,7 @@ export function useAppPagePropsBundle(context: any) {
     confirmRoomDelete: context.adminSettings?.confirm_file_delete ?? true,
     onRenameRoom: context.renameRoom,
     onUpdateRoomParticipants: context.updateRoomParticipants,
-    onSelectRoom: context.setSelectedRoomId,
+    onSelectRoom: context.setSelectedComsRoomId,
     onJoinVoiceCall: () => void context.joinCall('audio'),
     onJoinVideoCall: () => void context.joinCall('video'),
     onToggleScreenShare: () => void (context.screenSharing ? context.stopScreenShare() : context.startScreenShare()),
