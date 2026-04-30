@@ -304,7 +304,7 @@ export function useAppEffectsBundle(context: any) {
     setSelectedNoteId: context.setSelectedNoteId,
     setSelectedDiagramId: context.setSelectedDiagramId,
     setSelectedVoiceMemoId: context.setSelectedVoiceMemoId,
-    setSelectedComsRoomId: context.setSelectedComsRoomId,
+    selectComsRoom: context.selectComsRoom,
     setSelectedCalendarConnectionIds: context.setSelectedCalendarConnectionIds,
     setSelectedTaskId: context.setSelectedTaskId,
     setSyncNotice: context.setSyncNotice,

@@ -1082,6 +1082,15 @@ function buildEditorHtml(initialMarkdown: string) {
         subtree: true,
         characterData: true,
       })
+
+      setInterval(() => {
+        if (isComposing) return
+        const nextMarkdown = htmlToMarkdown(editor.innerHTML)
+        if (nextMarkdown !== renderedMarkdown) {
+          scheduleEmitChange()
+        }
+      }, 80)
+
       document.addEventListener('selectionchange', () => {
         post({ type: 'selection', offset: selectionMarkdownOffset() })
       })

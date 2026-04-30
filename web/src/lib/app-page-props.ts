@@ -364,7 +364,7 @@ export function useAppPagePropsBundle(context: any) {
     confirmRoomDelete: context.adminSettings?.confirm_file_delete ?? true,
     onRenameRoom: context.renameRoom,
     onUpdateRoomParticipants: context.updateRoomParticipants,
-    onSelectRoom: context.setSelectedComsRoomId,
+    onSelectRoom: context.selectComsRoom,
     onJoinVoiceCall: () => void context.joinCall('audio'),
     onJoinVideoCall: () => void context.joinCall('video'),
     onToggleScreenShare: () => void (context.screenSharing ? context.stopScreenShare() : context.startScreenShare()),

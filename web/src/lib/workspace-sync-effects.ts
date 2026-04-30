@@ -36,7 +36,7 @@ type UseWorkspaceSyncEffectsContext = {
   setSelectedNoteId: Dispatch<SetStateAction<string | null>>
   setSelectedDiagramId: Dispatch<SetStateAction<string | null>>
   setSelectedVoiceMemoId: Dispatch<SetStateAction<string | null>>
-  setSelectedComsRoomId: Dispatch<SetStateAction<string | null>>
+  selectComsRoom: Dispatch<SetStateAction<string | null>>
   setSelectedCalendarConnectionIds: Dispatch<SetStateAction<string[]>>
   setSelectedTaskId: Dispatch<SetStateAction<string | null>>
   setSyncNotice: Dispatch<SetStateAction<{ tone: 'offline' | 'error'; message: string } | null>>
@@ -83,7 +83,7 @@ export function useWorkspaceSyncEffects(context: UseWorkspaceSyncEffectsContext)
         context.setSelectedVoiceMemoId((current) =>
           current && snapshot.voice_memos.some((memo) => memo.id === current) ? current : (snapshot.voice_memos[0]?.id ?? null),
         )
-        context.setSelectedComsRoomId((current) =>
+        context.selectComsRoom((current) =>
           current && snapshot.rooms.some((room) => room.id === current) ? current : (snapshot.rooms[0]?.id ?? null),
         )
         context.setSelectedCalendarConnectionIds((current) => {

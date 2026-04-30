@@ -103,7 +103,7 @@ export function useAppCoreState(createClientId: () => string) {
   const [rooms, setRooms] = useState<Room[]>([])
   const [comsParticipants, setComsParticipants] = useState<UserProfile[]>([])
   const [roomUnreadCounts, setRoomUnreadCounts] = useState<Record<string, number>>({})
-  const [selectedRoomId, setSelectedComsRoomId] = useState<string | null>(null)
+  const [selectedRoomId, selectComsRoom] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [rtcConfig, setRtcConfig] = useState<RtcConfig | null>(null)
   const [recording, setRecording] = useState(false)
@@ -210,7 +210,7 @@ export function useAppCoreState(createClientId: () => string) {
     rooms, setRooms,
     comsParticipants, setComsParticipants,
     roomUnreadCounts, setRoomUnreadCounts,
-    selectedRoomId, setSelectedComsRoomId,
+    selectedRoomId, selectComsRoom,
     messages, setMessages,
     rtcConfig, setRtcConfig,
     recording, setRecording,

@@ -195,7 +195,7 @@ export function buildAppActionBundleContext({
     setCustomDiagramFolders: appState.setCustomDiagramFolders,
     diagramIdFromManagedPath,
     setRooms: appState.setRooms,
-    setSelectedComsRoomId: appState.setSelectedComsRoomId,
+    selectComsRoom: appState.selectComsRoom,
     setCalendarConnections: appState.setCalendarConnections,
     setSelectedCalendarConnectionIds: appState.setSelectedCalendarConnectionIds,
     setTasks: appState.setTasks,
