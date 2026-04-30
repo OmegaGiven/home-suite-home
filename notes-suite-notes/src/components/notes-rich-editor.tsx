@@ -313,7 +313,13 @@ function buildEditorHtml(initialMarkdown: string) {
     <div id="editor" contenteditable="true" spellcheck="true" autocapitalize="sentences">${initialHtml}</div>
     <script>
       const post = (payload) => {
-        window.ReactNativeWebView?.postMessage(JSON.stringify(payload))
+        try {
+          if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+            window.ReactNativeWebView.postMessage(JSON.stringify(payload))
+          }
+        } catch (e) {
+          // ignore
+        }
       }
       const INITIAL_MARKDOWN = ${escapeForInjection(initialMarkdown)}
       window.onerror = function(message, source, lineno, colno) {
@@ -345,7 +351,7 @@ function buildEditorHtml(initialMarkdown: string) {
         html = html.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>')
         html = html.replace(/(^|[^*])\\*(.+?)\\*/g, '$1<em>$2</em>')
         html = html.replace(/~~(.+?)~~/g, '<s>$1</s>')
-        html = html.replace(/<u>(.+?)<\\/u>/g, '<u>$1</u>')
+        html = html.replace(/<\\/u>/g, '</u>')
         html = html.replace(/\\[(.+?)\\]\\((https?:\\/\\/[^\\s)]+)\\)/g, '<a href="$2">$1</a>')
         return html
       }
@@ -1273,7 +1279,7 @@ export function NotesRichEditor({ markdown, onMarkdownChange, onCursorChange, co
       <WebView
         ref={webViewRef}
         originWhitelist={['*']}
-        source={{ html }}
+        source={{ html, baseUrl: '' }}
         onMessage={handleMessage}
         javaScriptEnabled
         hideKeyboardAccessoryView

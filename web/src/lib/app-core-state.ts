@@ -103,7 +103,7 @@ export function useAppCoreState(createClientId: () => string) {
   const [rooms, setRooms] = useState<Room[]>([])
   const [comsParticipants, setComsParticipants] = useState<UserProfile[]>([])
   const [roomUnreadCounts, setRoomUnreadCounts] = useState<Record<string, number>>({})
-  const [selectedRoomId, selectComsRoom] = useState<string | null>(null)
+  const [selectedRoomId, setRoomSelectionState] = useState<string | null>(null)
   const [messages, setMessages] = useState<Message[]>([])
   const [rtcConfig, setRtcConfig] = useState<RtcConfig | null>(null)
   const [recording, setRecording] = useState(false)
@@ -156,6 +156,10 @@ export function useAppCoreState(createClientId: () => string) {
   const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map())
   const standaloneDrawioWindowRef = useRef<Window | null>(null)
   const standaloneDrawioEditingIdRef = useRef<string | null>(null)
+
+  function chooseRoom(roomId: string | null) {
+    setRoomSelectionState(roomId)
+  }
 
   return {
     route, setRoute,
@@ -210,7 +214,7 @@ export function useAppCoreState(createClientId: () => string) {
     rooms, setRooms,
     comsParticipants, setComsParticipants,
     roomUnreadCounts, setRoomUnreadCounts,
-    selectedRoomId, selectComsRoom,
+    selectedRoomId, chooseRoom,
     messages, setMessages,
     rtcConfig, setRtcConfig,
     recording, setRecording,

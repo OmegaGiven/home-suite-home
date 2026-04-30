@@ -181,8 +181,9 @@ export function useAppActionBundle(context: any) {
   })
 
   const workspaceRefreshActions = createWorkspaceRefreshActions({
+    selectedRoomId: context.selectedRoomId,
     setRooms: context.setRooms,
-    selectComsRoom: context.selectComsRoom,
+    chooseRoom: context.chooseRoom,
     setCalendarConnections: context.setCalendarConnections,
     setSelectedCalendarConnectionIds: context.setSelectedCalendarConnectionIds,
     setTasks: context.setTasks,

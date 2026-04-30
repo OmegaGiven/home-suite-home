@@ -3972,13 +3972,19 @@ impl AppState {
         for memo in &mut memos {
             ensure_voice_memo_foundation(memo);
         }
+        let notes = state
+            .notes
+            .values()
+            .filter(|note| is_note_active(note))
+            .cloned()
+            .collect::<Vec<_>>();
         let diagrams = state
             .diagrams
             .values()
             .filter(|diagram| is_diagram_active(diagram))
             .cloned()
             .collect::<Vec<_>>();
-        Ok(vec![build_diagrams_projection(&diagrams), build_voice_projection(&memos), drive])
+        Ok(vec![build_notes_projection(&notes), build_diagrams_projection(&diagrams), build_voice_projection(&memos), drive])
     }
 
     pub async fn create_managed_folder(&self, path: String) -> AppResult<crate::models::FileNode> {
@@ -6371,6 +6377,41 @@ fn sort_file_tree(node: &mut crate::models::FileNode) {
     });
 }
 
+fn build_notes_projection(notes: &[Note]) -> crate::models::FileNode {
+    let mut root = file_node_directory("notes".into(), "notes".into(), None, None);
+    for note in notes {
+        let folder = if note.folder.trim().is_empty() {
+            "Inbox"
+        } else {
+            note.folder.as_str()
+        };
+        let folders = folder
+            .replace('\\', "/")
+            .split('/')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let leaf = crate::models::FileNode {
+            name: format!("{}-{}.md", slug_for_note_title(&note.title), note.id),
+            path: note_relative_path_for_move(note),
+            kind: crate::models::FileNodeKind::File,
+            object_id: Some(note.object_id.clone()),
+            object_kind: Some(crate::models::WorkspaceObjectKind::NoteDocument),
+            namespace: Some(note.namespace.clone()),
+            visibility: Some(note.visibility.clone()),
+            resource_key: Some(format!("note:{}", note.id)),
+            size_bytes: Some(note.markdown.len() as u64),
+            created_at: Some(note.created_at.to_rfc3339()),
+            updated_at: Some(note.updated_at.to_rfc3339()),
+            children: Vec::new(),
+        };
+        insert_projected_node(&mut root, &folders, leaf);
+    }
+    sort_file_tree(&mut root);
+    root
+}
+
 fn build_diagrams_projection(diagrams: &[Diagram]) -> crate::models::FileNode {
     let mut root = file_node_directory("diagrams".into(), "diagrams".into(), None, None);
     for diagram in diagrams {
@@ -6435,6 +6476,21 @@ mod tests {
     use super::*;
     use crate::{config::Config, models::CreateNoteRequest};
     use tokio::fs;
+
+    fn find_file_node<'a>(
+        nodes: &'a [crate::models::FileNode],
+        path: &str,
+    ) -> Option<&'a crate::models::FileNode> {
+        for node in nodes {
+            if node.path == path {
+                return Some(node);
+            }
+            if let Some(found) = find_file_node(&node.children, path) {
+                return Some(found);
+            }
+        }
+        None
+    }
 
     async fn test_state() -> AppState {
         let mut config = Config::from_env();
@@ -6525,6 +6581,20 @@ mod tests {
         let note_dir = state.config.storage_root.join("notes");
         let mut entries = fs::read_dir(&note_dir).await.expect("read notes dir");
         assert!(entries.next_entry().await.expect("read dir entry").is_none());
+
+        let files = state.list_files().await.expect("list files");
+        assert!(find_file_node(&files, "notes").is_some());
+        assert!(find_file_node(&files, "notes/Inbox").is_some());
+        assert!(find_file_node(&files, "notes/Inbox/Tests").is_some());
+        let note_path = note_relative_path_for_move(&note);
+        let note_file = find_file_node(&files, &note_path).expect("note file node");
+        assert_eq!(note_file.kind, crate::models::FileNodeKind::File);
+        assert_eq!(
+            note_file.object_kind,
+            Some(crate::models::WorkspaceObjectKind::NoteDocument)
+        );
+        assert_eq!(note_file.object_id, Some(note.object_id.clone()));
+        assert_eq!(note_file.resource_key, Some(format!("note:{}", note.id)));
 
         let document = state
             .get_note_document(note.id, user)

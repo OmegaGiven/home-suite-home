@@ -3,8 +3,9 @@ import { api } from './api'
 import type { CalendarConnection, CalendarEvent, Room, TaskItem } from './types'
 
 type CreateWorkspaceRefreshActionsContext = {
+  selectedRoomId: string | null
   setRooms: Dispatch<SetStateAction<Room[]>>
-  selectComsRoom: Dispatch<SetStateAction<string | null>>
+  chooseRoom: (roomId: string | null) => void
   setCalendarConnections: Dispatch<SetStateAction<CalendarConnection[]>>
   setSelectedCalendarConnectionIds: Dispatch<SetStateAction<string[]>>
   setTasks: Dispatch<SetStateAction<TaskItem[]>>
@@ -16,11 +17,8 @@ export function createWorkspaceRefreshActions(context: CreateWorkspaceRefreshAct
   async function refreshRooms(options?: { preferredSelectedRoomId?: string | null }) {
     const nextRooms = await api.listRooms()
     context.setRooms(nextRooms)
-    context.selectComsRoom((current) => {
-      const preferred = options?.preferredSelectedRoomId ?? current
-      if (preferred && nextRooms.some((room) => room.id === preferred)) return preferred
-      return nextRooms[0]?.id ?? null
-    })
+    const preferred = options?.preferredSelectedRoomId ?? context.selectedRoomId
+    context.chooseRoom(preferred && nextRooms.some((room) => room.id === preferred) ? preferred : (nextRooms[0]?.id ?? null))
     return nextRooms
   }
 
@@ -77,4 +75,3 @@ export function createWorkspaceRefreshActions(context: CreateWorkspaceRefreshAct
     refreshCalendarEvents,
   }
 }
-

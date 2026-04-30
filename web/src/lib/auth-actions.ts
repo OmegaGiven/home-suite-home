@@ -39,7 +39,7 @@ type CreateAuthActionsContext = {
   setRooms: Dispatch<SetStateAction<Room[]>>
   setRoomUnreadCounts: Dispatch<SetStateAction<Record<string, number>>>
   setComsParticipants: Dispatch<SetStateAction<UserProfile[]>>
-  selectComsRoom: Dispatch<SetStateAction<string | null>>
+  chooseRoom: (roomId: string | null) => void
   setMessages: Dispatch<SetStateAction<Message[]>>
   setRtcConfig: Dispatch<SetStateAction<RtcConfig | null>>
   setSyncCursors: Dispatch<SetStateAction<import('./types').SyncCursorSet>>
@@ -126,7 +126,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     context.setRooms(normalized.rooms)
     context.setRoomUnreadCounts({})
     context.setComsParticipants(nextComsParticipants)
-    context.selectComsRoom(normalized.rooms[0]?.id ?? null)
+    context.chooseRoom(normalized.rooms[0]?.id ?? null)
     context.setMessages([])
     context.setRtcConfig(nextRtc)
     context.setAuthMode(sessionData.user.must_change_password ? 'change-password' : 'ready')
@@ -205,7 +205,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
         context.setCalendarConnections(normalized.calendarConnections)
         context.setTasks(normalized.tasks)
         context.setRooms(normalized.rooms)
-        context.selectComsRoom(normalized.rooms[0]?.id ?? null)
+        context.chooseRoom(normalized.rooms[0]?.id ?? null)
         context.setMessages([])
         context.setAuthMode(cachedSession.user.must_change_password ? 'change-password' : 'ready')
         context.setStatus('Offline mode using cached workspace')
@@ -313,7 +313,7 @@ export function createAuthActions(context: CreateAuthActionsContext) {
     context.setRooms([])
     context.setRoomUnreadCounts({})
     context.setComsParticipants([])
-    context.selectComsRoom(null)
+    context.chooseRoom(null)
     context.setMessages([])
     context.setRtcConfig(null)
     context.setAuthMode('login')

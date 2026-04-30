@@ -149,7 +149,7 @@ function App() {
     rooms, setRooms,
     comsParticipants,
     roomUnreadCounts, setRoomUnreadCounts,
-    selectedRoomId, selectComsRoom,
+    selectedRoomId, chooseRoom,
     setMessages,
     rtcConfig,
     recording,
@@ -889,7 +889,7 @@ function App() {
           onCloseCall={() => undefined}
           onOpenCallRoom={() => {
             if (activeCallRoomId) {
-              selectComsRoom(activeCallRoomId)
+              chooseRoom(activeCallRoomId)
             }
             void navigate('/coms')
           }}
